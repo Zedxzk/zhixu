@@ -10,9 +10,11 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 dependencies = [
-    "cryptography>=48.0.1,<49",
+    "argon2-cffi>=25.1,<26",
+    "cryptography>=49,<50",
     "pydantic>=2.7,<3",
     "python-dateutil>=2.9,<3",
+    "webauthn>=3,<4",
     "websockets>=13,<17",
 ]
 
@@ -27,9 +29,10 @@ dev = [
 
 [project.scripts]
 zhixu = "zhixu.cli:main"
+zhixu-vault = "zhixu_vault.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/zhixu"]
+packages = ["src/zhixu", "src/zhixu_vault"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -44,7 +47,7 @@ line-length = 100
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.importlinter]
-root_packages = ["zhixu"]
+root_packages = ["zhixu", "zhixu_vault"]
 exclude_type_checking_imports = true
 
 [[tool.importlinter.contracts]]
@@ -66,6 +69,23 @@ name = "application uses ports instead of concrete adapters"
 type = "forbidden"
 source_modules = ["zhixu.application"]
 forbidden_modules = ["zhixu.adapters"]
+
+[[tool.importlinter.contracts]]
+name = "assistant and channel code cannot import vault implementation"
+type = "forbidden"
+source_modules = [
+    "zhixu.application",
+    "zhixu.channels",
+    "zhixu.adapters.channels",
+    "zhixu.adapters.llm",
+]
+forbidden_modules = ["zhixu_vault"]
+
+[[tool.importlinter.contracts]]
+name = "vault implementation is independent from ordinary application"
+type = "forbidden"
+source_modules = ["zhixu_vault"]
+forbidden_modules = ["zhixu"]
 
 [[tool.importlinter.contracts]]
 name = "ports do not depend on concrete adapters"
