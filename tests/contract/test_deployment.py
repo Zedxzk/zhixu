@@ -138,6 +138,28 @@ def test_activation_and_rollback_include_every_stateful_runtime() -> None:
     assert "databases were not overwritten" in rollback
 
 
+def test_root_verifier_checks_runtime_without_printing_private_state() -> None:
+    verifier = (
+        ROOT / "scripts" / "deploy" / "40_verify_root.sh"
+    ).read_text(encoding="utf-8")
+    for unit in (
+        "zhixu-api.service",
+        "zhixu-worker.service",
+        "zhixu-qq.service",
+        "zhixu-pat-executor.service",
+        "zhixu-vault.service",
+        "zhixu-backup.timer",
+        "zhixu-vault-backup.timer",
+    ):
+        assert unit in verifier
+    assert "127.0.0.1:8840" in verifier
+    assert "0\\.0\\.0\\.0" in verifier
+    assert "zhixu-vault:zhixu-vault-client:750" in verifier
+    assert "zhixu-integration:zhixu-vault-client:750" in verifier
+    assert "deployment=ready" in verifier
+    assert "journalctl" not in verifier
+
+
 def test_backup_unit_covers_every_persistent_database_boundary() -> None:
     backup = _unit("zhixu-backup.service")
     for database, destination in (

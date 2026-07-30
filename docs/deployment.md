@@ -217,6 +217,17 @@ For each configured outbound-only account, also verify its templated unit:
 systemctl is-active zhixu-outbound@email-synthetic.service
 ```
 
+After the first activation and after every upgrade, run the aggregate root verifier:
+
+```bash
+sudo scripts/deploy/40_verify_root.sh
+```
+
+It re-runs preflight, requires all core services and backup timers to be enabled and active,
+checks the service-owned Unix socket directories, rejects wildcard port `8840`, and probes
+the loopback health endpoints. It prints no credential, database path, external identity,
+or response body. The required check from a network outside the VPN remains separate.
+
 The optional `pat` vault executor accepts only three read operations:
 `github.get_authenticated_user`, `github.list_repositories`, and
 `github.get_repository`. The provider origin, HTTP method, and current GitHub REST API
