@@ -1,0 +1,57 @@
+# Root-level media in this pre-existing workspace is private by default.
+# Public project artwork must live under docs/assets/ or src/.../static/.
+/*.jpg
+/*.jpeg
+/*.png
+/*.webp
+
+# Private planning/reference material may mention closed-source projects or infrastructure.
+/.private/
+/.agents/
+/.codex/
+/docs/internal/
+/docs/design/
+/*IMPLEMENTATION_PLAN*.md
+/*DESIGN*.md
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+config/local.*
+config/*.local.*
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Runtime and user data never belong in the public repository
+/data/
+/state/
+/secrets/
+/backups/
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.db
+*.db-*
+*.bak
+
+# Python/tooling output
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv*/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# IDE/OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

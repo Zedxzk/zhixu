@@ -1,0 +1,72 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "zhixu"
+version = "0.1.0.dev0"
+description = "Privacy-first self-hosted personal assistant with deterministic workflows"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = [
+    "pydantic>=2.7,<3",
+    "python-dateutil>=2.9,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "detect-secrets>=1.5,<2",
+    "import-linter>=2.1,<3",
+    "pip-audit>=2.7",
+    "pytest>=8",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+zhixu = "zhixu.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/zhixu"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.importlinter]
+root_packages = ["zhixu"]
+exclude_type_checking_imports = true
+
+[[tool.importlinter.contracts]]
+name = "domain is independent from application and infrastructure"
+type = "forbidden"
+source_modules = ["zhixu.domain"]
+forbidden_modules = [
+    "zhixu.adapters",
+    "zhixu.application",
+    "zhixu.channels",
+    "zhixu.delivery",
+    "zhixu.runtime",
+    "zhixu.security",
+    "zhixu.vault_client",
+]
+
+[[tool.importlinter.contracts]]
+name = "application uses ports instead of concrete adapters"
+type = "forbidden"
+source_modules = ["zhixu.application"]
+forbidden_modules = ["zhixu.adapters"]
+
+[[tool.importlinter.contracts]]
+name = "ports do not depend on concrete adapters"
+type = "forbidden"
+source_modules = ["zhixu.ports"]
+forbidden_modules = ["zhixu.adapters"]
