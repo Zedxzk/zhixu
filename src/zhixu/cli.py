@@ -24,6 +24,12 @@ from .adapters.storage.sqlite import (
     UserRepository,
 )
 from .domain import Action, CommandContext, PolicyEngine, ResourceRef, User, UserStatus
+from .runtime.preflight import (
+    PreflightFailure,
+    require_root,
+    root_owned_paths,
+    verify_deployment_configuration,
+)
 from .runtime.probes import vault_available
 from .vault_client import CapabilityGrantIssuer
 
@@ -44,6 +50,8 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--api-url", default="http://127.0.0.1:8840")
     doctor.add_argument("--database", default="/var/lib/zhixu/zhixu.sqlite3")
     doctor.add_argument("--vault-socket", default="/run/zhixu/vault.sock")
+
+    commands.add_parser("preflight")
 
     bootstrap = commands.add_parser("bootstrap-admin")
     bootstrap.add_argument("--database", required=True)
@@ -69,17 +77,32 @@ def _require_tty() -> None:
 
 def _doctor(args: argparse.Namespace) -> int:
     parsed = urlsplit(args.api_url)
-    if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "::1"}:
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname not in {"127.0.0.1", "::1"}
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
         print("api=invalid storage=unknown vault=unknown")
         return 2
     api = "unavailable"
     degraded = True
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        _RejectRedirects(),
+    )
     try:
-        with urllib.request.urlopen(
+        with opener.open(
             args.api_url.rstrip("/") + "/health/ready",
             timeout=2,
         ) as response:
-            value = json.loads(response.read(64 * 1024))
+            raw = response.read(64 * 1024 + 1)
+            if len(raw) > 64 * 1024:
+                raise ValueError("health response is too large")
+            value = json.loads(raw)
             if int(response.status) == 200 and value.get("core") == "ready":
                 api = "ready"
                 degraded = bool(value.get("degraded"))
@@ -96,6 +119,34 @@ def _doctor(args: argparse.Namespace) -> int:
         overall = "degraded"
     print(f"status={overall} api={api} storage={storage} vault={vault}")
     return 0 if api == "ready" and storage == "ok" else 3
+
+
+class _RejectRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        _request: urllib.request.Request,
+        _file_pointer: object,
+        _code: int,
+        _message: str,
+        _headers: object,
+        _new_url: str,
+    ) -> None:
+        return None
+
+
+def _preflight() -> int:
+    try:
+        require_root()
+        result = verify_deployment_configuration(root_owned_paths())
+    except PreflightFailure as exc:
+        print(f"preflight=failed code={exc.code}")
+        return 4
+    print(
+        "preflight=ready "
+        f"credential_files={result.credential_files} "
+        f"outbound_accounts={result.outbound_accounts}"
+    )
+    return 0
 
 
 def _database_status(path: Path) -> str:
@@ -210,6 +261,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.command == "doctor":
         return _doctor(args)
+    if args.command == "preflight":
+        return _preflight()
     if args.command == "bootstrap-admin":
         return _bootstrap_admin(args)
     if args.command == "backup":

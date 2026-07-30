@@ -11,6 +11,8 @@ from typing import Any, Protocol
 
 from zhixu.ports import LLMRequest, LLMResponse
 
+MAX_LLM_RESPONSE_BYTES = 1024 * 1024
+
 
 class LLMHttpTransport(Protocol):
     def post(
@@ -24,6 +26,12 @@ class LLMHttpTransport(Protocol):
 
 
 class UrllibLLMTransport:
+    def __init__(self) -> None:
+        self._opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}),
+            _RejectRedirects(),
+        )
+
     def post(
         self,
         url: str,
@@ -39,17 +47,33 @@ class UrllibLLMTransport:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            with self._opener.open(request, timeout=timeout_seconds) as response:
                 status = int(response.status)
-                raw = response.read().decode("utf-8", "replace")
+                body = response.read(MAX_LLM_RESPONSE_BYTES + 1)
         except urllib.error.HTTPError as exc:
             status = int(exc.code)
-            raw = exc.read().decode("utf-8", "replace")
+            body = exc.read(MAX_LLM_RESPONSE_BYTES + 1)
+        if len(body) > MAX_LLM_RESPONSE_BYTES:
+            raise ValueError("LLM response is too large")
+        raw = body.decode("utf-8", "replace")
         try:
             value = json.loads(raw or "{}")
         except ValueError:
             value = {}
         return status, value if isinstance(value, dict) else {}
+
+
+class _RejectRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        _request: urllib.request.Request,
+        _file_pointer: object,
+        _code: int,
+        _message: str,
+        _headers: object,
+        _new_url: str,
+    ) -> None:
+        return None
 
 
 @dataclass(slots=True)
@@ -62,7 +86,17 @@ class OpenAICompatibleLLM:
 
     def __post_init__(self) -> None:
         parsed = urllib.parse.urlparse(self.base_url)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        loopback = parsed.hostname in {"127.0.0.1", "::1", "localhost"}
+        if (
+            parsed.scheme not in {"http", "https"}
+            or parsed.hostname is None
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+            or (self.is_local and not loopback)
+            or (not self.is_local and parsed.scheme != "https")
+        ):
             raise ValueError("LLM base URL must be an absolute HTTP(S) URL")
         self.base_url = self.base_url.rstrip("/")
 

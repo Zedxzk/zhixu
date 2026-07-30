@@ -19,6 +19,8 @@ if [[ ! -x ${release_dir}/venv/bin/zhixu || ! -d ${release_dir}/source/deploy/sy
   exit 3
 fi
 
+"${release_dir}/venv/bin/zhixu" preflight
+
 previous=
 if [[ -L /opt/zhixu/current ]]; then
   previous=$(readlink -f /opt/zhixu/current)

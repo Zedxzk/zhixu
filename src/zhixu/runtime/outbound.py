@@ -239,6 +239,14 @@ def _adapter(
     raise ValueError("outbound channel is unsupported")
 
 
+def configured_outbound_account(config_path: str | Path) -> tuple[str, str]:
+    """Validate one credential object without exposing any credential value."""
+
+    targets = object.__new__(OutboundTargetResolver)
+    adapter = _adapter(config_path, targets)
+    return adapter.channel, adapter.channel_account
+
+
 def _exact(value: dict[str, object], fields: set[str]) -> None:
     if set(value) != fields:
         raise ValueError("outbound channel credential fields are invalid")

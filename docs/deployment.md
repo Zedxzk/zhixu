@@ -78,11 +78,18 @@ Never make the private key readable by the vault process.
 Activate only after reviewing the source and wheel manifests:
 
 ```bash
+sudo /opt/zhixu/releases/RELEASE_ID/venv/bin/zhixu preflight
 sudo scripts/deploy/20_activate_root.sh RELEASE_ID
 ```
 
+The preflight reads fixed `/etc/zhixu` paths, requires root ownership and exact restrictive
+permissions, validates key lengths, the Ed25519 public key, Passkey origin, LLM endpoint,
+outbound declarations, and every outbound credential schema. It prints only a result code
+and aggregate counts. Activation runs the same preflight again before changing the current
+release symlink.
+
 The activation is an atomic symlink switch. It restarts the vault sealed and never copies,
-replaces, or rolls back either SQLite database.
+replaces, or rolls back any SQLite database.
 
 ## 4. Initialize local data
 

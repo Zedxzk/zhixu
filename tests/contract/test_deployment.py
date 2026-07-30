@@ -105,6 +105,9 @@ def test_activation_and_rollback_include_every_stateful_runtime() -> None:
     ):
         assert service in activation
         assert service in rollback
+    assert activation.index('/venv/bin/zhixu" preflight') < activation.index(
+        "ln -sfn"
+    )
     assert "databases were not overwritten" in rollback
 
 

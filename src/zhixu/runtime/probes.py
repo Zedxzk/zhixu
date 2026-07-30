@@ -36,6 +36,15 @@ def vault_available(path: str | Path, *, timeout: float = 1.0) -> bool:
 def loopback_http_available(url: str, *, timeout: float = 1.0) -> bool:
     parsed = urlsplit(url)
     host = parsed.hostname or ""
+    if (
+        parsed.scheme != "http"
+        or not host
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        return False
     try:
         addresses = {
             item[4][0]
@@ -47,15 +56,32 @@ def loopback_http_available(url: str, *, timeout: float = 1.0) -> bool:
         }
     except OSError:
         return False
-    if parsed.scheme != "http" or not addresses or any(
+    if not addresses or any(
         not _is_loopback(address) for address in addresses
     ):
         return False
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        _RejectRedirects(),
+    )
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as response:
+        with opener.open(url, timeout=timeout) as response:
             return 200 <= int(response.status) < 300
     except (OSError, urllib.error.URLError):
         return False
+
+
+class _RejectRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        _request: urllib.request.Request,
+        _file_pointer: object,
+        _code: int,
+        _message: str,
+        _headers: object,
+        _new_url: str,
+    ) -> None:
+        return None
 
 
 def _is_loopback(value: str) -> bool:

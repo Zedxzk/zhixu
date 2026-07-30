@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import urllib.request
 from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 
 from zhixu.adapters.llm import OpenAICompatibleLLM
+from zhixu.adapters.llm.openai_compatible import UrllibLLMTransport
 from zhixu.application import IntentAction, RuleIntentRouter
 from zhixu.ports import FrozenClock, LLMRequest
 
@@ -81,6 +83,51 @@ def test_openai_compatible_timeout_is_reported_without_response_body() -> None:
 
     with pytest.raises(TimeoutError):
         client.generate(LLMRequest("model", "system", "user"), timeout_seconds=1)
+
+
+def test_llm_transport_disables_proxies_and_redirects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[object] = []
+
+    class Opener:
+        pass
+
+    def build_opener(*handlers: object) -> Opener:
+        captured.extend(handlers)
+        return Opener()
+
+    monkeypatch.setattr(urllib.request, "build_opener", build_opener)
+    UrllibLLMTransport()
+
+    proxy = next(
+        item for item in captured if isinstance(item, urllib.request.ProxyHandler)
+    )
+    assert proxy.proxies == {}
+    assert any(type(item).__name__ == "_RejectRedirects" for item in captured)
+
+
+@pytest.mark.parametrize(
+    ("base_url", "is_local"),
+    [
+        ("http://provider.example.invalid/v1", False),
+        ("https://user@provider.example.invalid/v1", False),
+        ("https://provider.example.invalid/v1?redirect=1", False),
+        ("https://provider.example.invalid/v1#fragment", False),
+        ("http://provider.example.invalid/v1", True),
+    ],
+)
+def test_llm_endpoint_rejects_credential_leak_boundaries(
+    base_url: str,
+    is_local: bool,
+) -> None:
+    with pytest.raises(ValueError):
+        OpenAICompatibleLLM(
+            provider_ref="synthetic",
+            base_url=base_url,
+            api_key="",
+            is_local=is_local,
+        )
 
 
 def test_chinese_absolute_reminder_parser_rejects_past_or_invalid_time() -> None:
