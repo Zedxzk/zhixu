@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import stat
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from zhixu.adapters.storage.sqlite import (
 )
 from zhixu.domain import Action, CommandContext, PolicyEngine, ResourceRef, User, UserStatus
 from zhixu.runtime.backup import main as backup_main
+from zhixu_vault.backup import VaultBackupManager
 from zhixu_vault.backup_runtime import main as vault_backup_main
 from zhixu_vault.crypto import Argon2Parameters, VaultKeyring
 from zhixu_vault.database import VaultDatabase
@@ -71,6 +73,7 @@ def test_application_backup_runtime_encrypts_and_performs_restore_drill(
         restored_path,
         backup_passphrase=SYNTHETIC_BACKUP_PHRASE,
     )
+    assert stat.S_IMODE(restored_path.stat().st_mode) == 0o600
     assert UserRepository(Database(restored_path)).get("user_backup_test") is not None
 
     rejected_path = tmp_path / "wrong-passphrase.sqlite3"
@@ -82,13 +85,22 @@ def test_application_backup_runtime_encrypts_and_performs_restore_drill(
         )
     assert not rejected_path.exists()
 
+    source_link = tmp_path / "application-backup-link.zxb"
+    source_link.symlink_to(artifacts[0])
+    with pytest.raises(ValueError, match="file is invalid"):
+        ApplicationBackupManager.restore(
+            source_link,
+            tmp_path / "symlink-source.sqlite3",
+            backup_passphrase=SYNTHETIC_BACKUP_PHRASE,
+        )
+
     failed_target = tmp_path / "atomic-failure.zxb"
 
     def fail_replace(_source: object, _target: object) -> None:
         raise OSError("synthetic storage failure")
 
     monkeypatch.setattr(
-        "zhixu.adapters.storage.sqlite.backup.os.replace",
+        "zhixu.adapters.storage.sqlite.backup.os.link",
         fail_replace,
     )
     with pytest.raises(OSError, match="synthetic storage failure"):
@@ -142,3 +154,22 @@ def test_vault_backup_runtime_encrypts_and_performs_restore_drill(
     raw = artifacts[0].read_bytes()
     assert b"SQLite format 3" not in raw
     assert SYNTHETIC_VAULT_UNLOCK_PHRASE.encode() not in raw
+
+    restored_path = tmp_path / "restored-vault.sqlite3"
+    VaultBackupManager.restore(
+        artifacts[0],
+        restored_path,
+        backup_passphrase=SYNTHETIC_VAULT_BACKUP_PHRASE,
+    )
+    assert stat.S_IMODE(restored_path.stat().st_mode) == 0o600
+
+    malicious = json.loads(artifacts[0].read_text(encoding="utf-8"))
+    malicious["argon2"]["memory_cost_kib"] = 1_048_577
+    malicious_path = tmp_path / "malicious-kdf.zxb"
+    malicious_path.write_text(json.dumps(malicious), encoding="utf-8")
+    with pytest.raises(ValueError, match="outside the supported bounds"):
+        VaultBackupManager.restore(
+            malicious_path,
+            tmp_path / "malicious-kdf.sqlite3",
+            backup_passphrase=SYNTHETIC_VAULT_BACKUP_PHRASE,
+        )

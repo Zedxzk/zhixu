@@ -28,7 +28,12 @@ class SearchNotes:
     limit: int = 20
 
 
-Query = AgendaBetween | ListTasks | SearchNotes
+@dataclass(frozen=True, slots=True)
+class ListReminders:
+    include_inactive: bool = False
+
+
+Query = AgendaBetween | ListTasks | SearchNotes | ListReminders
 QueryT = TypeVar("QueryT", bound=Query)
 Handler = Callable[[Any, CommandContext], Any]
 

@@ -43,6 +43,7 @@ rsync \
   --include='/deploy/***' \
   --include='/docs/' \
   --include='/docs/api.md' \
+  --include='/docs/commands.md' \
   --include='/docs/deployment.md' \
   --include='/docs/operations/***' \
   --include='/docs/security/***' \

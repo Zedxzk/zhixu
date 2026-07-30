@@ -44,7 +44,8 @@ python -m venv .venv
 Windows 请使用虚拟环境中对应的 `Scripts` 命令路径。
 
 私有服务器安装见 [部署文档](docs/deployment.md)，管理与保险库接口见
-[API 文档](docs/api.md)。
+[API 文档](docs/api.md)，QQ 与其他会话通道的确定性用法见
+[命令文档](docs/commands.md)。
 
 ## 隐私
 

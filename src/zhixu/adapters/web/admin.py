@@ -25,8 +25,10 @@ from zhixu.adapters.storage.sqlite import (
     acl_action,
 )
 from zhixu.application.commands import (
+    CancelReminder,
     CreateAgenda,
     CreateNote,
+    CreateReminder,
     CreateTask,
     DeleteAgenda,
     DeleteNote,
@@ -38,6 +40,7 @@ from zhixu.application.commands import (
     UpdateNote,
     UpdateTask,
 )
+from zhixu.application.queries import ListReminders
 from zhixu.application.services import ZhixuServices, random_id
 from zhixu.channels import MessageKind, OutboundMessage
 from zhixu.delivery import OutboxStore
@@ -48,6 +51,7 @@ from zhixu.domain import (
     DataClassification,
     EncryptedIdentifier,
     ExceptionAction,
+    MissedReminderPolicy,
     NoteAttachment,
     PolicyEngine,
     RequestChannel,
@@ -364,6 +368,20 @@ class AdminAPI:
                 note_id = path.rsplit("/", 1)[-1]
                 self.services.delete_note(DeleteNote(note_id), context)
                 return AdminResponse(200, {"deleted": True, "id": note_id})
+            if path == "/admin/reminders":
+                if method == "GET":
+                    return self._list_reminders(context)
+                if method == "POST":
+                    return self._create_reminder(self._object_body(body), context)
+            if path.startswith("/admin/reminders/") and method == "DELETE":
+                if not context.confirmed:
+                    raise ConfirmationRequired(
+                        "reminder cancellation requires confirmation"
+                    )
+                return self._cancel_reminder(
+                    path.rsplit("/", 1)[-1],
+                    context,
+                )
             if method == "GET" and path == "/admin/outbox":
                 return AdminResponse(
                     200,
@@ -1321,6 +1339,81 @@ class AdminAPI:
         )
         return AdminResponse(200, self._note_json(note))
 
+    def _list_reminders(self, context: CommandContext) -> AdminResponse:
+        reminders = self.services.query_bus().execute(
+            ListReminders(include_inactive=True),
+            context,
+        )
+        return AdminResponse(
+            200,
+            [self._reminder_json(reminder) for reminder in reminders],
+        )
+
+    def _create_reminder(
+        self,
+        data: dict[str, object],
+        context: CommandContext,
+    ) -> AdminResponse:
+        self._fields(
+            data,
+            required={"title", "fire_at", "target_ref"},
+            optional={
+                "missed_policy",
+                "classification",
+                "related_kind",
+                "related_id",
+            },
+        )
+        target_ref = self._string(data, "target_ref", maximum=160)
+        allowed_targets = {
+            identity.opaque_ref
+            for identity in self.users.list_identities(context.actor_user_id)
+        }
+        if target_ref not in allowed_targets:
+            raise PermissionDenied("reminder target is not bound to the current user")
+        fire_at = self._datetime(data, "fire_at")
+        if fire_at <= self.clock.now():
+            raise ValidationError("reminder time must be in the future")
+        try:
+            missed_policy = MissedReminderPolicy(
+                self._optional_string(data, "missed_policy", maximum=20)
+                or MissedReminderPolicy.FIRE.value
+            )
+        except ValueError as exc:
+            raise ValidationError("invalid missed reminder policy") from exc
+        reminder = self.services.create_reminder(
+            CreateReminder(
+                title=self._string(data, "title", maximum=500),
+                fire_at=fire_at,
+                target_ref=target_ref,
+                missed_policy=missed_policy,
+                classification=self._classification(data),
+                related_kind=self._nullable_string(
+                    data,
+                    "related_kind",
+                    maximum=80,
+                ),
+                related_id=self._nullable_string(
+                    data,
+                    "related_id",
+                    maximum=160,
+                ),
+            ),
+            context,
+        )
+        return AdminResponse(201, self._reminder_json(reminder))
+
+    def _cancel_reminder(
+        self,
+        reminder_id: str,
+        context: CommandContext,
+    ) -> AdminResponse:
+        reminder = self.services.cancel_reminder(
+            CancelReminder(reminder_id),
+            context,
+        )
+        return AdminResponse(200, self._reminder_json(reminder))
+
     @staticmethod
     def _agenda_json(item: Any) -> dict[str, object]:
         return {
@@ -1367,6 +1460,21 @@ class AdminAPI:
                 for attachment in item.attachments
             ],
             "classification": int(item.classification),
+            "version": item.version,
+        }
+
+    @staticmethod
+    def _reminder_json(item: Any) -> dict[str, object]:
+        return {
+            "id": item.id,
+            "title": item.title,
+            "fire_at": item.fire_at.isoformat(),
+            "target_ref": item.target_ref,
+            "status": item.status.value,
+            "missed_policy": item.missed_policy.value,
+            "classification": int(item.classification),
+            "related_kind": item.related_kind,
+            "related_id": item.related_id,
             "version": item.version,
         }
 

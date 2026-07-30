@@ -30,6 +30,7 @@ from zhixu.ports import (
 
 from .commands import (
     AcknowledgeReminder,
+    CancelReminder,
     CommandBus,
     CreateAgenda,
     CreateNote,
@@ -46,7 +47,7 @@ from .commands import (
     UpdateNote,
     UpdateTask,
 )
-from .queries import AgendaBetween, ListTasks, QueryBus, SearchNotes
+from .queries import AgendaBetween, ListReminders, ListTasks, QueryBus, SearchNotes
 
 IdFactory = Callable[[str], str]
 
@@ -406,6 +407,31 @@ class ZhixuServices:
             authorization=authorization,
         )
 
+    def cancel_reminder(
+        self,
+        command: CancelReminder,
+        context: CommandContext,
+    ) -> Reminder:
+        reminder = self.reminders.get(command.reminder_id)
+        if reminder is None:
+            raise NotFoundError("reminder not found")
+        current = self._context(context)
+        authorization = self.policy.require(
+            current,
+            Action.UPDATE,
+            self._ref(
+                "reminder",
+                reminder.id,
+                reminder.owner_user_id,
+                reminder.classification,
+            ),
+        )
+        return self.reminders.cancel(
+            reminder.id,
+            expected_version=reminder.version,
+            authorization=authorization,
+        )
+
     def snooze_reminder(
         self,
         command: SnoozeReminder,
@@ -491,6 +517,32 @@ class ZhixuServices:
             task for task in tasks if task.status.value != "archived"
         ]
 
+    def list_reminders(
+        self,
+        query: ListReminders,
+        context: CommandContext,
+    ) -> list[Reminder]:
+        current = self._context(context)
+        reminders = self.reminders.list_for_owner(current.actor_user_id)
+        for reminder in reminders:
+            self.policy.require(
+                current,
+                Action.READ,
+                self._ref(
+                    "reminder",
+                    reminder.id,
+                    reminder.owner_user_id,
+                    reminder.classification,
+                ),
+            )
+        if query.include_inactive:
+            return reminders
+        return [
+            reminder
+            for reminder in reminders
+            if reminder.status.value in {"pending", "fired"}
+        ]
+
     def search_notes(self, query: SearchNotes, context: CommandContext) -> list[Note]:
         current = self._context(context)
         self.policy.require(
@@ -529,6 +581,7 @@ class ZhixuServices:
         bus.register(UpdateNote, self.update_note)
         bus.register(DeleteNote, self.delete_note)
         bus.register(CreateReminder, self.create_reminder)
+        bus.register(CancelReminder, self.cancel_reminder)
         bus.register(AcknowledgeReminder, self.acknowledge_reminder)
         bus.register(SnoozeReminder, self.snooze_reminder)
         return bus
@@ -538,4 +591,5 @@ class ZhixuServices:
         bus.register(AgendaBetween, self.agenda_between)
         bus.register(ListTasks, self.list_tasks)
         bus.register(SearchNotes, self.search_notes)
+        bus.register(ListReminders, self.list_reminders)
         return bus

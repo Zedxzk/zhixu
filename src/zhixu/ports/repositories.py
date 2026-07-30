@@ -111,6 +111,16 @@ class ReminderRepositoryPort(Protocol):
 
     def get(self, reminder_id: str) -> Reminder | None: ...
 
+    def list_for_owner(self, owner_user_id: str) -> list[Reminder]: ...
+
+    def cancel(
+        self,
+        reminder_id: str,
+        *,
+        expected_version: int,
+        authorization: AuthorizedAction,
+    ) -> Reminder: ...
+
     def acknowledge(
         self,
         reminder_id: str,

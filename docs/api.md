@@ -63,6 +63,8 @@ POST                 /admin/tasks/{id}/transition
 POST                 /admin/tasks/{id}/postpone
 GET|POST             /admin/notes
 PUT|DELETE           /admin/notes/{id}
+GET|POST             /admin/reminders
+DELETE               /admin/reminders/{id}
 GET|POST|DELETE      /admin/acl
 GET                  /admin/channels
 GET|PATCH            /admin/channel-routes
@@ -74,7 +76,10 @@ GET                  /admin/status
 An agenda exception can cancel one occurrence or replace its start/end without changing
 the recurring series. Note attachments are metadata-only objects (`id`, `filename`,
 `media_type`, `size_bytes`, and opaque `content_ref`); this API never accepts attachment
-binary content.
+binary content. A reminder target must be an opaque reference already bound to the current
+user; arbitrary external identifiers and another user's target are rejected. Creating
+several reminder records for the same `related_kind` and `related_id` provides multiple
+notification times. Reminder cancellation requires the confirmation header.
 
 Deletion requires the confirmation header. External identities and delivery targets are
 represented by opaque references; status and audit endpoints do not return raw platform
@@ -98,7 +103,7 @@ POST                 /admin/vault/secrets/{id}/grant
 Creation accepts `kind` equal to `human` or `machine`; L4 values are not accepted. Human
 secrets can be revealed only with current Passkey step-up. Machine secrets use an
 allowlisted executor. The vault passes the value only to the fixed local
-`/run/zhixu/pat-executor.sock` boundary; it never accepts an executor address from an API
+`/run/zhixu/integration/pat-executor.sock` boundary; it never accepts an executor address from an API
 request. The executor response is rejected if it contains the credential.
 Exports are additionally encrypted with the supplied export passphrase.
 

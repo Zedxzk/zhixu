@@ -49,7 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     for name in ("status", "unlock", "lock"):
         command = commands.add_parser(name)
-        command.add_argument("--socket", default="/run/zhixu/vault.sock")
+        command.add_argument("--socket", default="/run/zhixu/vault/vault.sock")
     return parser
 
 

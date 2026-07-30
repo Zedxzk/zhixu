@@ -185,6 +185,43 @@ def _challenge_code(admin: AdminParts, challenge_id: str) -> str:
     return text.split("：", 1)[1].split("。", 1)[0]
 
 
+def _bind_private_qq_target(admin: AdminParts, opaque_ref: str) -> str:
+    admin.routes.observe(
+        channel="qq",
+        channel_account="account_synthetic",
+        opaque_ref=opaque_ref,
+        kind="private",
+        now=NOW,
+    )
+    issued = admin.api.dispatch(
+        "POST",
+        "/admin/identity-challenges",
+        headers=admin.headers,
+        body=_json(
+            {
+                "channel": "qq",
+                "channel_account": "account_synthetic",
+                "opaque_ref": opaque_ref,
+            }
+        ),
+    )
+    assert issued.status == 201
+    challenge_id = str(issued.body["challenge_id"])
+    linked = admin.api.dispatch(
+        "POST",
+        "/admin/identities",
+        headers=admin.headers,
+        body=_json(
+            {
+                "challenge_id": challenge_id,
+                "verification_code": _challenge_code(admin, challenge_id),
+            }
+        ),
+    )
+    assert linked.status == 201
+    return str(linked.body["id"])
+
+
 def test_health_and_admin_status_are_minimal_and_redacted(admin: AdminParts) -> None:
     assert admin.api.dispatch("GET", "/health/live").body == {"status": "live"}
     ready = admin.api.dispatch("GET", "/health/ready")
@@ -837,3 +874,74 @@ def test_admin_manages_recurrence_exceptions_and_note_attachment_metadata(
         ),
     )
     assert rejected_binary.status == 422
+
+
+def test_admin_reminders_require_owned_target_and_confirmed_cancellation(
+    admin: AdminParts,
+) -> None:
+    target_ref = "qqc_synthetic_reminder_target"
+    _bind_private_qq_target(admin, target_ref)
+
+    unbound = admin.api.dispatch(
+        "POST",
+        "/admin/reminders",
+        headers=admin.headers,
+        body=_json(
+            {
+                "title": "Synthetic rejected reminder",
+                "fire_at": (NOW + timedelta(hours=1)).isoformat(),
+                "target_ref": "qqc_synthetic_not_bound",
+            }
+        ),
+    )
+    assert unbound.status == 403
+
+    created = admin.api.dispatch(
+        "POST",
+        "/admin/reminders",
+        headers=admin.headers,
+        body=_json(
+            {
+                "title": "Synthetic managed reminder",
+                "fire_at": (NOW + timedelta(hours=2)).isoformat(),
+                "target_ref": target_ref,
+                "missed_policy": "skip",
+                "related_kind": "task",
+                "related_id": "task_synthetic_related",
+            }
+        ),
+    )
+    assert created.status == 201
+    assert created.body["status"] == "pending"
+    assert created.body["missed_policy"] == "skip"
+    reminder_id = str(created.body["id"])
+
+    listed = admin.api.dispatch(
+        "GET",
+        "/admin/reminders",
+        headers=admin.headers,
+    )
+    assert listed.status == 200
+    assert [item["id"] for item in listed.body] == [reminder_id]
+
+    confirmation_required = admin.api.dispatch(
+        "DELETE",
+        f"/admin/reminders/{reminder_id}",
+        headers=admin.headers,
+    )
+    assert confirmation_required.status == 428
+
+    cancelled = admin.api.dispatch(
+        "DELETE",
+        f"/admin/reminders/{reminder_id}",
+        headers={**admin.headers, "X-Zhixu-Confirm": "true"},
+    )
+    assert cancelled.status == 200
+    assert cancelled.body["status"] == "cancelled"
+
+    listed_after = admin.api.dispatch(
+        "GET",
+        "/admin/reminders",
+        headers=admin.headers,
+    )
+    assert listed_after.body[0]["status"] == "cancelled"

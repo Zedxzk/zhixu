@@ -175,7 +175,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--channel-service-token-file", required=True)
     parser.add_argument("--qq-account", required=True)
     parser.add_argument("--grant-issuer-private-key-file", required=True)
-    parser.add_argument("--vault-socket", default="/run/zhixu/vault.sock")
+    parser.add_argument("--vault-socket", default="/run/zhixu/vault/vault.sock")
     parser.add_argument("--outbound-target-database", default="")
     parser.add_argument("--outbound-field-key-file", default="")
     parser.add_argument("--outbound-accounts-file", default="")

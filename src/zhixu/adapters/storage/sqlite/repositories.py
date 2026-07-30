@@ -1207,6 +1207,59 @@ class ReminderRepository:
             ).fetchone()
         return self._from_row(row) if row is not None else None
 
+    def list_for_owner(self, owner_user_id: str) -> list[Reminder]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM reminders
+                WHERE owner_user_id=?
+                ORDER BY
+                    CASE status
+                        WHEN 'pending' THEN 0
+                        WHEN 'fired' THEN 1
+                        ELSE 2
+                    END,
+                    fire_at,id
+                """,
+                (owner_user_id,),
+            ).fetchall()
+        return [self._from_row(row) for row in rows]
+
+    def cancel(
+        self,
+        reminder_id: str,
+        *,
+        expected_version: int,
+        authorization: AuthorizedAction,
+    ) -> Reminder:
+        existing = self.get(reminder_id)
+        if existing is None:
+            raise NotFoundError("reminder not found")
+        _require_authorization(
+            authorization,
+            action=Action.UPDATE,
+            kind="reminder",
+            resource_id=existing.id,
+            owner_user_id=existing.owner_user_id,
+            classification=existing.classification,
+        )
+        now_text = _dump_datetime(authorization.authorized_at)
+        with self.database.transaction() as connection:
+            changed = connection.execute(
+                """
+                UPDATE reminders
+                SET status='cancelled',version=version+1,updated_at=?
+                WHERE id=? AND version=? AND status IN ('pending','fired')
+                """,
+                (now_text, reminder_id, expected_version),
+            ).rowcount
+            if changed != 1:
+                raise ConflictError("reminder is already cancelled")
+            _audit(connection, authorization, reason_code="cancelled")
+        updated = self.get(reminder_id)
+        assert updated is not None
+        return updated
+
     def acknowledge(
         self,
         reminder_id: str,

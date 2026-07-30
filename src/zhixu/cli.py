@@ -54,7 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
     doctor = commands.add_parser("doctor")
     doctor.add_argument("--api-url", default="http://127.0.0.1:8840")
     doctor.add_argument("--database", default="/var/lib/zhixu/zhixu.sqlite3")
-    doctor.add_argument("--vault-socket", default="/run/zhixu/vault.sock")
+    doctor.add_argument("--vault-socket", default="/run/zhixu/vault/vault.sock")
 
     commands.add_parser("preflight")
 

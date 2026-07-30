@@ -13,10 +13,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 class IntentAction(StrEnum):
     LIST_AGENDA = "list_agenda"
     LIST_TASKS = "list_tasks"
+    LIST_REMINDERS = "list_reminders"
     SEARCH_NOTES = "search_notes"
     CREATE_TASK = "create_task"
     CREATE_NOTE = "create_note"
     CREATE_REMINDER = "create_reminder"
+    CANCEL_REMINDER = "cancel_reminder"
     ACKNOWLEDGE_REMINDER = "acknowledge_reminder"
     SNOOZE_REMINDER = "snooze_reminder"
     COMPLETE_TASK = "complete_task"
@@ -45,6 +47,7 @@ class ModelIntentProposal(BaseModel):
     fire_at: datetime | None = None
     due_at: datetime | None = None
     task_id: str | None = Field(default=None, max_length=160)
+    reminder_id: str | None = Field(default=None, max_length=160)
     resource_id: str | None = Field(default=None, max_length=160)
 
     @field_validator("fire_at", "due_at")

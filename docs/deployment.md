@@ -135,7 +135,7 @@ sudo -u zhixu-vault /opt/zhixu/current/venv/bin/zhixu-vault \
   initialize --database /var/lib/zhixu-vault/vault.sqlite3
 sudo systemctl restart zhixu-vault
 sudo -u zhixu-vault /opt/zhixu/current/venv/bin/zhixu-vault \
-  unlock --socket /run/zhixu/vault.sock
+  unlock --socket /run/zhixu/vault/vault.sock
 ```
 
 The vault passphrase is read from the TTY. It must never be supplied through argv, an

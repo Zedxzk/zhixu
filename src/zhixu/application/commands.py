@@ -134,6 +134,11 @@ class CreateReminder:
 
 
 @dataclass(frozen=True, slots=True)
+class CancelReminder:
+    reminder_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class AcknowledgeReminder:
     reminder_id: str
 
@@ -158,6 +163,7 @@ Command = (
     | UpdateNote
     | DeleteNote
     | CreateReminder
+    | CancelReminder
     | AcknowledgeReminder
     | SnoozeReminder
 )

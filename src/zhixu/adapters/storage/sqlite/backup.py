@@ -3,17 +3,22 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import json
 import os
 import sqlite3
+import stat
 import tempfile
 from contextlib import suppress
 from pathlib import Path
+from typing import Any
 
 from argon2.low_level import Type, hash_secret_raw
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from .database import Database
+
+MAX_BACKUP_ENVELOPE_BYTES = 2 * 1024 * 1024 * 1024
 
 
 class ApplicationBackupManager:
@@ -22,9 +27,10 @@ class ApplicationBackupManager:
 
     def create(self, destination: str | Path, *, backup_passphrase: str) -> Path:
         target = Path(destination)
-        if target.exists():
+        if target.exists() or target.is_symlink():
             raise FileExistsError("backup destination already exists")
         target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        _require_real_directory(target.parent)
         handle, temporary_name = tempfile.mkstemp(
             prefix="zhixu-app-backup-",
             suffix=".sqlite3",
@@ -77,32 +83,57 @@ class ApplicationBackupManager:
         backup_passphrase: str,
     ) -> Database:
         target = Path(destination)
-        if target.exists():
+        if target.exists() or target.is_symlink():
             raise FileExistsError("restore destination already exists")
-        envelope = json.loads(Path(source).read_text(encoding="utf-8"))
-        if envelope.get("format") != "zhixu-application-backup-v1":
+        envelope = _read_envelope(Path(source))
+        if (
+            set(envelope) != {"format", "salt", "nonce", "ciphertext"}
+            or envelope.get("format") != "zhixu-application-backup-v1"
+        ):
             raise ValueError("unsupported application backup format")
-        key = _derive(backup_passphrase, _decode(str(envelope["salt"])))
+        salt = _decode(envelope["salt"])
+        nonce = _decode(envelope["nonce"])
+        ciphertext = _decode(envelope["ciphertext"])
+        if len(salt) != 16 or len(nonce) != 12 or len(ciphertext) < 16:
+            raise ValueError("application backup cryptographic fields are invalid")
+        key = _derive(backup_passphrase, salt)
         try:
             plaintext = AESGCM(key).decrypt(
-                _decode(str(envelope["nonce"])),
-                _decode(str(envelope["ciphertext"])),
+                nonce,
+                ciphertext,
                 b"zhixu-application-backup-v1",
             )
         except Exception as exc:
             raise PermissionError("application backup decryption failed") from exc
+        if not plaintext.startswith(b"SQLite format 3\0"):
+            raise ValueError("application backup plaintext is not a SQLite database")
         target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        temporary = target.with_name(f".{target.name}.restore-{os.getpid()}")
+        _require_real_directory(target.parent)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{target.name}.restore-",
+            suffix=".partial",
+            dir=target.parent,
+        )
+        temporary = Path(temporary_name)
         try:
-            temporary.write_bytes(plaintext)
-            with sqlite3.connect(temporary) as connection:
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "wb", closefd=False) as output:
+                output.write(plaintext)
+                output.flush()
+                os.fsync(descriptor)
+            with sqlite3.connect(
+                f"{temporary.resolve().as_uri()}?mode=ro",
+                uri=True,
+            ) as connection:
+                connection.execute("PRAGMA query_only=ON")
                 row = connection.execute("PRAGMA integrity_check").fetchone()
                 if row is None or str(row[0]) != "ok":
                     raise RuntimeError("restored application database failed integrity check")
-            os.replace(temporary, target)
-            with suppress(OSError):
-                target.chmod(0o600)
+            os.link(temporary, target)
+            _fsync_directory(target.parent)
         finally:
+            with suppress(OSError):
+                os.close(descriptor)
             with suppress(OSError):
                 temporary.unlink()
         return Database(target)
@@ -126,8 +157,44 @@ def _encode(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).decode()
 
 
-def _decode(value: str) -> bytes:
-    return base64.urlsafe_b64decode(value)
+def _decode(value: Any) -> bytes:
+    if not isinstance(value, str) or len(value) > MAX_BACKUP_ENVELOPE_BYTES:
+        raise ValueError("application backup Base64 field is invalid")
+    try:
+        return base64.b64decode(value, altchars=b"-_", validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("application backup Base64 field is invalid") from exc
+
+
+def _read_envelope(path: Path) -> dict[str, Any]:
+    metadata = path.lstat()
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_size <= 0
+        or metadata.st_size > MAX_BACKUP_ENVELOPE_BYTES
+    ):
+        raise ValueError("application backup file is invalid")
+
+    def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError("application backup contains a duplicate JSON key")
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(path.read_bytes(), object_pairs_hook=pairs)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("application backup JSON is invalid") from exc
+    if not isinstance(value, dict):
+        raise ValueError("application backup envelope is invalid")
+    return value
+
+
+def _require_real_directory(path: Path) -> None:
+    if not stat.S_ISDIR(path.lstat().st_mode):
+        raise PermissionError("backup directory must not be a symlink")
 
 
 def _atomic_write(target: Path, payload: bytes) -> None:
@@ -143,9 +210,18 @@ def _atomic_write(target: Path, payload: bytes) -> None:
             output.write(payload)
             output.flush()
             os.fsync(output.fileno())
-        os.replace(temporary, target)
+        os.link(temporary, target)
+        _fsync_directory(target.parent)
     finally:
         with suppress(OSError):
             os.close(handle)
         with suppress(OSError):
             temporary.unlink()
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)

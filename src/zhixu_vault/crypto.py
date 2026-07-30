@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import json
 import os
 from collections.abc import Callable
@@ -28,7 +29,14 @@ def seal(key: bytes, plaintext: bytes, *, context: str) -> str:
 def open_sealed(key: bytes, value: str, *, context: str) -> bytes:
     if not value.startswith(_PREFIX):
         raise ValueError("unsupported encrypted value")
-    raw = base64.urlsafe_b64decode(value.removeprefix(_PREFIX))
+    try:
+        raw = base64.b64decode(
+            value.removeprefix(_PREFIX),
+            altchars=b"-_",
+            validate=True,
+        )
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("invalid encrypted value") from exc
     if len(raw) < 29:
         raise ValueError("invalid encrypted value")
     return AESGCM(key).decrypt(raw[:12], raw[12:], context.encode())
@@ -41,8 +49,12 @@ class Argon2Parameters:
     parallelism: int = 4
 
     def __post_init__(self) -> None:
-        if self.time_cost < 2 or self.memory_cost_kib < 32_768 or self.parallelism < 1:
-            raise ValueError("Argon2id parameters are below the supported security floor")
+        if (
+            not 2 <= self.time_cost <= 10
+            or not 32_768 <= self.memory_cost_kib <= 1_048_576
+            or not 1 <= self.parallelism <= 16
+        ):
+            raise ValueError("Argon2id parameters are outside the supported bounds")
 
     def derive(self, passphrase: str, salt: bytes) -> bytes:
         if len(passphrase) < 12:

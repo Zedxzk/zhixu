@@ -66,10 +66,14 @@ install -d -o zhixu -g zhixu -m 0700 /var/backups/zhixu/application
 install -d -o zhixu -g zhixu -m 0700 /var/backups/zhixu/qq
 install -d -o zhixu -g zhixu -m 0700 /var/backups/zhixu/outbound
 install -d -o zhixu-vault -g zhixu-vault -m 0700 /var/backups/zhixu/vault
-install -d -o root -g zhixu-vault-client -m 0770 /run/zhixu
+install -d -o root -g root -m 0755 /run/zhixu
+install -d -o zhixu-vault -g zhixu-vault-client -m 0750 /run/zhixu/vault
+install -d -o zhixu-integration -g zhixu-vault-client -m 0750 /run/zhixu/integration
 
 install -o root -g root -m 0644 /dev/stdin /etc/tmpfiles.d/zhixu.conf <<'EOF'
-d /run/zhixu 0770 root zhixu-vault-client -
+d /run/zhixu 0755 root root -
+d /run/zhixu/vault 0750 zhixu-vault zhixu-vault-client -
+d /run/zhixu/integration 0750 zhixu-integration zhixu-vault-client -
 EOF
 
 echo "Local Zhixu service accounts and isolated data directories are ready."

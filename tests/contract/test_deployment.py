@@ -51,15 +51,35 @@ def test_runtime_units_preserve_network_and_database_boundaries() -> None:
 
     assert "PrivateNetwork=yes" in vault
     assert "RestrictAddressFamilies=AF_UNIX" in vault
-    assert "--executor pat=/run/zhixu/pat-executor.sock" in vault
+    assert "--socket /run/zhixu/vault/vault.sock" in vault
+    assert "--executor pat=/run/zhixu/integration/pat-executor.sock" in vault
+    assert "ReadWritePaths=/var/lib/zhixu-vault /run/zhixu/vault" in vault
     assert "InaccessiblePaths=/var/lib/zhixu" in vault
 
     assert "User=zhixu-integration" in executor
+    assert "--socket /run/zhixu/integration/pat-executor.sock" in executor
+    assert "ReadWritePaths=/run/zhixu/integration" in executor
     assert "--allowed-user zhixu-vault" in executor
     assert (
         "InaccessiblePaths=/var/lib/zhixu /var/lib/zhixu-vault "
         "/etc/zhixu/credentials"
     ) in executor
+
+
+def test_runtime_socket_directories_cannot_be_replaced_by_clients() -> None:
+    bootstrap = (
+        ROOT / "scripts" / "deploy" / "00_bootstrap_root.sh"
+    ).read_text(encoding="utf-8")
+    assert "0755 /run/zhixu" in bootstrap
+    assert (
+        "zhixu-vault -g zhixu-vault-client -m 0750 /run/zhixu/vault"
+        in bootstrap
+    )
+    assert (
+        "zhixu-integration -g zhixu-vault-client -m 0750 "
+        "/run/zhixu/integration"
+    ) in bootstrap
+    assert "0770 /run/zhixu" not in bootstrap
 
 
 def test_every_systemd_entrypoint_exists_in_the_package_manifest() -> None:

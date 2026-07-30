@@ -18,6 +18,7 @@ from zhixu.ports import LLMRequest
 
 from .commands import (
     AcknowledgeReminder,
+    CancelReminder,
     CreateNote,
     CreateReminder,
     CreateTask,
@@ -28,7 +29,7 @@ from .commands import (
 from .intent_router import ModelIntentClassifier, RuleIntentRouter
 from .intents import AssistantReply, IntentAction, ParsedIntent
 from .llm import LLMGateway
-from .queries import AgendaBetween, ListTasks, SearchNotes
+from .queries import AgendaBetween, ListReminders, ListTasks, SearchNotes
 from .services import ZhixuServices
 
 
@@ -119,6 +120,22 @@ class AssistantEngine:
                 return AssistantReply("目前没有待办。", "ok", intent.source)
             lines = [f"{task.id} [{task.status.value}] {task.title}" for task in tasks]
             return AssistantReply("\n".join(lines), "ok", intent.source)
+        if intent.action is IntentAction.LIST_REMINDERS:
+            reminders = self.services.query_bus().execute(
+                ListReminders(),
+                context,
+            )
+            if not reminders:
+                return AssistantReply("目前没有待处理提醒。", "ok", intent.source)
+            lines = [
+                (
+                    f"{reminder.id} [{reminder.status.value}] "
+                    f"{reminder.fire_at.astimezone(self.router.timezone):%m-%d %H:%M} "
+                    f"{reminder.title}"
+                )
+                for reminder in reminders
+            ]
+            return AssistantReply("\n".join(lines), "ok", intent.source)
         if intent.action is IntentAction.SEARCH_NOTES:
             query = str(arguments.get("query") or "").strip()
             if not query:
@@ -173,6 +190,19 @@ class AssistantEngine:
             )
             return AssistantReply(
                 f"已完成提醒：{reminder.title}",
+                "updated",
+                intent.source,
+            )
+        if intent.action is IntentAction.CANCEL_REMINDER:
+            reminder_id = str(arguments.get("reminder_id") or "").strip()
+            if not reminder_id:
+                return AssistantReply("提醒标识无效。", "invalid_intent", intent.source)
+            reminder = self.services.command_bus().execute(
+                CancelReminder(reminder_id),
+                context,
+            )
+            return AssistantReply(
+                f"已取消提醒：{reminder.title}",
                 "updated",
                 intent.source,
             )

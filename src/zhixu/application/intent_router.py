@@ -20,6 +20,7 @@ _MUTATING_MODEL_ACTIONS = {
     IntentAction.CREATE_TASK,
     IntentAction.CREATE_NOTE,
     IntentAction.CREATE_REMINDER,
+    IntentAction.CANCEL_REMINDER,
     IntentAction.ACKNOWLEDGE_REMINDER,
     IntentAction.SNOOZE_REMINDER,
     IntentAction.COMPLETE_TASK,
@@ -48,6 +49,12 @@ class RuleIntentRouter:
             "查看任务",
         }:
             return ParsedIntent(IntentAction.LIST_TASKS)
+        if value in {"/提醒", "/提醒列表"} or compact in {
+            "有哪些提醒",
+            "我的提醒",
+            "查看提醒",
+        }:
+            return ParsedIntent(IntentAction.LIST_REMINDERS)
         for prefix in ("/搜索 ", "/查备忘 ", "搜索备忘 ", "查备忘 "):
             if value.startswith(prefix) and value.removeprefix(prefix).strip():
                 return ParsedIntent(
@@ -99,6 +106,15 @@ class RuleIntentRouter:
             return ParsedIntent(
                 IntentAction.ACKNOWLEDGE_REMINDER,
                 {"reminder_id": acknowledged_reminder.group(1)},
+            )
+        cancelled_reminder = re.fullmatch(
+            r"/取消提醒\s+([A-Za-z0-9_-]{1,160})",
+            value,
+        )
+        if cancelled_reminder:
+            return ParsedIntent(
+                IntentAction.CANCEL_REMINDER,
+                {"reminder_id": cancelled_reminder.group(1)},
             )
         snoozed_reminder = re.fullmatch(
             r"/提醒稍后\s+([A-Za-z0-9_-]{1,160})(?:\s+(\d{1,4})分钟)?",
@@ -233,6 +249,7 @@ class ModelIntentClassifier:
                 "fire_at": proposal.fire_at,
                 "due_at": proposal.due_at,
                 "task_id": proposal.task_id,
+                "reminder_id": proposal.reminder_id,
                 "resource_id": proposal.resource_id,
             }.items()
             if value is not None

@@ -166,6 +166,13 @@ def test_fixed_commands_and_rule_parsing_never_call_model(
         context,
         target_ref="qqc_synthetic_target",
     )
+    reminders = services.reminders.list_for_owner("user_test")
+    listed_reminders = engine.handle("/提醒", context)
+    cancelled_reminder = engine.handle(
+        f"/取消提醒 {reminders[0].id}",
+        context,
+    )
+    remaining_reminders = engine.handle("/提醒列表", context)
     first_task = services.tasks.list_for_owner("user_test")[0]
     completed = engine.handle(f"/完成 {first_task.id}", context)
     engine.handle("/任务 Synthetic postponable task", context)
@@ -188,6 +195,10 @@ def test_fixed_commands_and_rule_parsing_never_call_model(
     assert "handbook" in searched.text
     assert reminder.code == "created"
     assert later.code == "created"
+    assert reminders[0].id in listed_reminders.text
+    assert cancelled_reminder.code == "updated"
+    assert reminders[0].id not in remaining_reminders.text
+    assert reminders[1].id in remaining_reminders.text
     assert completed.code == "updated"
     assert postponed.code == "updated"
     assert today.code == "ok"
