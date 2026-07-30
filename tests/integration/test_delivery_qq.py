@@ -1,0 +1,564 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from zhixu.adapters.channels.qq import (
+    InboundAdmission,
+    InboundReceiptStore,
+    QQBotCredentials,
+    QQContactStore,
+    QQGatewayProtocol,
+    QQGatewayState,
+    QQHttpAdapter,
+)
+from zhixu.adapters.channels.qq.gateway import QQEventMapper, QQGatewaySessionStore
+from zhixu.adapters.storage.sqlite import Database, UserRepository
+from zhixu.channels import (
+    ChannelCapabilities,
+    ChannelDeliveryResult,
+    ConversationKind,
+    InboundEvent,
+    MessageButton,
+    MessageKind,
+    OutboundMessage,
+)
+from zhixu.delivery import (
+    DeliveryWorker,
+    OutboxStore,
+    QuotaManager,
+    QuotaRule,
+    QuotaScope,
+    render_for_capabilities,
+)
+from zhixu.delivery.quota import QuotaWindow
+from zhixu.domain import (
+    Action,
+    CommandContext,
+    EncryptedIdentifier,
+    ExternalIdentity,
+    PolicyEngine,
+    ResourceRef,
+    User,
+    UserStatus,
+)
+from zhixu.domain.errors import ConflictError
+from zhixu.security import FieldCipher, OpaqueReferenceFactory
+
+NOW = datetime(2026, 6, 1, 8, tzinfo=UTC)
+
+
+@pytest.fixture
+def database(tmp_path: Path) -> Database:
+    value = Database(tmp_path / "zhixu.sqlite3")
+    assert value.migrate() == [1, 2]
+    return value
+
+
+@pytest.fixture
+def privacy_primitives() -> tuple[FieldCipher, OpaqueReferenceFactory]:
+    return FieldCipher(b"K" * 32), OpaqueReferenceFactory(b"R" * 32)
+
+
+def create_user(database: Database, user_id: str = "user_test") -> UserRepository:
+    users = UserRepository(database)
+    user = User(user_id, "Synthetic User", UserStatus.ACTIVE, NOW)
+    authorization = PolicyEngine().require(
+        CommandContext(actor_user_id=user_id, now=NOW),
+        Action.CREATE,
+        ResourceRef("user", user_id, user_id),
+    )
+    users.create(user, authorization)
+    return users
+
+
+def register_account(
+    database: Database,
+    privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
+    account_id: str = "bot_test_a",
+) -> QQContactStore:
+    cipher, references = privacy_primitives
+    contacts = QQContactStore(database, cipher, references)
+    contacts.register_account(
+        account_id,
+        label="Synthetic bot",
+        config_ref="config_opaque_test",
+        now=NOW,
+    )
+    return contacts
+
+
+def test_outbox_recovers_expired_lease_and_dead_letters(
+    database: Database,
+) -> None:
+    create_user(database)
+    message = OutboundMessage(
+        channel="qq",
+        channel_account="bot_test_a",
+        target_ref="qqc_synthetic",
+        kind=MessageKind.TEXT,
+        text="Synthetic outbound reminder",
+    )
+    outbox = OutboxStore(database, backoff_seconds=(5,))
+
+    assert outbox.enqueue(
+        delivery_id="delivery_test",
+        idempotency_key="idempotency_test",
+        owner_user_id="user_test",
+        message=message,
+        now=NOW,
+    )
+    assert not outbox.enqueue(
+        delivery_id="delivery_duplicate",
+        idempotency_key="idempotency_test",
+        owner_user_id="user_test",
+        message=message,
+        now=NOW,
+    )
+    first = outbox.claim(worker_id="worker_a", now=NOW)
+    assert first is not None
+    recovered_at = NOW + timedelta(seconds=31)
+    recovered = outbox.claim(worker_id="worker_b", now=recovered_at)
+    assert recovered is not None
+    assert recovered.attempts == 2
+    assert recovered.lease_token != first.lease_token
+
+    with pytest.raises(ConflictError):
+        outbox.complete(first, ChannelDeliveryResult(True), now=recovered_at)
+
+    assert (
+        outbox.complete(
+            recovered,
+            ChannelDeliveryResult(False, True, "network_unavailable"),
+            now=recovered_at,
+        )
+        == "retry_wait"
+    )
+    assert outbox.claim(worker_id="worker_b", now=recovered_at + timedelta(seconds=4)) is None
+    final = outbox.claim(worker_id="worker_b", now=recovered_at + timedelta(seconds=5))
+    assert final is not None
+    assert (
+        outbox.complete(
+            final,
+            ChannelDeliveryResult(False, False, "provider_rejected"),
+            now=recovered_at + timedelta(seconds=5),
+        )
+        == "dead"
+    )
+    assert outbox.retry_dead(
+        "dead_delivery_test",
+        actor_user_id="user_test",
+        now=recovered_at + timedelta(seconds=6),
+    )
+    assert outbox.get_status("delivery_test") == "pending"
+
+
+def test_delivery_worker_composes_quota_rendering_and_adapter(
+    database: Database,
+) -> None:
+    create_user(database)
+    outbox = OutboxStore(database)
+    assert outbox.enqueue(
+        delivery_id="delivery_worker_test",
+        idempotency_key="delivery_worker_idempotency",
+        owner_user_id="user_test",
+        message=OutboundMessage(
+            channel="qq",
+            channel_account="bot_test_a",
+            target_ref="qqc_worker_test",
+            kind=MessageKind.BUTTON,
+            text="Synthetic worker message",
+            buttons=(MessageButton("Run", "/run"),),
+        ),
+        now=NOW,
+    )
+
+    class TextOnlyAdapter:
+        channel = "qq"
+        channel_account = "bot_test_a"
+        capabilities = ChannelCapabilities(outbound_text=True)
+
+        def __init__(self) -> None:
+            self.sent: list[OutboundMessage] = []
+
+        def send(self, message: OutboundMessage) -> ChannelDeliveryResult:
+            self.sent.append(message)
+            if len(self.sent) == 1:
+                return ChannelDeliveryResult(False, True, "network_unavailable")
+            return ChannelDeliveryResult(True, provider_message_id="provider_test")
+
+    adapter = TextOnlyAdapter()
+    quota = QuotaManager(
+        database,
+        (
+            QuotaRule("provider", QuotaWindow.SECOND, 5),
+            QuotaRule("account", QuotaWindow.MINUTE, 5),
+            QuotaRule("conversation", QuotaWindow.DAY, 5),
+            QuotaRule("user", QuotaWindow.DAY, 5),
+        ),
+    )
+    worker = DeliveryWorker(
+        worker_id="worker_test",
+        outbox=outbox,
+        quota=quota,
+        adapters=(adapter,),
+    )
+
+    assert worker.tick(now=NOW) == "retry_wait"
+    assert worker.tick(now=NOW + timedelta(seconds=5)) == "sent"
+    assert outbox.get_status("delivery_worker_test") == "sent"
+    assert adapter.sent[0].kind is MessageKind.TEXT
+    assert "/run" in adapter.sent[0].text
+
+
+def test_quota_reservation_is_atomic_across_scopes(database: Database) -> None:
+    manager = QuotaManager(
+        database,
+        (
+            QuotaRule("provider", QuotaWindow.SECOND, 2),
+            QuotaRule("account", QuotaWindow.MINUTE, 1),
+            QuotaRule("conversation", QuotaWindow.DAY, 5),
+            QuotaRule("user", QuotaWindow.DAY, 5),
+        ),
+    )
+
+    def scopes(account: str) -> tuple[QuotaScope, ...]:
+        return (
+            QuotaScope("provider", "qq"),
+            QuotaScope("account", account),
+            QuotaScope("conversation", f"conversation_{account}"),
+            QuotaScope("user", f"user_{account}"),
+        )
+
+    assert manager.reserve(scopes("a"), now=NOW).allowed
+    blocked = manager.reserve(scopes("a"), now=NOW)
+    assert not blocked.allowed
+    assert "account:minute" in blocked.reason_code
+    assert manager.reserve(scopes("b"), now=NOW).allowed
+    assert not manager.reserve(scopes("c"), now=NOW).allowed
+
+
+def test_same_identifier_is_isolated_per_bot_and_encrypted_at_rest(
+    database: Database,
+    privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
+) -> None:
+    contacts = register_account(database, privacy_primitives, "bot_test_a")
+    contacts.register_account(
+        "bot_test_b",
+        label="Second synthetic bot",
+        config_ref="config_opaque_second",
+        now=NOW,
+    )
+    raw_identifier = "openid-private-canary"
+    first = contacts.record(
+        channel_account="bot_test_a",
+        kind="private",
+        external_identifier=raw_identifier,
+        now=NOW,
+    )
+    second = contacts.record(
+        channel_account="bot_test_b",
+        kind="private",
+        external_identifier=raw_identifier,
+        now=NOW,
+    )
+
+    assert first != second
+    assert contacts.resolve("bot_test_a", first).identifier == raw_identifier
+    assert contacts.resolve("bot_test_b", second).identifier == raw_identifier
+    database_bytes = database.path.read_bytes()
+    wal = database.path.with_name(database.path.name + "-wal")
+    if wal.exists():
+        database_bytes += wal.read_bytes()
+    assert raw_identifier.encode() not in database_bytes
+
+
+def test_inbound_admission_requires_binding_and_explicit_group_trigger(
+    database: Database,
+    privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
+) -> None:
+    users = create_user(database)
+    contacts = register_account(database, privacy_primitives)
+    actor_ref = contacts.record(
+        channel_account="bot_test_a",
+        kind="actor",
+        external_identifier="member-openid-canary",
+        now=NOW,
+    )
+    conversation_ref = contacts.record(
+        channel_account="bot_test_a",
+        kind="group",
+        external_identifier="group-openid-canary",
+        now=NOW,
+    )
+    policy = PolicyEngine()
+    identity = ExternalIdentity(
+        id="identity_test",
+        user_id="user_test",
+        channel="qq",
+        channel_account="bot_test_a",
+        encrypted_subject=EncryptedIdentifier("enc:synthetic"),
+        opaque_ref=actor_ref,
+        created_at=NOW,
+    )
+    users.bind_identity(
+        identity,
+        policy.require(
+            CommandContext(actor_user_id="user_test", now=NOW),
+            Action.CREATE,
+            ResourceRef("external_identity", identity.id, "user_test"),
+        ),
+    )
+    admission = InboundAdmission(users, contacts)
+
+    unknown_private = InboundEvent(
+        event_id="event_private_unbound",
+        channel="qq",
+        channel_account="bot_test_a",
+        external_actor_ref="qqc_unknown_actor",
+        external_conversation_ref="qqc_unknown_actor",
+        conversation_kind=ConversationKind.PRIVATE,
+        message_kind=MessageKind.TEXT,
+        received_at=NOW,
+        text="/today",
+    )
+    assert admission.decide(unknown_private).reason_code == "identity_unbound"
+
+    ordinary_group = InboundEvent(
+        event_id="event_group_1",
+        channel="qq",
+        channel_account="bot_test_a",
+        external_actor_ref=actor_ref,
+        external_conversation_ref=conversation_ref,
+        conversation_kind=ConversationKind.GROUP,
+        message_kind=MessageKind.TEXT,
+        received_at=NOW,
+        text="ordinary chat",
+    )
+    assert admission.decide(ordinary_group).reason_code == "group_trigger_required"
+
+    slash_group = InboundEvent(
+        event_id="event_group_2",
+        channel="qq",
+        channel_account="bot_test_a",
+        external_actor_ref=actor_ref,
+        external_conversation_ref=conversation_ref,
+        conversation_kind=ConversationKind.GROUP,
+        message_kind=MessageKind.TEXT,
+        received_at=NOW,
+        text="/today",
+    )
+    assert admission.decide(slash_group).reason_code == "conversation_disabled"
+    assert contacts.set_commands_enabled(
+        "bot_test_a",
+        conversation_ref,
+        enabled=True,
+    )
+    assert admission.decide(slash_group).accepted
+
+
+def test_inbound_body_is_not_persisted_or_exposed_by_repr(
+    database: Database,
+    privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
+) -> None:
+    _cipher, references = privacy_primitives
+    canary = "inbound-body-canary-do-not-persist"
+    event = InboundEvent(
+        event_id="event_private_test",
+        channel="qq",
+        channel_account="bot_test_a",
+        external_actor_ref="qqc_actor_test",
+        external_conversation_ref="qqc_private_test",
+        conversation_kind=ConversationKind.PRIVATE,
+        message_kind=MessageKind.TEXT,
+        received_at=NOW,
+        text=canary,
+    )
+    receipts = InboundReceiptStore(database, references)
+    assert receipts.record(
+        event,
+        type("Decision", (), {"reason_code": "identity_unbound"})(),
+    )
+    assert canary not in repr(event)
+
+    database_bytes = database.path.read_bytes()
+    wal = database.path.with_name(database.path.name + "-wal")
+    if wal.exists():
+        database_bytes += wal.read_bytes()
+    assert canary.encode() not in database_bytes
+
+
+class FakeTransport:
+    def __init__(self) -> None:
+        self.requests: list[tuple[str, dict[str, Any] | None]] = []
+
+    def request(
+        self,
+        url: str,
+        *,
+        method: str = "GET",
+        payload: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        timeout: float = 10,
+    ) -> tuple[int, dict[str, Any]]:
+        del method, headers, timeout
+        self.requests.append((url, payload))
+        if url.endswith("getAppAccessToken"):
+            return 200, {"access_token": "synthetic-token", "expires_in": 7200}
+        if url.endswith("/files"):
+            return 200, {"file_info": "synthetic-file"}
+        return 200, {"id": "provider-message-test"}
+
+
+def test_qq_http_supports_text_buttons_and_image(
+    database: Database,
+    privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
+) -> None:
+    contacts = register_account(database, privacy_primitives)
+    target_ref = contacts.record(
+        channel_account="bot_test_a",
+        kind="private",
+        external_identifier="private-openid-http-test",
+        now=NOW,
+    )
+    transport = FakeTransport()
+    adapter = QQHttpAdapter(
+        QQBotCredentials("bot_test_a", "synthetic-app", "synthetic-secret"),
+        contacts,
+        transport=transport,
+    )
+    result = adapter.send(
+        OutboundMessage(
+            channel="qq",
+            channel_account="bot_test_a",
+            target_ref=target_ref,
+            kind=MessageKind.ATTACHMENT,
+            text="Synthetic rich message",
+            buttons=(MessageButton("Confirm", "/confirm"),),
+            attachment_url="https://example.invalid/image.png",
+        )
+    )
+
+    assert result.ok
+    assert result.provider_message_id == "provider-message-test"
+    assert any(url.endswith("/files") for url, _payload in transport.requests)
+    final_payload = transport.requests[-1][1]
+    assert final_payload is not None
+    assert final_payload["media"]["file_info"] == "synthetic-file"
+
+
+def test_gateway_persists_resume_state_encrypted_and_emits_ephemeral_event(
+    database: Database,
+    privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
+) -> None:
+    cipher, _references = privacy_primitives
+    contacts = register_account(database, privacy_primitives)
+    store = QQGatewaySessionStore(database, cipher)
+    mapper = QQEventMapper("bot_test_a", contacts)
+    received: list[InboundEvent] = []
+    protocol = QQGatewayProtocol(
+        channel_account="bot_test_a",
+        mapper=mapper,
+        session_store=store,
+        on_event=received.append,
+    )
+    assert protocol.handle(
+        {
+            "op": 0,
+            "t": "READY",
+            "s": 7,
+            "d": {
+                "session_id": "session-canary",
+                "resume_gateway_url": "wss://example.invalid/resume",
+            },
+        },
+        received_at=NOW,
+    ) == "ready"
+    assert protocol.handshake_payload("synthetic-token")["op"] == 6
+    assert protocol.handle(
+        {
+            "op": 0,
+            "t": "GROUP_AT_MESSAGE_CREATE",
+            "s": 8,
+            "d": {
+                "id": "event_gateway_test",
+                "content": "gateway-body-canary",
+                "group_openid": "group-openid-gateway-canary",
+                "author": {"member_openid": "member-openid-gateway-canary"},
+            },
+        },
+        received_at=NOW,
+    ) == "event"
+    assert len(received) == 1
+    assert received[0].text == "gateway-body-canary"
+    restored = store.load("bot_test_a")
+    assert restored == QQGatewayState(
+        session_id="session-canary",
+        sequence=8,
+        resume_url="wss://example.invalid/resume",
+    )
+
+    database_bytes = database.path.read_bytes()
+    wal = database.path.with_name(database.path.name + "-wal")
+    if wal.exists():
+        database_bytes += wal.read_bytes()
+    for canary in (
+        b"session-canary",
+        b"group-openid-gateway-canary",
+        b"member-openid-gateway-canary",
+        b"gateway-body-canary",
+    ):
+        assert canary not in database_bytes
+
+
+def test_gateway_error_log_does_not_include_exception_message(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from zhixu.adapters.channels.qq.gateway import QQGatewayRunner
+
+    class FailingAdapter:
+        def access_token(self) -> str:
+            raise RuntimeError("sensitive-log-canary")
+
+    class StopAfterRetry:
+        stopped = False
+
+        def is_set(self) -> bool:
+            return self.stopped
+
+        def wait(self, _delay: float) -> None:
+            self.stopped = True
+
+    runner = QQGatewayRunner(
+        FailingAdapter(),  # type: ignore[arg-type]
+        object(),  # type: ignore[arg-type]
+    )
+    with caplog.at_level("WARNING"):
+        runner.run(StopAfterRetry())  # type: ignore[arg-type]
+
+    assert "RuntimeError" in caplog.text
+    assert "sensitive-log-canary" not in caplog.text
+
+
+def test_renderer_degrades_unsupported_rich_content() -> None:
+    rendered = render_for_capabilities(
+        OutboundMessage(
+            channel="qq",
+            channel_account="bot_test_a",
+            target_ref="qqc_test",
+            kind=MessageKind.ATTACHMENT,
+            text="Synthetic",
+            buttons=(MessageButton("Open", "/open"),),
+            attachment_url="https://example.invalid/file.png",
+        ),
+        ChannelCapabilities(outbound_text=True),
+    )
+
+    assert rendered.kind is MessageKind.TEXT
+    assert rendered.buttons == ()
+    assert rendered.attachment_url is None
+    assert "/open" in rendered.text
+    assert "https://example.invalid/file.png" in rendered.text

@@ -1013,32 +1013,52 @@ class ReminderRepository:
                 ).hexdigest()[:24]
                 payload = json.dumps(
                     {
-                        "type": "reminder",
+                        "text": reminder.title,
                         "reminder_id": reminder.id,
-                        "title": reminder.title,
+                        "buttons": [],
+                        "attachment_url": None,
                     },
                     ensure_ascii=False,
                     separators=(",", ":"),
+                )
+                target = connection.execute(
+                    """
+                    SELECT accounts.channel,contacts.channel_account_id
+                    FROM channel_contacts AS contacts
+                    JOIN channel_accounts AS accounts
+                      ON accounts.id=contacts.channel_account_id
+                    WHERE contacts.opaque_ref=?
+                    ORDER BY contacts.last_seen_at DESC
+                    LIMIT 1
+                    """,
+                    (reminder.target_ref,),
+                ).fetchone()
+                channel = str(target["channel"]) if target is not None else ""
+                channel_account = (
+                    str(target["channel_account_id"]) if target is not None else ""
                 )
                 cursor = connection.execute(
                     """
                     INSERT OR IGNORE INTO outbox_deliveries(
                         id,idempotency_key,owner_user_id,target_ref,message_kind,
                         payload_json,classification,priority,status,attempts,max_attempts,
-                        next_attempt_at,last_error_code,created_at,updated_at
-                    ) VALUES(?,?,?,?,?,?,?,10,'pending',0,5,?,'',?,?)
+                        next_attempt_at,last_error_code,created_at,updated_at,
+                        channel,channel_account
+                    ) VALUES(?,?,?,?,?,?,?,10,'pending',0,5,?,'',?,?,?,?)
                     """,
                     (
                         delivery_id,
                         idempotency_key,
                         reminder.owner_user_id,
                         reminder.target_ref,
-                        "reminder",
+                        "text",
                         payload,
                         int(reminder.classification),
                         now_text,
                         now_text,
                         now_text,
+                        channel,
+                        channel_account,
                     ),
                 )
                 inserted += max(0, cursor.rowcount)

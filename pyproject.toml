@@ -10,8 +10,10 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 dependencies = [
+    "cryptography>=48.0.1,<49",
     "pydantic>=2.7,<3",
     "python-dateutil>=2.9,<3",
+    "websockets>=13,<17",
 ]
 
 [project.optional-dependencies]
