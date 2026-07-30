@@ -1,6 +1,7 @@
 """SQLite application storage."""
 
 from .database import Database, MigrationDriftError
+from .llm_usage import SQLiteLLMUsage
 from .repositories import (
     AgendaRepository,
     GrantRepository,
@@ -21,6 +22,7 @@ __all__ = [
     "OutboxRepository",
     "ReminderRepository",
     "ScheduledJobRepository",
+    "SQLiteLLMUsage",
     "TaskRepository",
     "UserRepository",
 ]

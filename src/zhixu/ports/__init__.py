@@ -2,6 +2,13 @@
 
 from .channel import ChannelAdapter
 from .clock import Clock, FrozenClock, SystemClock
+from .llm import (
+    LLMBudgetLimit,
+    LLMPort,
+    LLMRequest,
+    LLMResponse,
+    LLMUsagePort,
+)
 from .repositories import (
     AgendaRepositoryPort,
     NoteRepositoryPort,
@@ -16,6 +23,11 @@ __all__ = [
     "Clock",
     "ChannelAdapter",
     "FrozenClock",
+    "LLMBudgetLimit",
+    "LLMPort",
+    "LLMRequest",
+    "LLMResponse",
+    "LLMUsagePort",
     "NoteRepositoryPort",
     "ReminderRepositoryPort",
     "ScheduledJobRepositoryPort",

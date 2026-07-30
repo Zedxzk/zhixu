@@ -42,3 +42,15 @@ class ClassificationNotSupported(ZhixuError):
 
 class InvalidTransition(ConflictError):
     code = "invalid_transition"
+
+
+class LLMUnavailable(ZhixuError):
+    code = "llm_unavailable"
+
+
+class LLMBudgetExceeded(LLMUnavailable):
+    code = "llm_budget_exceeded"
+
+
+class InvalidModelOutput(LLMUnavailable):
+    code = "invalid_model_output"
