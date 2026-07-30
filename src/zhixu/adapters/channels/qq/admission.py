@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC
 
-from zhixu.adapters.storage.sqlite.database import Database
 from zhixu.adapters.storage.sqlite.repositories import UserRepository
 from zhixu.channels import ConversationKind, InboundEvent
-from zhixu.security import OpaqueReferenceFactory
 
 from .contacts import QQContactStore
 
@@ -44,56 +41,3 @@ class InboundAdmission:
             ):
                 return AdmissionDecision(False, identity.user_id, "conversation_disabled")
         return AdmissionDecision(True, identity.user_id, "accepted")
-
-
-class InboundReceiptStore:
-    """Persists only keyed hashes and routing outcome, never the inbound body."""
-
-    def __init__(
-        self,
-        database: Database,
-        references: OpaqueReferenceFactory,
-    ) -> None:
-        self.database = database
-        self.references = references
-
-    def record(
-        self,
-        event: InboundEvent,
-        decision: AdmissionDecision,
-        *,
-        intent_kind: str = "",
-    ) -> bool:
-        event_hash = self.references.create(
-            "evt",
-            event.channel,
-            event.channel_account,
-            event.event_id,
-        )
-        message_hash = self.references.create(
-            "msg",
-            event.channel,
-            event.channel_account,
-            event.text or "",
-        )
-        with self.database.transaction() as connection:
-            cursor = connection.execute(
-                """
-                INSERT OR IGNORE INTO inbound_event_receipts(
-                    channel,channel_account,event_id_hash,message_hash,
-                    actor_ref,conversation_ref,intent_kind,outcome,received_at
-                ) VALUES(?,?,?,?,?,?,?,?,?)
-                """,
-                (
-                    event.channel,
-                    event.channel_account,
-                    event_hash,
-                    message_hash,
-                    event.external_actor_ref,
-                    event.external_conversation_ref,
-                    intent_kind,
-                    decision.reason_code,
-                    event.received_at.astimezone(UTC).isoformat(),
-                ),
-            )
-        return cursor.rowcount == 1

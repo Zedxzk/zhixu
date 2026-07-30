@@ -60,6 +60,17 @@ class VaultService:
         authentication: str,
         classification: VaultClassification | None = None,
     ) -> SecretMetadata:
+        if (
+            not secret_id.strip()
+            or len(secret_id) > 160
+            or not owner_user_id.strip()
+            or len(owner_user_id) > 160
+            or not label.strip()
+            or len(label) > 200
+            or not value.bytes()
+        ):
+            value.clear()
+            raise ValueError("secret metadata or value is invalid")
         if authentication != "step_up":
             raise PermissionError("secret creation requires step-up authentication")
         selected = classification or (
@@ -91,6 +102,47 @@ class VaultService:
             )
         finally:
             value.clear()
+
+    def create_with_grant(
+        self,
+        token: str,
+        *,
+        secret_id: str,
+        owner_user_id: str,
+        label: str,
+        kind: SecretKind,
+        value: SecretValue,
+        classification: VaultClassification | None = None,
+    ) -> SecretMetadata:
+        try:
+            grant = self.verifier.verify_and_consume(
+                token,
+                secret_id=secret_id,
+                action=VaultAction.CREATE.value,
+            )
+        except Exception:
+            value.clear()
+            raise
+        if grant.subject != owner_user_id or grant.authentication != "step_up":
+            value.clear()
+            raise PermissionError("secret creation grant is invalid")
+        return self.create_secret(
+            secret_id=secret_id,
+            owner_user_id=owner_user_id,
+            label=label,
+            kind=kind,
+            value=value,
+            authentication=grant.authentication,
+            classification=classification,
+        )
+
+    def list_owned_metadata(self, token: str) -> list[SecretMetadata]:
+        grant = self.verifier.verify_and_consume(
+            token,
+            secret_id="*",
+            action=VaultAction.LIST_METADATA.value,
+        )
+        return self.repository.list_metadata(grant.subject)
 
     def list_metadata(self, token: str, secret_id: str) -> list[SecretMetadata]:
         _grant, metadata = self._authorize(token, secret_id, VaultAction.LIST_METADATA)
@@ -133,8 +185,11 @@ class VaultService:
         *,
         expected_version: int,
     ) -> SecretMetadata:
-        grant, _metadata = self._authorize(token, secret_id, VaultAction.UPDATE)
+        if not value.bytes():
+            value.clear()
+            raise ValueError("secret value must not be empty")
         try:
+            grant, _metadata = self._authorize(token, secret_id, VaultAction.UPDATE)
             return self.repository.update(
                 secret_id,
                 value,

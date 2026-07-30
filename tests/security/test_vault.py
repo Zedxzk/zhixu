@@ -235,6 +235,59 @@ def test_capability_is_exact_expiring_and_single_use(
         service.reveal(expired, "secret_human")
 
 
+def test_secret_creation_and_owned_listing_require_signed_grants(
+    vault: tuple[
+        VaultDatabase,
+        VaultKeyring,
+        VaultRepository,
+        VaultService,
+        CapabilityGrantIssuer,
+        MutableClock,
+        FingerprintExecutor,
+    ],
+) -> None:
+    database, _keyring, _repository, service, issuer, clock, _executor = vault
+    value = SecretValue.from_text("created-through-grant-canary")
+    created = service.create_with_grant(
+        issue(
+            issuer,
+            clock,
+            secret_id="secret_granted_create",
+            action=VaultAction.CREATE,
+        ),
+        secret_id="secret_granted_create",
+        owner_user_id="user_test",
+        label="Synthetic created secret",
+        kind=SecretKind.HUMAN,
+        value=value,
+    )
+    assert created.id == "secret_granted_create"
+    assert value.bytes() == b"\0" * len("created-through-grant-canary")
+
+    listed = service.list_owned_metadata(
+        issue(
+            issuer,
+            clock,
+            secret_id="*",
+            action=VaultAction.LIST_METADATA,
+        )
+    )
+    assert [item.id for item in listed] == ["secret_granted_create"]
+    assert b"created-through-grant-canary" not in database_bytes(database)
+
+    rejected = SecretValue.from_text("rejected-secret-canary")
+    with pytest.raises(PermissionError):
+        service.create_with_grant(
+            "invalid-grant",
+            secret_id="secret_rejected",
+            owner_user_id="user_test",
+            label="Rejected",
+            kind=SecretKind.HUMAN,
+            value=rejected,
+        )
+    assert rejected.bytes() == b"\0" * len("rejected-secret-canary")
+
+
 def test_human_reveal_and_machine_use_are_separate_paths(
     vault: tuple[
         VaultDatabase,
@@ -509,6 +562,14 @@ def test_export_rotation_backup_restore_and_l4_rejection(
         backup_passphrase="synthetic backup passphrase",
     )
     assert b"export-secret-canary" not in backup.read_bytes()
+    rejected_destination = tmp_path / "wrong-passphrase.sqlite3"
+    with pytest.raises(PermissionError):
+        manager.restore(
+            backup,
+            rejected_destination,
+            backup_passphrase="wrong synthetic passphrase",
+        )
+    assert not rejected_destination.exists()
     restored = manager.restore(
         backup,
         tmp_path / "restored.sqlite3",

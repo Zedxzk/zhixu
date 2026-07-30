@@ -1,0 +1,91 @@
+# Private administration API
+
+The administration API is a JSON API intended only for the private HTTPS origin described
+in [deployment.md](deployment.md). It does not use cookies, does not enable CORS, and never
+needs a public callback. Responses containing authentication or reveal material include
+`Cache-Control: no-store`.
+
+`/internal/channel/*` is reserved for authenticated local channel processes and must remain
+blocked by the reverse proxy.
+
+## Sessions and Passkey step-up
+
+Create an ordinary administration session:
+
+```http
+POST /admin/session
+Content-Type: application/json
+
+{"user_id":"INTERNAL_USER_ID","password":"..."}
+```
+
+Use the returned value as `Authorization: Bearer …`. Enroll and verify a Passkey through
+these WebAuthn ceremony endpoints:
+
+```text
+POST /admin/passkeys/registration/options
+POST /admin/passkeys/registration/verify
+POST /admin/passkeys/authentication/options
+POST /admin/passkeys/authentication/verify
+```
+
+The two `options` responses contain a `publicKey` object for `navigator.credentials`.
+The two `verify` requests accept `{"credential": WEB_AUTHN_CREDENTIAL_OBJECT}`. A successful
+authentication returns a five-minute `step_up` session. Confidential ordinary data, ACL
+changes, and human-secret operations require that session.
+
+## Cross-channel identity binding
+
+`POST /admin/identity-challenges` accepts a channel, channel account, and target identifier.
+The identifier is encrypted immediately. The verification code is queued to that target and
+is deliberately absent from the API response.
+
+Submit the received code to `POST /admin/identities`. Codes expire, allow five attempts, and
+can be consumed only once. `DELETE /admin/identities/{id}` requires
+`X-Zhixu-Confirm: true`, revokes active channel sessions, and leaves domain data intact.
+
+## Ordinary data and operations
+
+```text
+GET|POST             /admin/agenda
+PUT|DELETE           /admin/agenda/{id}
+GET|POST             /admin/tasks
+PUT|DELETE           /admin/tasks/{id}
+POST                 /admin/tasks/{id}/transition
+POST                 /admin/tasks/{id}/postpone
+GET|POST             /admin/notes
+PUT|DELETE           /admin/notes/{id}
+GET|POST|DELETE      /admin/acl
+GET                  /admin/channels
+GET|PATCH            /admin/channel-routes
+GET                  /admin/outbox
+GET                  /admin/audit
+GET                  /admin/status
+```
+
+Deletion requires the confirmation header. External identities and delivery targets are
+represented by opaque references; status and audit endpoints do not return raw platform
+identifiers, credentials, message bodies, or database paths.
+
+## Isolated high-sensitivity vault
+
+The vault must first be unlocked interactively on the server. These API operations use
+signed, one-time, 60-second capability grants over the local Unix socket:
+
+```text
+GET                  /admin/vault/secrets
+POST                 /admin/vault/secrets
+PUT|DELETE           /admin/vault/secrets/{id}
+POST                 /admin/vault/secrets/{id}/reveal
+POST                 /admin/vault/secrets/{id}/use
+POST                 /admin/vault/secrets/{id}/export
+POST                 /admin/vault/secrets/{id}/grant
+```
+
+Creation accepts `kind` equal to `human` or `machine`; L4 values are not accepted. Human
+secrets can be revealed only with current Passkey step-up. Machine secrets use an
+allowlisted executor and the executor response is rejected if it contains the credential.
+Exports are additionally encrypted with the supplied export passphrase.
+
+Never send a vault value, export passphrase, session token, raw external identifier, or
+production response body to an issue tracker or public log.

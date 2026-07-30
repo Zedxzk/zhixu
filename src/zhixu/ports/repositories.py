@@ -37,6 +37,8 @@ class AgendaRepositoryPort(Protocol):
 
     def get(self, item_id: str) -> AgendaItem | None: ...
 
+    def list_for_owner(self, owner_user_id: str) -> list[AgendaItem]: ...
+
     def update(
         self,
         item: AgendaItem,
@@ -75,6 +77,8 @@ class TaskRepositoryPort(Protocol):
         authorization: AuthorizedAction,
     ) -> Task: ...
 
+    def delete(self, task_id: str, authorization: AuthorizedAction) -> None: ...
+
     def list_for_owner(self, owner_user_id: str) -> list[Task]: ...
 
 
@@ -83,6 +87,8 @@ class NoteRepositoryPort(Protocol):
 
     def get(self, note_id: str) -> Note | None: ...
 
+    def list_for_owner(self, owner_user_id: str) -> list[Note]: ...
+
     def update(
         self,
         note: Note,
@@ -90,6 +96,8 @@ class NoteRepositoryPort(Protocol):
         expected_version: int,
         authorization: AuthorizedAction,
     ) -> Note: ...
+
+    def delete(self, note_id: str, authorization: AuthorizedAction) -> None: ...
 
     def search(self, owner_user_id: str, query: str, *, limit: int = 20) -> list[Note]: ...
 
@@ -102,6 +110,23 @@ class ReminderRepositoryPort(Protocol):
     ) -> Reminder: ...
 
     def get(self, reminder_id: str) -> Reminder | None: ...
+
+    def acknowledge(
+        self,
+        reminder_id: str,
+        *,
+        expected_version: int,
+        authorization: AuthorizedAction,
+    ) -> Reminder: ...
+
+    def snooze(
+        self,
+        reminder_id: str,
+        *,
+        fire_at: datetime,
+        expected_version: int,
+        authorization: AuthorizedAction,
+    ) -> Reminder: ...
 
     def enqueue_due(self, now: datetime, *, late_grace_seconds: int = 300) -> int: ...
 

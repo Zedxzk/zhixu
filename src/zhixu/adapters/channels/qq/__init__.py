@@ -1,6 +1,7 @@
 """Tencent QQ official-bot adapter."""
 
-from .admission import AdmissionDecision, InboundAdmission, InboundReceiptStore
+from ..receipts import InboundReceiptStore
+from .admission import AdmissionDecision, InboundAdmission
 from .contacts import QQContactStore, ResolvedQQTarget
 from .gateway import QQGatewayProtocol, QQGatewayRunner, QQGatewayState
 from .http import QQBotCredentials, QQHttpAdapter, UrllibJsonTransport

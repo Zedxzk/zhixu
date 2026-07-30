@@ -54,7 +54,7 @@ NOW = datetime(2026, 6, 1, 8, tzinfo=UTC)
 @pytest.fixture
 def database(tmp_path: Path) -> Database:
     value = Database(tmp_path / "zhixu.sqlite3")
-    assert value.migrate() == [1, 2]
+    assert value.migrate() == [1, 2, 3, 4, 5, 6]
     return value
 
 
@@ -393,7 +393,9 @@ def test_inbound_body_is_not_persisted_or_exposed_by_repr(
 
 class FakeTransport:
     def __init__(self) -> None:
-        self.requests: list[tuple[str, dict[str, Any] | None]] = []
+        self.requests: list[
+            tuple[str, str, dict[str, Any] | None, dict[str, str] | None]
+        ] = []
 
     def request(
         self,
@@ -404,8 +406,8 @@ class FakeTransport:
         headers: dict[str, str] | None = None,
         timeout: float = 10,
     ) -> tuple[int, dict[str, Any]]:
-        del method, headers, timeout
-        self.requests.append((url, payload))
+        del timeout
+        self.requests.append((url, method, payload, headers))
         if url.endswith("getAppAccessToken"):
             return 200, {"access_token": "synthetic-token", "expires_in": 7200}
         if url.endswith("/files"):
@@ -413,7 +415,7 @@ class FakeTransport:
         return 200, {"id": "provider-message-test"}
 
 
-def test_qq_http_supports_text_buttons_and_image(
+def test_qq_http_supports_image_upload(
     database: Database,
     privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
 ) -> None:
@@ -437,17 +439,79 @@ def test_qq_http_supports_text_buttons_and_image(
             target_ref=target_ref,
             kind=MessageKind.ATTACHMENT,
             text="Synthetic rich message",
-            buttons=(MessageButton("Confirm", "/confirm"),),
             attachment_url="https://example.invalid/image.png",
         )
     )
 
     assert result.ok
     assert result.provider_message_id == "provider-message-test"
-    assert any(url.endswith("/files") for url, _payload in transport.requests)
-    final_payload = transport.requests[-1][1]
+    assert any(request[0].endswith("/files") for request in transport.requests)
+    final_payload = transport.requests[-1][2]
     assert final_payload is not None
     assert final_payload["media"]["file_info"] == "synthetic-file"
+
+
+def test_qq_http_sends_official_callback_keyboard_and_acknowledges_interaction(
+    database: Database,
+    privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
+) -> None:
+    contacts = register_account(database, privacy_primitives)
+    target_ref = contacts.record(
+        channel_account="bot_test_a",
+        kind="private",
+        external_identifier="private-openid-button-test",
+        now=NOW,
+    )
+    transport = FakeTransport()
+    adapter = QQHttpAdapter(
+        QQBotCredentials("bot_test_a", "synthetic-app", "synthetic-secret"),
+        contacts,
+        transport=transport,
+    )
+
+    result = adapter.send(
+        OutboundMessage(
+            channel="qq",
+            channel_account="bot_test_a",
+            target_ref=target_ref,
+            kind=MessageKind.BUTTON,
+            text="Synthetic reminder",
+            buttons=(
+                MessageButton("Complete", "/提醒完成 reminder_synthetic"),
+                MessageButton("Later", "/提醒稍后 reminder_synthetic 15分钟"),
+            ),
+        )
+    )
+    adapter.acknowledge_interaction("synthetic-interaction")
+
+    assert result.ok
+    message_request = transport.requests[-2]
+    assert message_request[1] == "POST"
+    payload = message_request[2]
+    assert payload is not None
+    assert payload["msg_type"] == 2
+    assert "content" not in payload
+    assert payload["markdown"] == {"content": "Synthetic reminder"}
+    buttons = payload["keyboard"]["content"]["rows"]
+    assert [row["buttons"][0]["id"] for row in buttons] == [
+        "zhixu-1",
+        "zhixu-2",
+    ]
+    assert buttons[0]["buttons"][0]["render_data"] == {
+        "label": "Complete",
+        "visited_label": "Complete",
+        "style": 1,
+    }
+    assert buttons[0]["buttons"][0]["action"] == {
+        "type": 1,
+        "data": "/提醒完成 reminder_synthetic",
+        "permission": {"type": 2},
+        "unsupport_tips": "请发送对应文字命令",
+    }
+    acknowledgement = transport.requests[-1]
+    assert acknowledgement[0].endswith("/interactions/synthetic-interaction")
+    assert acknowledgement[1] == "PUT"
+    assert acknowledgement[2] == {"code": 0}
 
 
 def test_gateway_persists_resume_state_encrypted_and_emits_ephemeral_event(
@@ -512,6 +576,80 @@ def test_gateway_persists_resume_state_encrypted_and_emits_ephemeral_event(
         b"gateway-body-canary",
     ):
         assert canary not in database_bytes
+
+
+def test_gateway_does_not_advance_resume_sequence_when_forwarding_fails(
+    database: Database,
+    privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
+) -> None:
+    cipher, _references = privacy_primitives
+    contacts = register_account(database, privacy_primitives)
+    store = QQGatewaySessionStore(database, cipher)
+    protocol = QQGatewayProtocol(
+        channel_account="bot_test_a",
+        mapper=QQEventMapper("bot_test_a", contacts),
+        session_store=store,
+        on_event=lambda _event: (_ for _ in ()).throw(
+            RuntimeError("synthetic broker outage")
+        ),
+    )
+    assert protocol.handle(
+        {
+            "op": 0,
+            "t": "READY",
+            "s": 7,
+            "d": {
+                "session_id": "synthetic-session",
+                "resume_gateway_url": "wss://example.invalid/resume",
+            },
+        },
+        received_at=NOW,
+    ) == "ready"
+
+    with pytest.raises(RuntimeError, match="synthetic broker outage"):
+        protocol.handle(
+            {
+                "op": 0,
+                "t": "C2C_MESSAGE_CREATE",
+                "s": 8,
+                "d": {
+                    "id": "synthetic-event",
+                    "content": "synthetic transient body",
+                    "author": {"user_openid": "synthetic-actor"},
+                },
+            },
+            received_at=NOW,
+        )
+
+    assert protocol.state.sequence == 7
+    assert store.load("bot_test_a").sequence == 7
+
+
+def test_gateway_maps_button_interaction_to_deterministic_command(
+    database: Database,
+    privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
+) -> None:
+    contacts = register_account(database, privacy_primitives)
+    event = QQEventMapper("bot_test_a", contacts).map(
+        "INTERACTION_CREATE",
+        {
+            "id": "synthetic-interaction",
+            "type": 11,
+            "user_openid": "synthetic-private-actor",
+            "data": {
+                "resolved": {
+                    "button_data": "/提醒稍后 reminder_synthetic 15分钟",
+                }
+            },
+        },
+        received_at=NOW,
+    )
+
+    assert event is not None
+    assert event.message_kind is MessageKind.BUTTON
+    assert event.conversation_kind is ConversationKind.PRIVATE
+    assert event.text == "/提醒稍后 reminder_synthetic 15分钟"
+    assert event.metadata["mentioned"] is True
 
 
 def test_gateway_error_log_does_not_include_exception_message(

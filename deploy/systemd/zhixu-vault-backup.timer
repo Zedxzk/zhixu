@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Zhixu encrypted vault backup
+
+[Timer]
+OnCalendar=*-*-* 04:15:00
+RandomizedDelaySec=30m
+Persistent=true
+Unit=zhixu-vault-backup.service
+
+[Install]
+WantedBy=timers.target

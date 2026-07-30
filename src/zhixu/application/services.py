@@ -29,17 +29,22 @@ from zhixu.ports import (
 )
 
 from .commands import (
+    AcknowledgeReminder,
     CommandBus,
     CreateAgenda,
     CreateNote,
     CreateReminder,
     CreateTask,
     DeleteAgenda,
+    DeleteNote,
+    DeleteTask,
     PostponeTask,
     SetAgendaException,
+    SnoozeReminder,
     TransitionTask,
     UpdateAgenda,
     UpdateNote,
+    UpdateTask,
 )
 from .queries import AgendaBetween, ListTasks, QueryBus, SearchNotes
 
@@ -213,6 +218,45 @@ class ZhixuServices:
         )
         return self.tasks.create(task, authorization)
 
+    def update_task(self, command: UpdateTask, context: CommandContext) -> Task:
+        task = self.tasks.get(command.task_id)
+        if task is None:
+            raise NotFoundError("task not found")
+        if task.version != command.expected_version:
+            raise ConcurrencyConflict("task changed")
+        current = self._context(context)
+        updated = replace(
+            task,
+            title=command.title,
+            description=command.description,
+            priority=command.priority,
+            due_at=command.due_at,
+            classification=command.classification,
+            version=command.expected_version + 1,
+        )
+        authorization = self.policy.require(
+            current,
+            Action.UPDATE,
+            self._ref("task", task.id, task.owner_user_id, updated.classification),
+        )
+        return self.tasks.update(
+            updated,
+            expected_version=command.expected_version,
+            authorization=authorization,
+        )
+
+    def delete_task(self, command: DeleteTask, context: CommandContext) -> None:
+        task = self.tasks.get(command.task_id)
+        if task is None:
+            raise NotFoundError("task not found")
+        current = self._context(context)
+        authorization = self.policy.require(
+            current,
+            Action.DELETE,
+            self._ref("task", task.id, task.owner_user_id, task.classification),
+        )
+        self.tasks.delete(task.id, authorization)
+
     def transition_task(self, command: TransitionTask, context: CommandContext) -> Task:
         task = self.tasks.get(command.task_id)
         if task is None:
@@ -294,6 +338,18 @@ class ZhixuServices:
             authorization=authorization,
         )
 
+    def delete_note(self, command: DeleteNote, context: CommandContext) -> None:
+        note = self.notes.get(command.note_id)
+        if note is None:
+            raise NotFoundError("note not found")
+        current = self._context(context)
+        authorization = self.policy.require(
+            current,
+            Action.DELETE,
+            self._ref("note", note.id, note.owner_user_id, note.classification),
+        )
+        self.notes.delete(note.id, authorization)
+
     def create_reminder(
         self,
         command: CreateReminder,
@@ -323,6 +379,57 @@ class ZhixuServices:
         )
         return self.reminders.create(reminder, authorization)
 
+    def acknowledge_reminder(
+        self,
+        command: AcknowledgeReminder,
+        context: CommandContext,
+    ) -> Reminder:
+        reminder = self.reminders.get(command.reminder_id)
+        if reminder is None:
+            raise NotFoundError("reminder not found")
+        current = self._context(context)
+        authorization = self.policy.require(
+            current,
+            Action.UPDATE,
+            self._ref(
+                "reminder",
+                reminder.id,
+                reminder.owner_user_id,
+                reminder.classification,
+            ),
+        )
+        return self.reminders.acknowledge(
+            reminder.id,
+            expected_version=reminder.version,
+            authorization=authorization,
+        )
+
+    def snooze_reminder(
+        self,
+        command: SnoozeReminder,
+        context: CommandContext,
+    ) -> Reminder:
+        reminder = self.reminders.get(command.reminder_id)
+        if reminder is None:
+            raise NotFoundError("reminder not found")
+        current = self._context(context)
+        authorization = self.policy.require(
+            current,
+            Action.UPDATE,
+            self._ref(
+                "reminder",
+                reminder.id,
+                reminder.owner_user_id,
+                reminder.classification,
+            ),
+        )
+        return self.reminders.snooze(
+            reminder.id,
+            fire_at=command.fire_at,
+            expected_version=reminder.version,
+            authorization=authorization,
+        )
+
     def agenda_between(
         self,
         query: AgendaBetween,
@@ -339,11 +446,25 @@ class ZhixuServices:
                 DataClassification.PERSONAL,
             ),
         )
-        return self.agenda.occurrences(
+        occurrences = self.agenda.occurrences(
             current.actor_user_id,
             query.window_start,
             query.window_end,
         )
+        checked: set[str] = set()
+        for occurrence in occurrences:
+            if occurrence.agenda_item_id in checked:
+                continue
+            item = self.agenda.get(occurrence.agenda_item_id)
+            if item is None:
+                raise NotFoundError("agenda item not found")
+            self.policy.require(
+                current,
+                Action.READ,
+                self._ref("agenda", item.id, item.owner_user_id, item.classification),
+            )
+            checked.add(item.id)
+        return occurrences
 
     def list_tasks(self, query: ListTasks, context: CommandContext) -> list[Task]:
         current = self._context(context)
@@ -358,6 +479,12 @@ class ZhixuServices:
             ),
         )
         tasks = self.tasks.list_for_owner(current.actor_user_id)
+        for task in tasks:
+            self.policy.require(
+                current,
+                Action.READ,
+                self._ref("task", task.id, task.owner_user_id, task.classification),
+            )
         return tasks if query.include_archived else [
             task for task in tasks if task.status.value != "archived"
         ]
@@ -392,11 +519,16 @@ class ZhixuServices:
         bus.register(DeleteAgenda, self.delete_agenda)
         bus.register(SetAgendaException, self.set_agenda_exception)
         bus.register(CreateTask, self.create_task)
+        bus.register(UpdateTask, self.update_task)
+        bus.register(DeleteTask, self.delete_task)
         bus.register(TransitionTask, self.transition_task)
         bus.register(PostponeTask, self.postpone_task)
         bus.register(CreateNote, self.create_note)
         bus.register(UpdateNote, self.update_note)
+        bus.register(DeleteNote, self.delete_note)
         bus.register(CreateReminder, self.create_reminder)
+        bus.register(AcknowledgeReminder, self.acknowledge_reminder)
+        bus.register(SnoozeReminder, self.snooze_reminder)
         return bus
 
     def query_bus(self) -> QueryBus:

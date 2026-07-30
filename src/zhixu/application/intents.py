@@ -17,6 +17,8 @@ class IntentAction(StrEnum):
     CREATE_TASK = "create_task"
     CREATE_NOTE = "create_note"
     CREATE_REMINDER = "create_reminder"
+    ACKNOWLEDGE_REMINDER = "acknowledge_reminder"
+    SNOOZE_REMINDER = "snooze_reminder"
     COMPLETE_TASK = "complete_task"
     POSTPONE_TASK = "postpone_task"
     SUMMARIZE_NOTES = "summarize_notes"

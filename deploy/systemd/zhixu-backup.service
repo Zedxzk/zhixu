@@ -1,0 +1,29 @@
+[Unit]
+Description=Zhixu encrypted application backup and restore drill
+
+[Service]
+Type=oneshot
+User=zhixu
+Group=zhixu
+UMask=0077
+LoadCredential=application_backup_passphrase:/etc/zhixu/credentials/application_backup_passphrase
+ExecStart=/opt/zhixu/current/venv/bin/zhixu-backup --database /var/lib/zhixu/zhixu.sqlite3 --destination /var/backups/zhixu/application --passphrase-file %d/application_backup_passphrase
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX
+ReadOnlyPaths=/var/lib/zhixu
+ReadWritePaths=/var/backups/zhixu/application
+InaccessiblePaths=/var/lib/zhixu-vault
+LogNamespace=zhixu

@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Zhixu encrypted application backup
+
+[Timer]
+OnCalendar=*-*-* 03:15:00
+RandomizedDelaySec=30m
+Persistent=true
+Unit=zhixu-backup.service
+
+[Install]
+WantedBy=timers.target

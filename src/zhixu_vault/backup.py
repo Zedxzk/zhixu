@@ -37,7 +37,14 @@ class VaultBackupManager:
         os.close(handle)
         temporary = Path(temporary_name)
         try:
-            source = self.database.connect()
+            if not self.database.path.is_file():
+                raise FileNotFoundError("vault database does not exist")
+            source = sqlite3.connect(
+                f"{self.database.path.resolve().as_uri()}?mode=ro",
+                uri=True,
+                timeout=10,
+            )
+            source.execute("PRAGMA busy_timeout=10000")
             backup = sqlite3.connect(temporary)
             try:
                 source.backup(backup)
@@ -94,15 +101,20 @@ class VaultBackupManager:
         except Exception as exc:
             raise PermissionError("vault backup decryption failed") from exc
         target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        target.write_bytes(plain)
-        with suppress(OSError):
-            target.chmod(0o600)
-        restored = VaultDatabase(target)
-        with restored.connect() as connection:
-            result = connection.execute("PRAGMA integrity_check").fetchone()
-            if result is None or str(result[0]) != "ok":
-                raise RuntimeError("restored vault failed integrity check")
-        return restored
+        temporary = target.with_name(f".{target.name}.restore-{os.getpid()}")
+        try:
+            temporary.write_bytes(plain)
+            with sqlite3.connect(temporary) as connection:
+                result = connection.execute("PRAGMA integrity_check").fetchone()
+                if result is None or str(result[0]) != "ok":
+                    raise RuntimeError("restored vault failed integrity check")
+            os.replace(temporary, target)
+            with suppress(OSError):
+                target.chmod(0o600)
+        finally:
+            with suppress(OSError):
+                temporary.unlink()
+        return VaultDatabase(target)
 
     def create_break_glass_bundle(
         self,

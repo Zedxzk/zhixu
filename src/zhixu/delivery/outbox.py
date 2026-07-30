@@ -152,6 +152,7 @@ class OutboxStore:
         worker_id: str,
         now: datetime,
         lease_for: timedelta = timedelta(seconds=30),
+        accounts: tuple[tuple[str, str], ...] | None = None,
     ) -> ClaimedDelivery | None:
         require_aware(now, "now")
         if not worker_id.strip() or lease_for <= timedelta(0):
@@ -159,22 +160,34 @@ class OutboxStore:
         now_text = _dump(now)
         lease_expires = now + lease_for
         token = secrets.token_urlsafe(24)
+        if accounts == ():
+            return None
+        account_filter = ""
+        account_parameters: list[str] = []
+        if accounts is not None:
+            placeholders = ",".join("(?,?)" for _account in accounts)
+            account_filter = f"AND (channel,channel_account) IN ({placeholders})"
+            for channel, channel_account in accounts:
+                account_parameters.extend((channel, channel_account))
         with self.database.transaction() as connection:
             row = connection.execute(
-                """
+                f"""
                 SELECT * FROM outbox_deliveries
                 WHERE (
+                    (
                     status IN ('pending','retry_wait','quota_wait')
                     AND next_attempt_at<=?
-                ) OR (
+                    ) OR (
                     status='sending'
                     AND lease_expires_at IS NOT NULL
                     AND lease_expires_at<=?
+                    )
                 )
+                {account_filter}
                 ORDER BY priority,created_at,id
                 LIMIT 1
                 """,
-                (now_text, now_text),
+                (now_text, now_text, *account_parameters),
             ).fetchone()
             if row is None:
                 return None
@@ -312,6 +325,40 @@ class OutboxStore:
                 (f"dead_{claimed.id}", claimed.id, result.provider_code[:80], now_text),
             )
             return "dead"
+
+    def complete_lease(
+        self,
+        *,
+        delivery_id: str,
+        lease_token: str,
+        result: ChannelDeliveryResult,
+        now: datetime,
+    ) -> str:
+        """Complete a remote channel lease without trusting client-supplied metadata."""
+
+        require_aware(now, "now")
+        with self.database.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM outbox_deliveries
+                WHERE id=? AND status='sending' AND lease_token=?
+                """,
+                (delivery_id, lease_token),
+            ).fetchone()
+        if row is None:
+            raise ConflictError("outbox lease is no longer owned")
+        claimed = ClaimedDelivery(
+            id=str(row["id"]),
+            owner_user_id=str(row["owner_user_id"]),
+            idempotency_key=str(row["idempotency_key"]),
+            message=_message_from_row(row),
+            priority=int(row["priority"]),
+            attempts=int(row["attempts"]),
+            max_attempts=int(row["max_attempts"]),
+            lease_token=lease_token,
+            lease_expires_at=_load(str(row["lease_expires_at"])),
+        )
+        return self.complete(claimed, result, now=now)
 
     def retry_dead(self, dead_id: str, *, actor_user_id: str, now: datetime) -> bool:
         require_aware(now, "now")

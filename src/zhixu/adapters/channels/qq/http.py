@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import threading
-import urllib.error
 import urllib.parse
-import urllib.request
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any, Protocol
+from typing import Any
 
 from zhixu.channels import (
     ChannelCapabilities,
@@ -17,58 +14,14 @@ from zhixu.channels import (
     MessageKind,
     OutboundMessage,
 )
+from zhixu.domain import DataClassification
 from zhixu.domain.errors import ValidationError
 
+from ..http import JsonTransport, UrllibJsonTransport
 from .contacts import QQContactStore, ResolvedQQTarget
 
 TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken"
 API_BASE = "https://api.sgroup.qq.com"
-
-
-class JsonTransport(Protocol):
-    def request(
-        self,
-        url: str,
-        *,
-        method: str = "GET",
-        payload: dict[str, Any] | None = None,
-        headers: dict[str, str] | None = None,
-        timeout: float = 10,
-    ) -> tuple[int, dict[str, Any]]: ...
-
-
-class UrllibJsonTransport:
-    def request(
-        self,
-        url: str,
-        *,
-        method: str = "GET",
-        payload: dict[str, Any] | None = None,
-        headers: dict[str, str] | None = None,
-        timeout: float = 10,
-    ) -> tuple[int, dict[str, Any]]:
-        body = None if payload is None else json.dumps(payload).encode("utf-8")
-        request_headers = {"Accept": "application/json", **(headers or {})}
-        if body is not None:
-            request_headers["Content-Type"] = "application/json"
-        request = urllib.request.Request(
-            url,
-            data=body,
-            headers=request_headers,
-            method=method,
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                status = int(response.status)
-                raw = response.read().decode("utf-8", "replace")
-        except urllib.error.HTTPError as exc:
-            status = int(exc.code)
-            raw = exc.read().decode("utf-8", "replace")
-        try:
-            value = json.loads(raw or "{}")
-        except ValueError:
-            value = {}
-        return status, value if isinstance(value, dict) else {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,34 +114,59 @@ class QQHttpAdapter:
             "X-Union-Appid": self.credentials.app_id,
         }
 
+    def acknowledge_interaction(self, interaction_id: str) -> None:
+        if not interaction_id.strip():
+            raise ValidationError("QQ interaction id is required")
+        token = self.access_token()
+        identifier = urllib.parse.quote(interaction_id, safe="")
+        status, _value = self.transport.request(
+            f"{API_BASE}/interactions/{identifier}",
+            method="PUT",
+            payload={"code": 0},
+            headers=self._headers(token),
+        )
+        if status < 200 or status >= 300:
+            raise RuntimeError("QQ interaction acknowledgement failed")
+
     def send(self, message: OutboundMessage) -> ChannelDeliveryResult:
         if (
             message.channel != self.channel
             or message.channel_account != self.channel_account
         ):
             return ChannelDeliveryResult(False, False, "account_mismatch")
+        if message.classification >= DataClassification.CONFIDENTIAL:
+            return ChannelDeliveryResult(False, False, "classification_blocked")
         target = self.contacts.resolve(message.channel_account, message.target_ref)
         token = self.access_token()
         payload: dict[str, Any] = {"content": message.text}
         if target.kind in {"private", "group"}:
             payload["msg_type"] = 0
         if message.buttons:
+            payload = {"markdown": {"content": message.text}}
+            if target.kind in {"private", "group"}:
+                payload["msg_type"] = 2
             payload["keyboard"] = {
                 "content": {
                     "rows": [
                         {
                             "buttons": [
                                 {
-                                    "render_data": {"label": button.label},
+                                    "id": f"zhixu-{index}",
+                                    "render_data": {
+                                        "label": button.label,
+                                        "visited_label": button.label,
+                                        "style": 1 if index == 1 else 0,
+                                    },
                                     "action": {
-                                        "type": 2,
+                                        "type": 1,
                                         "data": button.action,
                                         "permission": {"type": 2},
+                                        "unsupport_tips": "请发送对应文字命令",
                                     },
                                 }
                             ]
                         }
-                        for button in message.buttons
+                        for index, button in enumerate(message.buttons, start=1)
                     ]
                 }
             }

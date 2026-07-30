@@ -16,13 +16,15 @@
 
 ## 当前状态
 
-项目处于早期开发阶段。第一条交付链路是：
+项目处于早期开发阶段，已实现的首条端到端链路是：
 
 ```text
 QQ 消息 → 确定性解析 → 持久化提醒 → 调度 → 可靠队列 → QQ 主动推送
 ```
 
-高敏秘密存储在独立保险库完成前不会开放。
+普通数据与高敏秘密使用不同的数据库、进程、操作系统账户和备份密钥。独立保险库默认保持
+密封，只通过受限 Unix socket 接收经过授权的请求。QQ 网络进程也不具有普通业务数据库的
+文件访问权限。
 
 ## 开发
 
@@ -36,7 +38,13 @@ python -m venv .venv
 .venv/bin/python scripts/privacy_scan.py
 ```
 
+仓库不运行 GitHub Actions。正式发布前请在受信任的本机执行
+`PATH="$PWD/.venv/bin:$PATH" bash scripts/release/verify_release.sh`。
+
 Windows 请使用虚拟环境中对应的 `Scripts` 命令路径。
+
+私有服务器安装见 [部署文档](docs/deployment.md)，管理与保险库接口见
+[API 文档](docs/api.md)。
 
 ## 隐私
 

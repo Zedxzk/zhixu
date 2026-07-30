@@ -20,6 +20,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "build>=1.2,<2",
     "detect-secrets>=1.5,<2",
     "import-linter>=2.1,<3",
     "pip-audit>=2.7",
@@ -29,7 +30,13 @@ dev = [
 
 [project.scripts]
 zhixu = "zhixu.cli:main"
+zhixu-api = "zhixu.runtime.api:main"
+zhixu-backup = "zhixu.runtime.backup:main"
+zhixu-qq = "zhixu.runtime.channel_qq:main"
+zhixu-worker = "zhixu.runtime.worker:main"
 zhixu-vault = "zhixu_vault.cli:main"
+zhixu-vault-backup = "zhixu_vault.backup_runtime:main"
+zhixu-vault-runtime = "zhixu_vault.runtime:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/zhixu", "src/zhixu_vault"]

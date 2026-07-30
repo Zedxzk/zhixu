@@ -93,7 +93,7 @@ class PolicyEngine:
     ) -> AuthorizedAction:
         require_ordinary_storage(resource.classification)
 
-        if action in {Action.USE, Action.REVEAL, Action.EXPORT, Action.GRANT, Action.ROTATE}:
+        if action in {Action.USE, Action.REVEAL, Action.EXPORT, Action.ROTATE}:
             raise PermissionDenied(f"{action.value} is unavailable for ordinary storage")
 
         is_owner = context.actor_user_id == resource.owner_user_id
@@ -112,6 +112,12 @@ class PolicyEngine:
             and context.authentication < AuthenticationStrength.STEP_UP
         ):
             raise PermissionDenied("step-up authentication is required")
+
+        if action is Action.GRANT and (
+            context.authentication < AuthenticationStrength.STEP_UP
+            or context.request_channel is not RequestChannel.ADMIN_WEB
+        ):
+            raise PermissionDenied("ACL changes require admin step-up authentication")
 
         if action is Action.DELETE and not context.confirmed:
             raise ConfirmationRequired("delete requires explicit confirmation")

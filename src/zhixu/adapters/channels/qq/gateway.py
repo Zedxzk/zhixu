@@ -127,10 +127,85 @@ class QQEventMapper:
     ) -> InboundEvent | None:
         author = data.get("author") if isinstance(data.get("author"), dict) else {}
         event_id = str(data.get("id") or "")
-        text = str(data.get("content") or "").strip()
+        interaction = (
+            data.get("data")
+            if event_type == "INTERACTION_CREATE" and isinstance(data.get("data"), dict)
+            else {}
+        )
+        resolved = (
+            interaction.get("resolved")
+            if isinstance(interaction.get("resolved"), dict)
+            else {}
+        )
+        if event_type == "INTERACTION_CREATE":
+            try:
+                interaction_type = int(
+                    data.get("type") or interaction.get("type") or 0
+                )
+            except (TypeError, ValueError):
+                return None
+            if interaction_type != 11:
+                return None
+        text = str(
+            resolved.get("button_data")
+            or resolved.get("button_id")
+            or data.get("content")
+            or ""
+        ).strip()
         if not event_id or not text:
             return None
-        if event_type == "C2C_MESSAGE_CREATE":
+        if event_type == "INTERACTION_CREATE":
+            group = str(data.get("group_openid") or "")
+            channel = str(data.get("channel_id") or "")
+            actor = str(
+                data.get("group_member_openid")
+                or data.get("user_openid")
+                or data.get("member_openid")
+                or data.get("user_id")
+                or resolved.get("user_id")
+                or ""
+            )
+            if not actor:
+                return None
+            if group:
+                conversation_kind = ConversationKind.GROUP
+                actor_ref = self.contacts.record(
+                    channel_account=self.channel_account,
+                    kind="actor",
+                    external_identifier=actor,
+                    now=received_at,
+                )
+                conversation_ref = self.contacts.record(
+                    channel_account=self.channel_account,
+                    kind="group",
+                    external_identifier=group,
+                    now=received_at,
+                )
+            elif channel:
+                conversation_kind = ConversationKind.CHANNEL
+                actor_ref = self.contacts.record(
+                    channel_account=self.channel_account,
+                    kind="actor",
+                    external_identifier=actor,
+                    now=received_at,
+                )
+                conversation_ref = self.contacts.record(
+                    channel_account=self.channel_account,
+                    kind="channel",
+                    external_identifier=channel,
+                    now=received_at,
+                )
+            else:
+                conversation_kind = ConversationKind.PRIVATE
+                actor_ref = self.contacts.record(
+                    channel_account=self.channel_account,
+                    kind="private",
+                    external_identifier=actor,
+                    now=received_at,
+                )
+                conversation_ref = actor_ref
+            mentioned = True
+        elif event_type == "C2C_MESSAGE_CREATE":
             actor = str(author.get("user_openid") or data.get("user_openid") or "")
             if not actor:
                 return None
@@ -190,7 +265,11 @@ class QQEventMapper:
             external_actor_ref=actor_ref,
             external_conversation_ref=conversation_ref,
             conversation_kind=conversation_kind,
-            message_kind=MessageKind.TEXT,
+            message_kind=(
+                MessageKind.BUTTON
+                if event_type == "INTERACTION_CREATE"
+                else MessageKind.TEXT
+            ),
             received_at=received_at,
             text=text,
             metadata={"mentioned": mentioned},
@@ -249,6 +328,7 @@ class QQGatewayProtocol:
         *,
         received_at: datetime,
     ) -> str:
+        previous_sequence = self.state.sequence
         if isinstance(payload.get("s"), int):
             self.state.sequence = int(payload["s"])
         operation = payload.get("op")
@@ -284,7 +364,13 @@ class QQGatewayProtocol:
             return "resumed"
         event = self.mapper.map(event_type, data, received_at=received_at)
         if event is not None:
-            self.on_event(event)
+            try:
+                self.on_event(event)
+            except Exception:
+                # Resume from the last durably forwarded dispatch. Advancing the
+                # sequence here would acknowledge and lose the inbound command.
+                self.state.sequence = previous_sequence
+                raise
             self.session_store.save(
                 self.channel_account,
                 self.state,
@@ -382,6 +468,12 @@ class QQGatewayRunner:
                     websocket.send(json.dumps(self.protocol.handshake_payload(token)))
                     continue
                 action = self.protocol.handle(payload, received_at=datetime.now(UTC))
+                if (
+                    action == "event"
+                    and str(payload.get("t") or "") == "INTERACTION_CREATE"
+                ):
+                    data = payload.get("d") if isinstance(payload.get("d"), dict) else {}
+                    self.adapter.acknowledge_interaction(str(data.get("id") or ""))
                 if action == "reconnect":
                     return
 

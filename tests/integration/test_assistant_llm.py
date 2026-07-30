@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -22,11 +22,14 @@ from zhixu.application import (
     RuleIntentRouter,
     ZhixuServices,
 )
+from zhixu.application.commands import CreateAgenda
 from zhixu.domain import (
     Action,
+    AuthenticationStrength,
     CommandContext,
     DataClassification,
     PolicyEngine,
+    RequestChannel,
     ResourceRef,
     User,
     UserStatus,
@@ -76,7 +79,7 @@ def assistant_parts(
     tmp_path: Path,
 ) -> tuple[ZhixuServices, FrozenClock, Database, CommandContext]:
     database = Database(tmp_path / "zhixu.sqlite3")
-    assert database.migrate() == [1, 2]
+    assert database.migrate() == [1, 2, 3, 4, 5, 6]
     clock = FrozenClock(NOW)
     users = UserRepository(database)
     policy = PolicyEngine()
@@ -168,6 +171,15 @@ def test_fixed_commands_and_rule_parsing_never_call_model(
     engine.handle("/任务 Synthetic postponable task", context)
     second_task = services.tasks.list_for_owner("user_test")[1]
     postponed = engine.handle(f"/延期 {second_task.id} 30分钟", context)
+    services.command_bus().execute(
+        CreateAgenda(
+            title="Synthetic deterministic agenda",
+            start_at=NOW + timedelta(hours=1),
+            end_at=NOW + timedelta(hours=2),
+            timezone="UTC",
+        ),
+        context,
+    )
     today = engine.handle("/今天", context)
 
     assert created_task.code == "created"
@@ -179,6 +191,7 @@ def test_fixed_commands_and_rule_parsing_never_call_model(
     assert completed.code == "updated"
     assert postponed.code == "updated"
     assert today.code == "ok"
+    assert "Synthetic deterministic agenda" in today.text
     assert client.calls == 0
 
 
@@ -195,6 +208,32 @@ def test_fts_answer_wins_before_model(
     assert reply.source == "fts"
     assert "cabinet seven" in reply.text
     assert client.calls == 0
+
+
+def test_confidential_agenda_is_blocked_without_step_up(
+    assistant_parts: tuple[ZhixuServices, FrozenClock, Database, CommandContext],
+) -> None:
+    services, clock, database, context = assistant_parts
+    privileged = CommandContext(
+        actor_user_id=context.actor_user_id,
+        authentication=AuthenticationStrength.STEP_UP,
+        request_channel=RequestChannel.ADMIN_WEB,
+    )
+    services.command_bus().execute(
+        CreateAgenda(
+            title="Synthetic confidential agenda",
+            start_at=NOW + timedelta(hours=1),
+            end_at=NOW + timedelta(hours=2),
+            timezone="UTC",
+            classification=DataClassification.CONFIDENTIAL,
+        ),
+        privileged,
+    )
+    engine = engine_with(services, clock, database, FakeLLM([]))
+
+    with pytest.raises(PermissionDenied):
+        engine.handle("/今天", context)
+    assert "Synthetic confidential agenda" in engine.handle("/今天", privileged).text
 
 
 @pytest.mark.parametrize(

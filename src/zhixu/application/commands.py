@@ -67,6 +67,22 @@ class CreateTask:
 
 
 @dataclass(frozen=True, slots=True)
+class UpdateTask:
+    task_id: str
+    expected_version: int
+    title: str
+    description: str = ""
+    priority: int = 0
+    due_at: datetime | None = None
+    classification: DataClassification = DataClassification.PERSONAL
+
+
+@dataclass(frozen=True, slots=True)
+class DeleteTask:
+    task_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class TransitionTask:
     task_id: str
     expected_version: int
@@ -99,6 +115,11 @@ class UpdateNote:
 
 
 @dataclass(frozen=True, slots=True)
+class DeleteNote:
+    note_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class CreateReminder:
     title: str
     fire_at: datetime
@@ -109,17 +130,33 @@ class CreateReminder:
     related_id: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class AcknowledgeReminder:
+    reminder_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class SnoozeReminder:
+    reminder_id: str
+    fire_at: datetime
+
+
 Command = (
     CreateAgenda
     | UpdateAgenda
     | DeleteAgenda
     | SetAgendaException
     | CreateTask
+    | UpdateTask
+    | DeleteTask
     | TransitionTask
     | PostponeTask
     | CreateNote
     | UpdateNote
+    | DeleteNote
     | CreateReminder
+    | AcknowledgeReminder
+    | SnoozeReminder
 )
 CommandT = TypeVar("CommandT", bound=Command)
 Handler = Callable[[Any, CommandContext], Any]

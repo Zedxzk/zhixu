@@ -129,6 +129,75 @@ class GrantRepository:
             ).fetchone()
         return row is not None
 
+    def grant(
+        self,
+        *,
+        subject_user_id: str,
+        action: Action,
+        authorization: AuthorizedAction,
+    ) -> None:
+        _require_authorization(
+            authorization,
+            action=Action.GRANT,
+            kind=authorization.resource.kind,
+            resource_id=authorization.resource.id,
+            owner_user_id=authorization.resource.owner_user_id,
+            classification=authorization.resource.classification,
+        )
+        with self.database.transaction() as connection:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO resource_acl(
+                    resource_kind,resource_id,subject_user_id,action,granted_by,created_at
+                ) VALUES(?,?,?,?,?,?)
+                """,
+                (
+                    authorization.resource.kind,
+                    authorization.resource.id,
+                    subject_user_id,
+                    action.value,
+                    authorization.actor_user_id,
+                    _dump_datetime(authorization.authorized_at),
+                ),
+            )
+            _audit(connection, authorization)
+
+    def revoke(
+        self,
+        *,
+        subject_user_id: str,
+        action: Action,
+        authorization: AuthorizedAction,
+    ) -> bool:
+        _require_authorization(
+            authorization,
+            action=Action.GRANT,
+            kind=authorization.resource.kind,
+            resource_id=authorization.resource.id,
+            owner_user_id=authorization.resource.owner_user_id,
+            classification=authorization.resource.classification,
+        )
+        with self.database.transaction() as connection:
+            changed = connection.execute(
+                """
+                DELETE FROM resource_acl
+                WHERE resource_kind=? AND resource_id=?
+                  AND subject_user_id=? AND action=?
+                """,
+                (
+                    authorization.resource.kind,
+                    authorization.resource.id,
+                    subject_user_id,
+                    action.value,
+                ),
+            ).rowcount
+            _audit(
+                connection,
+                authorization,
+                outcome="completed" if changed else "not_found",
+            )
+        return changed == 1
+
 
 class UserRepository:
     def __init__(self, database: Database) -> None:
@@ -243,6 +312,72 @@ class UserRepository:
             opaque_ref=str(row["opaque_ref"]),
             created_at=created_at,
         )
+
+    def list_identities(self, user_id: str) -> list[ExternalIdentity]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM external_identities
+                WHERE user_id=? ORDER BY channel,channel_account,opaque_ref
+                """,
+                (user_id,),
+            ).fetchall()
+        identities: list[ExternalIdentity] = []
+        for row in rows:
+            created_at = _load_datetime(str(row["created_at"]))
+            assert created_at is not None
+            identities.append(
+                ExternalIdentity(
+                    id=str(row["id"]),
+                    user_id=str(row["user_id"]),
+                    channel=str(row["channel"]),
+                    channel_account=str(row["channel_account"]),
+                    encrypted_subject=EncryptedIdentifier(
+                        str(row["external_subject_enc"])
+                    ),
+                    opaque_ref=str(row["opaque_ref"]),
+                    created_at=created_at,
+                )
+            )
+        return identities
+
+    def unbind_identity(
+        self,
+        identity_id: str,
+        authorization: AuthorizedAction,
+    ) -> bool:
+        _require_authorization(
+            authorization,
+            action=Action.DELETE,
+            kind="external_identity",
+            resource_id=identity_id,
+            owner_user_id=authorization.resource.owner_user_id,
+            classification=DataClassification.PERSONAL,
+        )
+        with self.database.transaction() as connection:
+            row = connection.execute(
+                "SELECT user_id FROM external_identities WHERE id=?",
+                (identity_id,),
+            ).fetchone()
+            if row is None:
+                _audit(connection, authorization, outcome="not_found")
+                return False
+            if str(row["user_id"]) != authorization.resource.owner_user_id:
+                raise PermissionDenied("identity owner does not match authorization")
+            now_text = _dump_datetime(authorization.authorized_at)
+            connection.execute(
+                """
+                UPDATE channel_sessions SET revoked_at=?
+                WHERE external_identity_id=? AND revoked_at IS NULL
+                """,
+                (now_text, identity_id),
+            )
+            connection.execute(
+                "DELETE FROM external_identities WHERE id=?",
+                (identity_id,),
+            )
+            _audit(connection, authorization)
+        return True
 
 
 class AgendaRepository:
@@ -365,6 +500,18 @@ class AgendaRepository:
                 (item_id,),
             ).fetchone()
             return self._from_row(connection, row) if row is not None else None
+
+    def list_for_owner(self, owner_user_id: str) -> list[AgendaItem]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM agenda_items
+                WHERE owner_user_id=?
+                ORDER BY start_at,id
+                """,
+                (owner_user_id,),
+            ).fetchall()
+            return [self._from_row(connection, row) for row in rows]
 
     def update(
         self,
@@ -681,6 +828,24 @@ class TaskRepository:
             ).fetchall()
         return [self._from_row(row) for row in rows]
 
+    def delete(self, task_id: str, authorization: AuthorizedAction) -> None:
+        _require_authorization(
+            authorization,
+            action=Action.DELETE,
+            kind="task",
+            resource_id=task_id,
+            owner_user_id=authorization.resource.owner_user_id,
+            classification=authorization.resource.classification,
+        )
+        with self.database.transaction() as connection:
+            changed = connection.execute(
+                "DELETE FROM tasks WHERE id=? AND owner_user_id=?",
+                (task_id, authorization.resource.owner_user_id),
+            ).rowcount
+            if changed != 1:
+                raise NotFoundError("task not found")
+            _audit(connection, authorization)
+
 
 class NoteRepository:
     def __init__(self, database: Database) -> None:
@@ -801,6 +966,18 @@ class NoteRepository:
             ).fetchone()
             return self._from_row(connection, row) if row is not None else None
 
+    def list_for_owner(self, owner_user_id: str) -> list[Note]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM notes
+                WHERE owner_user_id=?
+                ORDER BY updated_at DESC,id
+                """,
+                (owner_user_id,),
+            ).fetchall()
+            return [self._from_row(connection, row) for row in rows]
+
     def update(
         self,
         note: Note,
@@ -847,6 +1024,25 @@ class NoteRepository:
             self._write_fts(connection, stored)
             _audit(connection, authorization)
         return stored
+
+    def delete(self, note_id: str, authorization: AuthorizedAction) -> None:
+        _require_authorization(
+            authorization,
+            action=Action.DELETE,
+            kind="note",
+            resource_id=note_id,
+            owner_user_id=authorization.resource.owner_user_id,
+            classification=authorization.resource.classification,
+        )
+        with self.database.transaction() as connection:
+            changed = connection.execute(
+                "DELETE FROM notes WHERE id=? AND owner_user_id=?",
+                (note_id, authorization.resource.owner_user_id),
+            ).rowcount
+            if changed != 1:
+                raise NotFoundError("note not found")
+            connection.execute("DELETE FROM notes_fts WHERE note_id=?", (note_id,))
+            _audit(connection, authorization)
 
     def search(self, owner_user_id: str, query: str, *, limit: int = 20) -> list[Note]:
         if not 1 <= limit <= 100:
@@ -957,6 +1153,85 @@ class ReminderRepository:
             ).fetchone()
         return self._from_row(row) if row is not None else None
 
+    def acknowledge(
+        self,
+        reminder_id: str,
+        *,
+        expected_version: int,
+        authorization: AuthorizedAction,
+    ) -> Reminder:
+        existing = self.get(reminder_id)
+        if existing is None:
+            raise NotFoundError("reminder not found")
+        _require_authorization(
+            authorization,
+            action=Action.UPDATE,
+            kind="reminder",
+            resource_id=existing.id,
+            owner_user_id=existing.owner_user_id,
+            classification=existing.classification,
+        )
+        now_text = _dump_datetime(authorization.authorized_at)
+        with self.database.transaction() as connection:
+            changed = connection.execute(
+                """
+                UPDATE reminders
+                SET status='cancelled',version=version+1,updated_at=?
+                WHERE id=? AND version=? AND status='fired'
+                """,
+                (now_text, reminder_id, expected_version),
+            ).rowcount
+            if changed != 1:
+                raise ConflictError("reminder is not awaiting acknowledgement")
+            _audit(connection, authorization, reason_code="acknowledged")
+        updated = self.get(reminder_id)
+        assert updated is not None
+        return updated
+
+    def snooze(
+        self,
+        reminder_id: str,
+        *,
+        fire_at: datetime,
+        expected_version: int,
+        authorization: AuthorizedAction,
+    ) -> Reminder:
+        require_aware(fire_at, "fire_at")
+        if fire_at <= authorization.authorized_at:
+            raise ValidationError("snooze time must be in the future")
+        existing = self.get(reminder_id)
+        if existing is None:
+            raise NotFoundError("reminder not found")
+        _require_authorization(
+            authorization,
+            action=Action.UPDATE,
+            kind="reminder",
+            resource_id=existing.id,
+            owner_user_id=existing.owner_user_id,
+            classification=existing.classification,
+        )
+        now_text = _dump_datetime(authorization.authorized_at)
+        with self.database.transaction() as connection:
+            changed = connection.execute(
+                """
+                UPDATE reminders
+                SET status='pending',fire_at=?,version=version+1,updated_at=?
+                WHERE id=? AND version=? AND status='fired'
+                """,
+                (
+                    _dump_datetime(fire_at),
+                    now_text,
+                    reminder_id,
+                    expected_version,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise ConflictError("reminder is not available to snooze")
+            _audit(connection, authorization, reason_code="snoozed")
+        updated = self.get(reminder_id)
+        assert updated is not None
+        return updated
+
     def enqueue_due(self, now: datetime, *, late_grace_seconds: int = 300) -> int:
         require_aware(now, "now")
         if late_grace_seconds < 0:
@@ -1015,7 +1290,16 @@ class ReminderRepository:
                     {
                         "text": reminder.title,
                         "reminder_id": reminder.id,
-                        "buttons": [],
+                        "buttons": [
+                            {
+                                "label": "完成",
+                                "action": f"/提醒完成 {reminder.id}",
+                            },
+                            {
+                                "label": "稍后",
+                                "action": f"/提醒稍后 {reminder.id} 15分钟",
+                            },
+                        ],
                         "attachment_url": None,
                     },
                     ensure_ascii=False,
@@ -1023,19 +1307,17 @@ class ReminderRepository:
                 )
                 target = connection.execute(
                     """
-                    SELECT accounts.channel,contacts.channel_account_id
-                    FROM channel_contacts AS contacts
-                    JOIN channel_accounts AS accounts
-                      ON accounts.id=contacts.channel_account_id
-                    WHERE contacts.opaque_ref=?
-                    ORDER BY contacts.last_seen_at DESC
+                    SELECT channel,channel_account
+                    FROM channel_routes
+                    WHERE opaque_ref=?
+                    ORDER BY last_seen_at DESC
                     LIMIT 1
                     """,
                     (reminder.target_ref,),
                 ).fetchone()
                 channel = str(target["channel"]) if target is not None else ""
                 channel_account = (
-                    str(target["channel_account_id"]) if target is not None else ""
+                    str(target["channel_account"]) if target is not None else ""
                 )
                 cursor = connection.execute(
                     """

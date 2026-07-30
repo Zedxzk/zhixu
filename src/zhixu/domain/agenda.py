@@ -103,6 +103,7 @@ class AgendaOccurrence:
     agenda_item_id: str
     start_at: datetime
     end_at: datetime
+    title: str = ""
     replaced: bool = False
 
 
@@ -149,9 +150,10 @@ def occurrences_between(
                         item.id,
                         exception.replacement_start,
                         exception.replacement_end,
+                        item.title,
                         replaced=True,
                     )
                 )
             continue
-        result.append(AgendaOccurrence(item.id, start, end))
+        result.append(AgendaOccurrence(item.id, start, end, item.title))
     return result

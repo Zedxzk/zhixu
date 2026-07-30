@@ -20,6 +20,8 @@ _MUTATING_MODEL_ACTIONS = {
     IntentAction.CREATE_TASK,
     IntentAction.CREATE_NOTE,
     IntentAction.CREATE_REMINDER,
+    IntentAction.ACKNOWLEDGE_REMINDER,
+    IntentAction.SNOOZE_REMINDER,
     IntentAction.COMPLETE_TASK,
     IntentAction.POSTPONE_TASK,
     IntentAction.DELETE_RESOURCE,
@@ -89,6 +91,28 @@ class RuleIntentRouter:
                     "due_at": self.clock.now() + delta,
                 },
             )
+        acknowledged_reminder = re.fullmatch(
+            r"/提醒完成\s+([A-Za-z0-9_-]{1,160})",
+            value,
+        )
+        if acknowledged_reminder:
+            return ParsedIntent(
+                IntentAction.ACKNOWLEDGE_REMINDER,
+                {"reminder_id": acknowledged_reminder.group(1)},
+            )
+        snoozed_reminder = re.fullmatch(
+            r"/提醒稍后\s+([A-Za-z0-9_-]{1,160})(?:\s+(\d{1,4})分钟)?",
+            value,
+        )
+        if snoozed_reminder:
+            minutes = int(snoozed_reminder.group(2) or 15)
+            return ParsedIntent(
+                IntentAction.SNOOZE_REMINDER,
+                {
+                    "reminder_id": snoozed_reminder.group(1),
+                    "fire_at": self.clock.now() + timedelta(minutes=minutes),
+                },
+            )
         for prefix in ("/总结 ", "总结备忘 "):
             if value.startswith(prefix) and value.removeprefix(prefix).strip():
                 return ParsedIntent(
@@ -137,13 +161,18 @@ class RuleIntentRouter:
             )
         absolute = re.fullmatch(
             r"(?P<day>今天|明天)(?P<period>上午|下午|晚上)?"
-            r"(?P<hour>\d{1,2})(?:[:：点](?P<minute>\d{1,2})分?)?"
+            r"(?P<hour>\d{1,2})(?:(?:[:：](?P<minute_colon>\d{1,2}))|"
+            r"(?:点(?P<minute_point>\d{1,2})?分?))?"
             r"提醒我(?P<title>.+)",
             value,
         )
         if absolute:
             hour = int(absolute.group("hour"))
-            minute = int(absolute.group("minute") or 0)
+            minute = int(
+                absolute.group("minute_colon")
+                or absolute.group("minute_point")
+                or 0
+            )
             if absolute.group("period") in {"下午", "晚上"} and hour < 12:
                 hour += 12
             if hour > 23 or minute > 59:

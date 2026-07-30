@@ -8,14 +8,21 @@ from datetime import timedelta
 from pydantic import BaseModel, ConfigDict, Field
 
 from zhixu.domain import CommandContext, TaskStatus
-from zhixu.domain.errors import InvalidModelOutput, LLMUnavailable, ValidationError
+from zhixu.domain.errors import (
+    InvalidModelOutput,
+    LLMUnavailable,
+    PermissionDenied,
+    ValidationError,
+)
 from zhixu.ports import LLMRequest
 
 from .commands import (
+    AcknowledgeReminder,
     CreateNote,
     CreateReminder,
     CreateTask,
     PostponeTask,
+    SnoozeReminder,
     TransitionTask,
 )
 from .intent_router import ModelIntentClassifier, RuleIntentRouter
@@ -70,7 +77,7 @@ class AssistantEngine:
                 )
             try:
                 intent = self.classifier.classify(context.actor_user_id, text)
-            except LLMUnavailable:
+            except (LLMUnavailable, PermissionDenied):
                 return AssistantReply(
                     "模型暂时不可用，但日程、待办、备忘和提醒命令仍可使用。",
                     "llm_unavailable",
@@ -156,6 +163,33 @@ class AssistantEngine:
                 "created",
                 intent.source,
             )
+        if intent.action is IntentAction.ACKNOWLEDGE_REMINDER:
+            reminder_id = str(arguments.get("reminder_id") or "").strip()
+            if not reminder_id:
+                return AssistantReply("提醒标识无效。", "invalid_intent", intent.source)
+            reminder = self.services.command_bus().execute(
+                AcknowledgeReminder(reminder_id),
+                context,
+            )
+            return AssistantReply(
+                f"已完成提醒：{reminder.title}",
+                "updated",
+                intent.source,
+            )
+        if intent.action is IntentAction.SNOOZE_REMINDER:
+            reminder_id = str(arguments.get("reminder_id") or "").strip()
+            fire_at = arguments.get("fire_at")
+            if not reminder_id or not hasattr(fire_at, "tzinfo"):
+                return AssistantReply("稍后提醒参数无效。", "invalid_intent", intent.source)
+            reminder = self.services.command_bus().execute(
+                SnoozeReminder(reminder_id, fire_at),
+                context,
+            )
+            return AssistantReply(
+                f"已稍后提醒：{reminder.fire_at.isoformat()}",
+                "updated",
+                intent.source,
+            )
         if intent.action is IntentAction.COMPLETE_TASK:
             task_id = str(arguments.get("task_id") or "").strip()
             task = next(
@@ -236,7 +270,7 @@ class AssistantEngine:
                     classification=classification,
                 )
                 summary = _SummaryEnvelope.model_validate_json(response.content)
-            except LLMUnavailable:
+            except (LLMUnavailable, PermissionDenied):
                 return self._notes_reply(notes, source="fts")
             except ValueError as exc:
                 raise InvalidModelOutput("summary output did not match schema") from exc
@@ -256,7 +290,7 @@ class AssistantEngine:
                             context.actor_user_id,
                             query,
                         )
-                    except LLMUnavailable:
+                    except (LLMUnavailable, PermissionDenied):
                         proposed = None
                     if proposed is not None and proposed.action is IntentAction.ANSWER:
                         model_answer = str(proposed.arguments.get("answer") or "").strip()

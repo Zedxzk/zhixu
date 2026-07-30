@@ -1,0 +1,47 @@
+[Unit]
+Description=Zhixu isolated high-sensitivity vault
+After=local-fs.target
+Before=zhixu-api.service
+
+[Service]
+Type=simple
+User=zhixu-vault
+Group=zhixu-vault
+SupplementaryGroups=zhixu-vault-client
+UMask=0077
+EnvironmentFile=/etc/zhixu/runtime.conf
+ExecStart=/opt/zhixu/current/venv/bin/zhixu-vault-runtime --database /var/lib/zhixu-vault/vault.sqlite3 --socket /run/zhixu/vault.sock --socket-group zhixu-vault-client --allowed-user zhixu --issuer-public-key-file /etc/zhixu/grant_issuer_public.pem --passkey-rp-id ${ZHIXU_PASSKEY_RP_ID} --passkey-origin ${ZHIXU_PASSKEY_ORIGIN}
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX
+ReadOnlyPaths=/etc/zhixu/grant_issuer_public.pem
+ReadWritePaths=/var/lib/zhixu-vault /run/zhixu
+InaccessiblePaths=/var/lib/zhixu
+SystemCallArchitectures=native
+LogNamespace=zhixu
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=200
+
+[Install]
+WantedBy=multi-user.target

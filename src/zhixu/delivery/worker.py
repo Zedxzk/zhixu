@@ -29,7 +29,11 @@ class DeliveryWorker:
         }
 
     def tick(self, *, now: datetime) -> str:
-        claimed = self.outbox.claim(worker_id=self.worker_id, now=now)
+        claimed = self.outbox.claim(
+            worker_id=self.worker_id,
+            now=now,
+            accounts=tuple(self.adapters),
+        )
         if claimed is None:
             return "idle"
         message = claimed.message

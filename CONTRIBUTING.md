@@ -5,10 +5,10 @@
 提交变更前请运行：
 
 ```bash
-ruff check .
-pytest -q
-python scripts/privacy_scan.py
+PATH="$PWD/.venv/bin:$PATH" bash scripts/release/verify_release.sh
 ```
+
+项目不使用托管 GitHub Actions；发布门禁必须在受信任的本机执行。
 
 贡献要求：
 

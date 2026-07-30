@@ -1,0 +1,29 @@
+[Unit]
+Description=Zhixu encrypted vault backup and restore drill
+
+[Service]
+Type=oneshot
+User=zhixu-vault
+Group=zhixu-vault
+UMask=0077
+LoadCredential=vault_backup_passphrase:/etc/zhixu/credentials/vault_backup_passphrase
+ExecStart=/opt/zhixu/current/venv/bin/zhixu-vault-backup --database /var/lib/zhixu-vault/vault.sqlite3 --destination /var/backups/zhixu/vault --passphrase-file %d/vault_backup_passphrase
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX
+ReadOnlyPaths=/var/lib/zhixu-vault
+ReadWritePaths=/var/backups/zhixu/vault
+InaccessiblePaths=/var/lib/zhixu
+LogNamespace=zhixu

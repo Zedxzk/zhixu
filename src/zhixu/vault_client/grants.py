@@ -50,6 +50,12 @@ class CapabilityGrantIssuer:
             serialization.PublicFormat.Raw,
         )
 
+    def public_pem(self) -> bytes:
+        return self.private_key.public_key().public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+
     def issue(
         self,
         *,

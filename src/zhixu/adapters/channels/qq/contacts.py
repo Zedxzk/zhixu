@@ -67,7 +67,11 @@ class QQContactStore:
         raw = external_identifier.strip()
         if not raw:
             raise ValidationError("QQ external identifier is required")
-        opaque = self.references.create("qqc", channel_account, kind, raw)
+        opaque = (
+            self.references.create("identity", "qq", channel_account, raw)
+            if kind in {"private", "actor"}
+            else self.references.create("qqc", channel_account, kind, raw)
+        )
         context = f"qq-contact:{channel_account}:{kind}:{opaque}"
         encrypted = self.cipher.encrypt(raw, context=context)
         with self.database.transaction() as connection:

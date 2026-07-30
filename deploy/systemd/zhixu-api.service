@@ -1,0 +1,53 @@
+[Unit]
+Description=Zhixu private administration API
+After=local-fs.target zhixu-vault.service
+Wants=zhixu-vault.service
+
+[Service]
+Type=simple
+User=zhixu
+Group=zhixu
+SupplementaryGroups=zhixu-vault-client
+UMask=0077
+EnvironmentFile=-/etc/zhixu/runtime.conf
+LoadCredential=app_field_key:/etc/zhixu/credentials/app_field_key
+LoadCredential=app_reference_key:/etc/zhixu/credentials/app_reference_key
+LoadCredential=identity_challenge_key:/etc/zhixu/credentials/identity_challenge_key
+LoadCredential=channel_service_token:/etc/zhixu/credentials/channel_service_token
+LoadCredential=grant_issuer_private_key:/etc/zhixu/credentials/grant_issuer_private_key
+LoadCredential=llm_api_key:/etc/zhixu/credentials/llm_api_key
+ExecStart=/opt/zhixu/current/venv/bin/zhixu-api --bind 127.0.0.1 --port 8840 --database /var/lib/zhixu/zhixu.sqlite3 --field-key-file %d/app_field_key --reference-key-file %d/app_reference_key --challenge-key-file %d/identity_challenge_key --channel-service-token-file %d/channel_service_token --grant-issuer-private-key-file %d/grant_issuer_private_key --qq-account ${ZHIXU_QQ_ACCOUNT} --vault-socket /run/zhixu/vault.sock
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+ReadWritePaths=/var/lib/zhixu
+InaccessiblePaths=/var/lib/zhixu-vault
+SystemCallArchitectures=native
+LogNamespace=zhixu
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=200
+
+[Install]
+WantedBy=multi-user.target
