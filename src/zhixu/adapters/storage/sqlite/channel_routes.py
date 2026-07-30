@@ -75,6 +75,31 @@ class ChannelRouteStore:
             ).fetchone()
         return bool(row["commands_enabled"]) if row else False
 
+    def get(
+        self,
+        channel: str,
+        channel_account: str,
+        opaque_ref: str,
+    ) -> ChannelRoute | None:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM channel_routes
+                WHERE channel=? AND channel_account=? AND opaque_ref=?
+                """,
+                (channel, channel_account, opaque_ref),
+            ).fetchone()
+        if row is None:
+            return None
+        return ChannelRoute(
+            str(row["channel"]),
+            str(row["channel_account"]),
+            str(row["opaque_ref"]),
+            str(row["route_kind"]),
+            bool(row["commands_enabled"]),
+            datetime.fromisoformat(str(row["last_seen_at"])),
+        )
+
     def set_commands_enabled(
         self,
         *,

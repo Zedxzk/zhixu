@@ -63,7 +63,7 @@ def _configuration(tmp_path: Path) -> PreflightPaths:
     values = {
         "channel_service_token": "synthetic-channel-service-token-value",
         "qq_app_id": "synthetic-app-id",
-        "qq_client_secret": "synthetic-client-secret",
+        "qq_client_secret": "synthetic-client-secret",  # pragma: allowlist secret
         "application_backup_passphrase": "synthetic application backup phrase",
         "vault_backup_passphrase": "synthetic vault backup phrase",
         "llm_api_key": "",
@@ -122,7 +122,7 @@ def test_preflight_rejects_loose_permissions_symlinks_and_unknown_config(
     target.unlink()
     _write(target, "synthetic-client-secret", 0o600)
     with paths.runtime_config.open("a", encoding="utf-8") as output:
-        output.write("\nPRIVATE_TOKEN=must-not-be-accepted\n")
+        output.write("\nPRIVATE_TOKEN=must-not-be-accepted\n")  # pragma: allowlist secret
     with pytest.raises(PreflightFailure) as unknown:
         verify_deployment_configuration(
             paths,

@@ -30,11 +30,20 @@ OP_INVALID_SESSION = 9
 OP_HELLO = 10
 OP_HEARTBEAT_ACK = 11
 
+GUILDS = 1 << 0
+GUILD_MEMBERS = 1 << 1
 PUBLIC_GUILD_MESSAGES = 1 << 30
 DIRECT_MESSAGE = 1 << 12
 GROUP_AND_C2C = 1 << 25
 INTERACTION = 1 << 26
-FULL_INTENTS = PUBLIC_GUILD_MESSAGES | DIRECT_MESSAGE | GROUP_AND_C2C | INTERACTION
+FULL_INTENTS = (
+    GUILDS
+    | GUILD_MEMBERS
+    | PUBLIC_GUILD_MESSAGES
+    | DIRECT_MESSAGE
+    | GROUP_AND_C2C
+    | INTERACTION
+)
 
 
 @dataclass(slots=True)
@@ -298,11 +307,6 @@ class QQGatewayProtocol:
                 "token": f"QQBot {token}",
                 "intents": FULL_INTENTS,
                 "shard": [0, 1],
-                "properties": {
-                    "$os": "linux",
-                    "$browser": "zhixu",
-                    "$device": "zhixu",
-                },
             },
         }
 

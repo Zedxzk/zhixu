@@ -822,11 +822,11 @@ class AdminAPI:
             )
         self._fields(
             data,
-            required={"channel", "channel_account", "external_subject"},
+            required={"channel", "channel_account"},
+            optional={"external_subject", "opaque_ref"},
         )
         channel = self._string(data, "channel", maximum=40)
         account = self._string(data, "channel_account", maximum=160)
-        subject = self._string(data, "external_subject", maximum=512)
         registered = {
             (item.channel, item.channel_account): item for item in self.channels.describe()
         }
@@ -835,6 +835,9 @@ class AdminAPI:
             raise ValidationError("channel account is not registered")
         target_kind = self.outbound_target_kinds.get((channel, account))
         if target_kind is not None:
+            if "opaque_ref" in data:
+                raise ValidationError("outbound identity binding requires an external subject")
+            subject = self._string(data, "external_subject", maximum=512)
             if self.outbound_targets is None:
                 raise RuntimeError("outbound target registry is unavailable")
             opaque = self.outbound_targets.register(
@@ -845,7 +848,18 @@ class AdminAPI:
                 now=self.clock.now(),
             )
         elif channel == "qq" and descriptor.mode == "conversational":
-            opaque = self.references.create("identity", channel, account, subject)
+            if "external_subject" in data:
+                raise ValidationError("QQ identity binding requires an observed opaque route")
+            if self.channel_routes is None:
+                raise RuntimeError("channel route registry is unavailable")
+            opaque = self._string(data, "opaque_ref", maximum=160)
+            route = self.channel_routes.get(channel, account, opaque)
+            if route is None or route.kind != "private":
+                raise ValidationError("QQ identity binding requires an observed private route")
+            # The raw QQ OpenID remains exclusively in the QQ process database.
+            # Admission uses the stable opaque reference, so the ordinary
+            # application only needs an encrypted copy of that same reference.
+            subject = opaque
         else:
             raise ValidationError("channel account cannot deliver identity verification")
         context = f"external-identity:{channel}:{account}:{opaque}"

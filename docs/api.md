@@ -36,9 +36,16 @@ changes, and human-secret operations require that session.
 
 ## Cross-channel identity binding
 
-`POST /admin/identity-challenges` accepts a channel, channel account, and target identifier.
-The identifier is encrypted immediately. The verification code is queued to that target and
-is deliberately absent from the API response.
+`POST /admin/identity-challenges` accepts a channel and channel account. For a conversational
+QQ account, first let the user contact the bot, read its `private` route from
+`GET /admin/channel-routes`, and submit that route as `opaque_ref`. Raw QQ OpenIDs are rejected
+at this boundary and remain only in the QQ process's encrypted database. For an outbound-only
+account such as Email or enterprise WeChat, submit the delivery target as `external_subject`;
+it is encrypted immediately in the isolated target database.
+
+The verification code is queued to the selected target and is deliberately absent from the
+API response. QQ identity challenges require an observed private route; group actor routes
+cannot receive a private binding code.
 
 Submit the received code to `POST /admin/identities`. Codes expire, allow five attempts, and
 can be consumed only once. `DELETE /admin/identities/{id}` requires

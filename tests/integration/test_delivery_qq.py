@@ -15,7 +15,11 @@ from zhixu.adapters.channels.qq import (
     QQGatewayState,
     QQHttpAdapter,
 )
-from zhixu.adapters.channels.qq.gateway import QQEventMapper, QQGatewaySessionStore
+from zhixu.adapters.channels.qq.gateway import (
+    FULL_INTENTS,
+    QQEventMapper,
+    QQGatewaySessionStore,
+)
 from zhixu.adapters.storage.sqlite import Database, UserRepository
 from zhixu.channels import (
     ChannelCapabilities,
@@ -598,6 +602,61 @@ def test_gateway_persists_resume_state_encrypted_and_emits_ephemeral_event(
         b"gateway-body-canary",
     ):
         assert canary not in database_bytes
+
+
+def test_gateway_identify_matches_official_payload_and_ready_allows_no_resume_url(
+    database: Database,
+    privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
+) -> None:
+    cipher, _references = privacy_primitives
+    contacts = register_account(database, privacy_primitives)
+    store = QQGatewaySessionStore(database, cipher)
+    protocol = QQGatewayProtocol(
+        channel_account="bot_test_a",
+        mapper=QQEventMapper("bot_test_a", contacts),
+        session_store=store,
+        on_event=lambda _event: None,
+    )
+
+    assert FULL_INTENTS == (
+        (1 << 0)
+        | (1 << 1)
+        | (1 << 30)
+        | (1 << 12)
+        | (1 << 25)
+        | (1 << 26)
+    )
+    assert protocol.identify_payload("synthetic-token") == {
+        "op": 2,
+        "d": {
+            "token": "QQBot synthetic-token",
+            "intents": FULL_INTENTS,
+            "shard": [0, 1],
+        },
+    }
+    assert (
+        protocol.handle(
+            {
+                "op": 0,
+                "t": "READY",
+                "s": 1,
+                "d": {"session_id": "synthetic-session"},
+            },
+            received_at=NOW,
+        )
+        == "ready"
+    )
+    restored = store.load("bot_test_a")
+    assert restored.session_id == "synthetic-session"
+    assert restored.resume_url == ""
+    assert protocol.handshake_payload("synthetic-token") == {
+        "op": 6,
+        "d": {
+            "token": "QQBot synthetic-token",
+            "session_id": "synthetic-session",
+            "seq": 1,
+        },
+    }
 
 
 def test_gateway_heartbeat_reconnect_and_invalid_session_state_machine(

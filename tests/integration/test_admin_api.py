@@ -17,6 +17,7 @@ from zhixu.adapters.storage.sqlite import (
     AdminReadStore,
     AdminSessionStore,
     AgendaRepository,
+    ChannelRouteStore,
     Database,
     GrantRepository,
     IdentityLinkStore,
@@ -56,6 +57,7 @@ class AdminParts:
     sessions: AdminSessionStore
     token: str
     grants: GrantRepository
+    routes: ChannelRouteStore
 
     @property
     def headers(self) -> dict[str, str]:
@@ -100,6 +102,7 @@ def admin(tmp_path: Path) -> AdminParts:
         FieldCipher(b"o" * 32),
         OpaqueReferenceFactory(b"r" * 32),
     )
+    routes = ChannelRouteStore(database)
     api = AdminAPI(
         services=ZhixuServices(
             agenda=AgendaRepository(database),
@@ -123,6 +126,7 @@ def admin(tmp_path: Path) -> AdminParts:
             optional_probes={"llm": lambda: False, "vault": lambda: True},
         ),
         credentials=credentials,
+        channel_routes=routes,
         outbox=OutboxStore(database),
         channels=ChannelRegistry(
             declared=(
@@ -162,6 +166,7 @@ def admin(tmp_path: Path) -> AdminParts:
         sessions,
         token.value,
         grants,
+        routes,
     )
 
 
@@ -400,7 +405,14 @@ def test_identity_otp_is_one_time_encrypted_and_unbind_revokes_session(
     admin: AdminParts,
     tmp_path: Path,
 ) -> None:
-    external_subject = "synthetic-external-actor"
+    opaque_ref = "qqc_synthetic_observed_private"
+    admin.routes.observe(
+        channel="qq",
+        channel_account="account_synthetic",
+        opaque_ref=opaque_ref,
+        kind="private",
+        now=NOW,
+    )
     issued = admin.api.dispatch(
         "POST",
         "/admin/identity-challenges",
@@ -409,12 +421,12 @@ def test_identity_otp_is_one_time_encrypted_and_unbind_revokes_session(
             {
                 "channel": "qq",
                 "channel_account": "account_synthetic",
-                "external_subject": external_subject,
+                "opaque_ref": opaque_ref,
             }
         ),
     )
     assert issued.status == 201
-    assert external_subject not in json.dumps(issued.body)
+    assert issued.body["opaque_ref"] == opaque_ref
     assert "verification_code" not in issued.body
     challenge_id = str(issued.body["challenge_id"])
     code = _challenge_code(admin, challenge_id)
@@ -432,6 +444,23 @@ def test_identity_otp_is_one_time_encrypted_and_unbind_revokes_session(
     )
     assert linked.status == 201
     identity_id = str(linked.body["id"])
+    with admin.database.connect() as connection:
+        encrypted_subject = str(
+            connection.execute(
+                "SELECT external_subject_enc FROM external_identities WHERE id=?",
+                (identity_id,),
+            ).fetchone()["external_subject_enc"]
+        )
+    assert (
+        FieldCipher(b"e" * 32).decrypt(
+            encrypted_subject,
+            context=(
+                "external-identity:qq:account_synthetic:"
+                "qqc_synthetic_observed_private"
+            ),
+        )
+        == opaque_ref
+    )
     replay = admin.api.dispatch(
         "POST",
         "/admin/identities",
@@ -484,7 +513,58 @@ def test_identity_otp_is_one_time_encrypted_and_unbind_revokes_session(
         for path in tmp_path.iterdir()
         if path.name.startswith("zhixu.sqlite3")
     )
-    assert external_subject.encode() not in database_bytes
+    assert opaque_ref.encode() in database_bytes
+
+
+def test_qq_identity_challenge_rejects_raw_or_unobserved_routes(
+    admin: AdminParts,
+) -> None:
+    raw = admin.api.dispatch(
+        "POST",
+        "/admin/identity-challenges",
+        headers=admin.headers,
+        body=_json(
+            {
+                "channel": "qq",
+                "channel_account": "account_synthetic",
+                "external_subject": "raw-openid-must-not-cross-boundary",
+            }
+        ),
+    )
+    assert raw.status == 422
+    unobserved = admin.api.dispatch(
+        "POST",
+        "/admin/identity-challenges",
+        headers=admin.headers,
+        body=_json(
+            {
+                "channel": "qq",
+                "channel_account": "account_synthetic",
+                "opaque_ref": "qqc_unobserved",
+            }
+        ),
+    )
+    assert unobserved.status == 422
+    admin.routes.observe(
+        channel="qq",
+        channel_account="account_synthetic",
+        opaque_ref="qqc_group_actor",
+        kind="actor",
+        now=NOW,
+    )
+    group_actor = admin.api.dispatch(
+        "POST",
+        "/admin/identity-challenges",
+        headers=admin.headers,
+        body=_json(
+            {
+                "channel": "qq",
+                "channel_account": "account_synthetic",
+                "opaque_ref": "qqc_group_actor",
+            }
+        ),
+    )
+    assert group_actor.status == 422
 
 
 def test_wrong_identity_code_attempts_persist_and_lock_challenge(admin: AdminParts) -> None:
