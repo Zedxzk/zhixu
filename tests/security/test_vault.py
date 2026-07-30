@@ -7,6 +7,7 @@ import os
 import shutil
 import socket
 import sqlite3
+import stat
 import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -444,6 +445,50 @@ def test_audit_chain_detects_tampering_and_attach_is_denied(
     )
     assert alerts == ["vault_audit_chain_invalid"]
     assert repository.get_metadata("secret_human").label == "Synthetic human secret"
+
+
+def test_external_audit_checkpoint_detects_tail_truncation_without_extending_unlock(
+    vault: tuple[
+        VaultDatabase,
+        VaultKeyring,
+        VaultRepository,
+        VaultService,
+        CapabilityGrantIssuer,
+        MutableClock,
+        FingerprintExecutor,
+    ],
+    tmp_path: Path,
+) -> None:
+    database, keyring, _repository, service, _issuer, clock, _executor = vault
+    create_human(service)
+    audit = VaultAuditLog(database)
+    checkpoint_key = keyring.audit_key(touch=False)
+    clock.advance(timedelta(minutes=4))
+    checkpoint = audit.write_checkpoint(
+        tmp_path / "audit-checkpoints",
+        audit_key=keyring.audit_key(touch=False),
+        now=clock.now(),
+    )
+
+    assert stat.S_IMODE(checkpoint.stat().st_mode) == 0o600
+    assert b"secret_human" not in checkpoint.read_bytes()
+    assert b"human-secret-canary" not in checkpoint.read_bytes()
+    assert audit.verify_latest_checkpoint(
+        checkpoint.parent,
+        audit_key=checkpoint_key,
+    )
+
+    clock.advance(timedelta(minutes=2))
+    assert keyring.sealed
+    with database.transaction() as connection:
+        connection.execute(
+            "DELETE FROM vault_audit WHERE sequence=(SELECT MAX(sequence) FROM vault_audit)"
+        )
+    assert audit.verify(audit_key=checkpoint_key)
+    assert not audit.verify_latest_checkpoint(
+        checkpoint.parent,
+        audit_key=checkpoint_key,
+    )
 
 
 def test_passkey_registration_and_step_up_consume_challenges(

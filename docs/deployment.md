@@ -200,6 +200,9 @@ systemctl is-active \
   zhixu-api zhixu-worker zhixu-qq zhixu-pat-executor zhixu-vault
 /opt/zhixu/current/venv/bin/zhixu doctor
 sudo -u zhixu-vault /opt/zhixu/current/venv/bin/zhixu-vault status
+sudo -u zhixu-vault /opt/zhixu/current/venv/bin/zhixu-vault \
+  verify-audit --database /var/lib/zhixu-vault/vault.sqlite3 \
+  --checkpoint-directory /var/backups/zhixu/vault-audit
 ```
 
 `ready=true` means deterministic storage is usable. LLM and vault availability are reported

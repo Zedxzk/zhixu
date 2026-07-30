@@ -44,7 +44,8 @@
 
 - 普通应用数据库、FTS、outbox、LLM prompt 和通道消息不得包含 L3/L4。
 - vault 审计只保存主体、动作、不透明 secret ID、结果和原因，不保存 label 或秘密。
-- 审计使用稳定派生密钥形成 HMAC 链；离线 CLI 校验链断裂或字段篡改。
+- 审计使用稳定派生密钥形成 HMAC 链；vault 解锁期间会把不含 secret ID 的认证 checkpoint
+  写入应用账户不可修改的独立目录。离线 CLI 同时校验链断裂、字段篡改和数据库审计尾部截断。
 - `SecretValue` 默认隐藏 repr，使用后覆盖其可变缓冲区；Python 无法保证消除所有运行时副本。
 
 ## 恢复与失效

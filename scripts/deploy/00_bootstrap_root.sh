@@ -66,6 +66,7 @@ install -d -o zhixu -g zhixu -m 0700 /var/backups/zhixu/application
 install -d -o zhixu -g zhixu -m 0700 /var/backups/zhixu/qq
 install -d -o zhixu -g zhixu -m 0700 /var/backups/zhixu/outbound
 install -d -o zhixu-vault -g zhixu-vault -m 0700 /var/backups/zhixu/vault
+install -d -o zhixu-vault -g zhixu-vault -m 0700 /var/backups/zhixu/vault-audit
 install -d -o root -g root -m 0755 /run/zhixu
 install -d -o zhixu-vault -g zhixu-vault-client -m 0750 /run/zhixu/vault
 install -d -o zhixu-integration -g zhixu-vault-client -m 0750 /run/zhixu/integration

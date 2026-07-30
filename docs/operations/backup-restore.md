@@ -37,6 +37,20 @@ Both commands refuse to overwrite an existing destination. After restoration:
 Do not place backup artifacts, passphrases, recovery screenshots, or drill logs in the
 public repository.
 
+While the vault is unlocked, its runtime writes authenticated audit checkpoints every five
+minutes to `/var/backups/zhixu/vault-audit`. The ordinary application account cannot modify
+that directory. The latest checkpoint anchors an audit sequence and head MAC outside the
+vault database, so deleting the database's audit tail is detected:
+
+```bash
+sudo -u zhixu-vault zhixu-vault verify-audit \
+  --database /var/lib/zhixu-vault/vault.sqlite3 \
+  --checkpoint-directory /var/backups/zhixu/vault-audit
+```
+
+Copy audit checkpoints with the encrypted vault backup. They contain no secret identifiers
+or values, but they are integrity evidence and should retain the same restricted handling.
+
 Database backups alone are not a complete off-host recovery set. Retain the v2 encrypted
 deployment bundle described in the deployment guide: it contains the field-encryption keys,
 reference keys, grant key, QQ credential, and both backup passphrases needed to reproduce

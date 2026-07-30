@@ -32,6 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     verify = commands.add_parser("verify-audit")
     verify.add_argument("--database", required=True)
+    verify.add_argument("--checkpoint-directory")
 
     backup = commands.add_parser("backup")
     backup.add_argument("--database", required=True)
@@ -119,10 +120,23 @@ def main(argv: list[str] | None = None) -> int:
         keyring = VaultKeyring(database, _now)
         keyring.unlock(getpass.getpass("Vault passphrase: "))
         try:
-            valid = VaultAuditLog(database).verify(audit_key=keyring.audit_key())
+            audit = VaultAuditLog(database)
+            audit_key = keyring.audit_key()
+            valid = audit.verify(audit_key=audit_key)
+            if valid and args.checkpoint_directory:
+                valid = audit.verify_latest_checkpoint(
+                    args.checkpoint_directory,
+                    audit_key=audit_key,
+                )
         finally:
             keyring.lock()
-        print("Audit chain valid." if valid else "Audit chain INVALID.")
+        print(
+            "Audit chain and checkpoint valid."
+            if valid and args.checkpoint_directory
+            else "Audit chain valid."
+            if valid
+            else "Audit chain INVALID."
+        )
         return 0 if valid else 3
     if args.command == "backup":
         first = getpass.getpass("Backup passphrase: ")

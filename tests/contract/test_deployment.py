@@ -53,7 +53,14 @@ def test_runtime_units_preserve_network_and_database_boundaries() -> None:
     assert "RestrictAddressFamilies=AF_UNIX" in vault
     assert "--socket /run/zhixu/vault/vault.sock" in vault
     assert "--executor pat=/run/zhixu/integration/pat-executor.sock" in vault
-    assert "ReadWritePaths=/var/lib/zhixu-vault /run/zhixu/vault" in vault
+    assert (
+        "--audit-checkpoint-directory /var/backups/zhixu/vault-audit"
+        in vault
+    )
+    assert (
+        "ReadWritePaths=/var/lib/zhixu-vault /run/zhixu/vault "
+        "/var/backups/zhixu/vault-audit"
+    ) in vault
     assert "InaccessiblePaths=/var/lib/zhixu" in vault
 
     assert "User=zhixu-integration" in executor

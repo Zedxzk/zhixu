@@ -181,9 +181,11 @@ class VaultKeyring:
         version = int(row["version"])
         return version, self.key(version)
 
-    def audit_key(self) -> bytes:
+    def audit_key(self, *, touch: bool = True) -> bytes:
         version = min(self._keys) if not self.sealed else 1
-        master = self.key(version)
+        if self.sealed:
+            raise PermissionError("vault is sealed")
+        master = self.key(version) if touch else bytes(self._keys[version])
         return HKDF(
             algorithm=hashes.SHA256(),
             length=32,
