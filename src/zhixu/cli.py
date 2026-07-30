@@ -31,6 +31,11 @@ from .runtime.preflight import (
     verify_deployment_configuration,
 )
 from .runtime.probes import vault_available
+from .runtime.provision import (
+    QQDeploymentCredentials,
+    create_deployment_bundle,
+    install_deployment_bundle,
+)
 from .vault_client import CapabilityGrantIssuer
 
 
@@ -67,6 +72,13 @@ def build_parser() -> argparse.ArgumentParser:
     grant_key = commands.add_parser("generate-grant-key")
     grant_key.add_argument("--private-output", required=True)
     grant_key.add_argument("--public-output", required=True)
+
+    create_bundle = commands.add_parser("create-deployment-bundle")
+    create_bundle.add_argument("--output", required=True)
+
+    install_bundle = commands.add_parser("install-deployment-bundle")
+    install_bundle.add_argument("--bundle", required=True)
+    install_bundle.add_argument("--recovery-output")
     return parser
 
 
@@ -254,6 +266,43 @@ def _generate_grant_key(args: argparse.Namespace) -> int:
     return 0
 
 
+def _create_deployment_bundle(args: argparse.Namespace) -> int:
+    _require_tty()
+    app_id = input("QQ application id: ").strip()
+    qq_credential = getpass.getpass("QQ client secret: ")
+    first = getpass.getpass("Deployment bundle passphrase: ")
+    second = getpass.getpass("Repeat deployment bundle passphrase: ")
+    if first != second:
+        print("Passphrases do not match.")
+        return 2
+    create_deployment_bundle(
+        args.output,
+        QQDeploymentCredentials(app_id, qq_credential),
+        passphrase=first,
+    )
+    print("Encrypted deployment bundle created.")
+    return 0
+
+
+def _install_deployment_bundle(args: argparse.Namespace) -> int:
+    require_root()
+    _require_tty()
+    result = install_deployment_bundle(
+        args.bundle,
+        passphrase=getpass.getpass("Deployment bundle passphrase: "),
+        etc_directory="/etc/zhixu",
+        expected_owner_uid=0,
+        expected_owner_gid=0,
+        recovery_output=args.recovery_output,
+    )
+    print(
+        "Deployment credentials installed: "
+        f"files={result.credential_files} "
+        f"recovery_created={str(result.recovery_bundle_created).lower()}."
+    )
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command is None:
@@ -271,6 +320,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _restore(args)
     if args.command == "generate-grant-key":
         return _generate_grant_key(args)
+    if args.command == "create-deployment-bundle":
+        return _create_deployment_bundle(args)
+    if args.command == "install-deployment-bundle":
+        return _install_deployment_bundle(args)
     return 2
 
 

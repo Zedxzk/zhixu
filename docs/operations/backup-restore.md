@@ -37,6 +37,13 @@ Both commands refuse to overwrite an existing destination. After restoration:
 Do not place backup artifacts, passphrases, recovery screenshots, or drill logs in the
 public repository.
 
+Database backups alone are not a complete off-host recovery set. Retain the v2 encrypted
+deployment bundle described in the deployment guide: it contains the field-encryption keys,
+reference keys, grant key, QQ credential, and both backup passphrases needed to reproduce
+the credential directory. Keep the bundle separately from its passphrase and test
+installation only into a disposable, isolated configuration tree. A legacy QQ-only v1
+bundle cannot reproduce an installed system and must be upgraded during its first install.
+
 ## Key rotation
 
 Stop the vault so its in-memory key set cannot become stale, rotate from an interactive

@@ -5,7 +5,8 @@ Zhixu is deployed as isolated local services. The administration API listens onl
 HTTPS ingress. Do not add a public listener or public webhook.
 
 The repository contains no deployment target, account identifier, private hostname, or
-credential. Values below are generated directly on the target host.
+credential. Deployment secrets travel only in an authenticated encrypted bundle and are
+installed without appearing in command arguments, environment variables, or release files.
 
 ## 1. Bootstrap operating-system boundaries
 
@@ -20,10 +21,18 @@ It creates local no-login accounts `zhixu`, `zhixu-vault`, `zhixu-integration`, 
 can call the fixed GitHub API but cannot read either SQLite database or the vault directory.
 It does not create a cloud account or connect to an external vault service.
 
-## 2. Create credentials locally
+## 2. Create the encrypted deployment bundle
 
-Create each file under `/etc/zhixu/credentials/` with mode `0600` and root ownership.
-Do not copy these files into a release directory.
+On a trusted administration machine, from an installed Zhixu environment, create one
+complete recovery bundle:
+
+```bash
+zhixu create-deployment-bundle --output /secure/offline/zhixu-deployment.zxe
+```
+
+The command reads the QQ application identifier, QQ client secret, and bundle passphrase
+from the terminal. It generates the remaining independent credentials itself. It refuses
+to overwrite its output and creates it with mode `0600`. The encrypted bundle contains:
 
 ```text
 app_field_key                 32 random bytes, base64 encoded
@@ -39,6 +48,10 @@ qq_client_secret              QQ official-bot client secret
 application_backup_passphrase independent random backup passphrase
 vault_backup_passphrase       different independent backup passphrase
 ```
+
+Keep the bundle and its passphrase in separate offline locations. Neither belongs in the
+repository, a release archive, an issue, a log, or an online backup. Copy the encrypted
+bundle to the target through an authenticated private path and keep it mode `0600`.
 
 Copy `deploy/runtime.conf.example` to `/etc/zhixu/runtime.conf`, replace only synthetic
 values, and set mode `0644`. This file is non-secret. The Passkey origin must exactly match
@@ -63,17 +76,32 @@ scripts/deploy/05_sync.sh /path/to/clean/checkout RELEASE_ID
 scripts/deploy/10_install.sh RELEASE_ID /path/to/wheelhouse
 ```
 
-Before the first activation, generate the Ed25519 grant issuer pair directly on the target.
-The private half is delivered only to the administration API; the vault receives only the
-public half:
+Before the first activation, install the encrypted bundle interactively as root:
 
 ```bash
-sudo /opt/zhixu/releases/RELEASE_ID/venv/bin/zhixu generate-grant-key \
-  --private-output /etc/zhixu/credentials/grant_issuer_private_key \
-  --public-output /etc/zhixu/grant_issuer_public.pem
+sudo /opt/zhixu/releases/RELEASE_ID/venv/bin/zhixu \
+  install-deployment-bundle --bundle /private/staging/zhixu-deployment.zxe
 ```
 
-Never make the private key readable by the vault process.
+The installer accepts only the fixed `/etc/zhixu` destination, validates root ownership and
+bootstrap permissions, stages every credential, and atomically replaces the empty
+credential directory. It creates the Ed25519 public half separately for the vault and never
+prints a secret value. It refuses an already provisioned destination.
+
+The original QQ-only `zhixu-deployment-secrets-v1` bundle remains supported. Because it does
+not contain the generated encryption and backup keys, its first installation must also
+produce a complete v2 recovery bundle:
+
+```bash
+sudo /opt/zhixu/releases/RELEASE_ID/venv/bin/zhixu \
+  install-deployment-bundle \
+  --bundle /private/staging/legacy-qq-only.zxe \
+  --recovery-output /secure/offline/zhixu-deployment-v2.zxe
+```
+
+The recovery output must be a new path, preferably on encrypted removable storage. Verify
+that it is stored offline before deleting the legacy staging copy. All later restores use
+the v2 bundle without `--recovery-output`.
 
 Activate only after reviewing the source and wheel manifests:
 
