@@ -1,5 +1,5 @@
 [Unit]
-Description=Zhixu encrypted application backup and restore drill
+Description=Zhixu encrypted ordinary-state backups and restore drills
 
 [Service]
 Type=oneshot
@@ -8,6 +8,8 @@ Group=zhixu
 UMask=0077
 LoadCredential=application_backup_passphrase:/etc/zhixu/credentials/application_backup_passphrase
 ExecStart=/opt/zhixu/current/venv/bin/zhixu-backup --database /var/lib/zhixu/zhixu.sqlite3 --destination /var/backups/zhixu/application --passphrase-file %d/application_backup_passphrase
+ExecStart=/opt/zhixu/current/venv/bin/zhixu-backup --database /var/lib/zhixu/qq/qq.sqlite3 --destination /var/backups/zhixu/qq --passphrase-file %d/application_backup_passphrase
+ExecStart=/opt/zhixu/current/venv/bin/zhixu-backup --database /var/lib/zhixu/outbound/targets.sqlite3 --destination /var/backups/zhixu/outbound --passphrase-file %d/application_backup_passphrase
 NoNewPrivileges=yes
 PrivateTmp=yes
 PrivateDevices=yes
@@ -24,6 +26,6 @@ LockPersonality=yes
 CapabilityBoundingSet=
 RestrictAddressFamilies=AF_UNIX
 ReadOnlyPaths=/var/lib/zhixu
-ReadWritePaths=/var/backups/zhixu/application
+ReadWritePaths=/var/backups/zhixu/application /var/backups/zhixu/qq /var/backups/zhixu/outbound
 InaccessiblePaths=/var/lib/zhixu-vault
 LogNamespace=zhixu

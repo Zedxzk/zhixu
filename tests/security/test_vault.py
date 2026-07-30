@@ -5,7 +5,9 @@ import hashlib
 import json
 import os
 import shutil
+import socket
 import sqlite3
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -19,7 +21,7 @@ from zhixu_vault.audit import VaultAuditLog
 from zhixu_vault.backup import VaultBackupManager
 from zhixu_vault.crypto import Argon2Parameters, VaultKeyring
 from zhixu_vault.database import VaultDatabase
-from zhixu_vault.executors import PATIntegrationExecutor
+from zhixu_vault.executors import PATIntegrationExecutor, UnixSocketMachineExecutor
 from zhixu_vault.grants import CapabilityGrantVerifier
 from zhixu_vault.policy import SecretKind, VaultAction, VaultClassification
 from zhixu_vault.service import ExecutionResult, VaultService
@@ -349,6 +351,20 @@ def test_human_reveal_and_machine_use_are_separate_paths(
             executor_name="fingerprint",
             request={},
         )
+    with database.connect() as connection:
+        decisions = [
+            (str(row["action"]), str(row["secret_id"]), str(row["outcome"]))
+            for row in connection.execute(
+                """
+                SELECT action,secret_id,outcome FROM vault_audit
+                WHERE action IN ('use','reveal')
+                ORDER BY sequence
+                """
+            )
+        ]
+    assert ("use", "secret_machine", "completed") in decisions
+    assert ("reveal", "secret_machine", "denied") in decisions
+    assert ("use", "secret_human", "denied") in decisions
 
 
 def test_auto_lock_rotation_passphrase_change_and_copy_resistance(
@@ -694,3 +710,48 @@ def test_pat_executor_allowlists_operations_and_blocks_secret_echo(
             executor_name="pat",
             request={"operation": "malicious"},
         )
+
+
+def test_unix_machine_executor_uses_fixed_local_boundary_without_returning_secret(
+    tmp_path: Path,
+) -> None:
+    socket_path = tmp_path / "executor.sock"
+    ready = threading.Event()
+    received: dict[str, object] = {}
+
+    def serve() -> None:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+            server.bind(str(socket_path))
+            server.listen(1)
+            ready.set()
+            connection, _address = server.accept()
+            with connection:
+                payload = bytearray()
+                while not payload.endswith(b"\n"):
+                    payload.extend(connection.recv(4096))
+                received.update(json.loads(payload))
+                connection.sendall(
+                    b'{"ok":true,"code":"completed","data":{"resource":"synthetic"}}\n'
+                )
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    assert ready.wait(2)
+    value = SecretValue.from_text("unix-executor-secret-canary")
+    try:
+        result = UnixSocketMachineExecutor(socket_path).execute(
+            value,
+            {"operation": "inspect"},
+        )
+    finally:
+        value.clear()
+    thread.join(timeout=2)
+
+    assert result == ExecutionResult(
+        True,
+        "completed",
+        {"resource": "synthetic"},
+    )
+    assert received["request"] == {"operation": "inspect"}
+    assert received["credential"] == "unix-executor-secret-canary"
+    assert "unix-executor-secret-canary" not in repr(result)

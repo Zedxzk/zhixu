@@ -32,7 +32,6 @@ class VaultBackupManager:
         handle, temporary_name = tempfile.mkstemp(
             prefix="zhixu-vault-backup-",
             suffix=".sqlite3",
-            dir=target.parent,
         )
         os.close(handle)
         temporary = Path(temporary_name)
@@ -64,12 +63,10 @@ class VaultBackupManager:
                 },
                 "ciphertext": seal(key, plain, context="vault-backup"),
             }
-            target.write_text(
-                json.dumps(envelope, sort_keys=True, separators=(",", ":")),
-                encoding="utf-8",
+            _atomic_write(
+                target,
+                json.dumps(envelope, sort_keys=True, separators=(",", ":")).encode(),
             )
-            with suppress(OSError):
-                target.chmod(0o600)
             return target
         finally:
             with suppress(OSError):
@@ -125,3 +122,24 @@ class VaultBackupManager:
         """Create an offline-only recovery bundle using a separate passphrase."""
 
         return self.create(destination, backup_passphrase=recovery_passphrase)
+
+
+def _atomic_write(target: Path, payload: bytes) -> None:
+    handle, temporary_name = tempfile.mkstemp(
+        prefix=f".{target.name}.",
+        suffix=".partial",
+        dir=target.parent,
+    )
+    temporary = Path(temporary_name)
+    try:
+        os.fchmod(handle, 0o600)
+        with os.fdopen(handle, "wb") as output:
+            output.write(payload)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, target)
+    finally:
+        with suppress(OSError):
+            os.close(handle)
+        with suppress(OSError):
+            temporary.unlink()

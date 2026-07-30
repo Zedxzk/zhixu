@@ -1,0 +1,45 @@
+[Unit]
+Description=Zhixu isolated read-only GitHub PAT executor
+After=network-online.target
+Wants=network-online.target
+Before=zhixu-vault.service
+
+[Service]
+Type=simple
+User=zhixu-integration
+Group=zhixu-integration
+SupplementaryGroups=zhixu-vault-client
+UMask=0077
+ExecStart=/opt/zhixu/current/venv/bin/zhixu-pat-executor --socket /run/zhixu/pat-executor.sock --socket-group zhixu-vault-client --allowed-user zhixu-vault
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/run/zhixu
+InaccessiblePaths=/var/lib/zhixu /var/lib/zhixu-vault /etc/zhixu/credentials
+SystemCallArchitectures=native
+LogNamespace=zhixu
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=100
+
+[Install]
+WantedBy=multi-user.target

@@ -37,6 +37,7 @@
   认证强度和随机 nonce。
 - nonce 在事务中只消费一次；过期、跨资源、跨动作、错误 audience 和重放全部拒绝。
 - 人类秘密只能 `reveal`，机器秘密只能由注册 executor `use`；executor 返回操作结果而非秘密。
+- executor 名称到 Unix socket 的映射只在 vault 启动参数中注册；API 请求不能提供路径、主机或命令。
 - `reveal`、更新、删除、导出、授权和轮换要求 step-up。
 
 ## 数据与日志

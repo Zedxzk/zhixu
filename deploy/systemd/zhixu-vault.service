@@ -1,6 +1,7 @@
 [Unit]
 Description=Zhixu isolated high-sensitivity vault
-After=local-fs.target
+After=local-fs.target zhixu-pat-executor.service
+Wants=zhixu-pat-executor.service
 Before=zhixu-api.service
 
 [Service]
@@ -10,7 +11,7 @@ Group=zhixu-vault
 SupplementaryGroups=zhixu-vault-client
 UMask=0077
 EnvironmentFile=/etc/zhixu/runtime.conf
-ExecStart=/opt/zhixu/current/venv/bin/zhixu-vault-runtime --database /var/lib/zhixu-vault/vault.sqlite3 --socket /run/zhixu/vault.sock --socket-group zhixu-vault-client --allowed-user zhixu --issuer-public-key-file /etc/zhixu/grant_issuer_public.pem --passkey-rp-id ${ZHIXU_PASSKEY_RP_ID} --passkey-origin ${ZHIXU_PASSKEY_ORIGIN}
+ExecStart=/opt/zhixu/current/venv/bin/zhixu-vault-runtime --database /var/lib/zhixu-vault/vault.sqlite3 --socket /run/zhixu/vault.sock --socket-group zhixu-vault-client --allowed-user zhixu --issuer-public-key-file /etc/zhixu/grant_issuer_public.pem --passkey-rp-id ${ZHIXU_PASSKEY_RP_ID} --passkey-origin ${ZHIXU_PASSKEY_ORIGIN} --executor pat=/run/zhixu/pat-executor.sock
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=20

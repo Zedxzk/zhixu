@@ -1,8 +1,10 @@
 # Encrypted backup and restore drills
 
-Application and vault backups use different service accounts, directories, and passphrases.
-The daily timers create an authenticated encrypted envelope and immediately restore it into
-an isolated temporary directory for an integrity check.
+Ordinary-state and vault backups use different service accounts, directory trees, and
+passphrases. The ordinary-state job covers the domain database, QQ encrypted contact/session
+database, and outbound encrypted target database. The daily timers create an authenticated
+encrypted envelope for each database and immediately restore it into an isolated temporary
+directory for an integrity check.
 
 ```bash
 systemctl list-timers 'zhixu*backup*'
@@ -18,6 +20,8 @@ restore command there:
 
 ```bash
 zhixu restore --input APPLICATION_BACKUP --database NEW_APPLICATION_DATABASE
+zhixu restore --input QQ_BACKUP --database NEW_QQ_DATABASE
+zhixu restore --input OUTBOUND_BACKUP --database NEW_OUTBOUND_DATABASE
 zhixu-vault restore --input VAULT_BACKUP --database NEW_VAULT_DATABASE
 ```
 
@@ -25,7 +29,8 @@ Both commands refuse to overwrite an existing destination. After restoration:
 
 1. run SQLite `PRAGMA integrity_check`;
 2. start services against temporary paths with all external network access disabled;
-3. verify audit chains and opaque identity references;
+3. verify the vault audit chain and that QQ/outbound targets still resolve only through
+   opaque references;
 4. verify that a wrong passphrase fails without creating a plaintext destination;
 5. securely remove the temporary restored databases after the drill.
 

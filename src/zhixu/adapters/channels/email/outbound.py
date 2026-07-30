@@ -9,7 +9,7 @@ from email.headerregistry import Address
 from email.message import EmailMessage
 from typing import Protocol
 
-from zhixu.adapters.channels.targets import OutboundTargetStore
+from zhixu.adapters.channels.targets import OutboundTargetResolver
 from zhixu.channels import ChannelCapabilities, ChannelDeliveryResult, OutboundMessage
 from zhixu.domain import DataClassification
 from zhixu.domain.errors import ValidationError
@@ -98,7 +98,7 @@ class EmailOutboundAdapter:
     def __init__(
         self,
         credentials: EmailCredentials,
-        targets: OutboundTargetStore,
+        targets: OutboundTargetResolver,
         *,
         transport: SMTPTransport | None = None,
         subject: str = "知序通知",

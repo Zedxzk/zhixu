@@ -49,6 +49,7 @@ can be consumed only once. `DELETE /admin/identities/{id}` requires
 ```text
 GET|POST             /admin/agenda
 PUT|DELETE           /admin/agenda/{id}
+POST                 /admin/agenda/{id}/exceptions
 GET|POST             /admin/tasks
 PUT|DELETE           /admin/tasks/{id}
 POST                 /admin/tasks/{id}/transition
@@ -62,6 +63,11 @@ GET                  /admin/outbox
 GET                  /admin/audit
 GET                  /admin/status
 ```
+
+An agenda exception can cancel one occurrence or replace its start/end without changing
+the recurring series. Note attachments are metadata-only objects (`id`, `filename`,
+`media_type`, `size_bytes`, and opaque `content_ref`); this API never accepts attachment
+binary content.
 
 Deletion requires the confirmation header. External identities and delivery targets are
 represented by opaque references; status and audit endpoints do not return raw platform
@@ -84,7 +90,9 @@ POST                 /admin/vault/secrets/{id}/grant
 
 Creation accepts `kind` equal to `human` or `machine`; L4 values are not accepted. Human
 secrets can be revealed only with current Passkey step-up. Machine secrets use an
-allowlisted executor and the executor response is rejected if it contains the credential.
+allowlisted executor. The vault passes the value only to the fixed local
+`/run/zhixu/pat-executor.sock` boundary; it never accepts an executor address from an API
+request. The executor response is rejected if it contains the credential.
 Exports are additionally encrypted with the supplied export passphrase.
 
 Never send a vault value, export passphrase, session token, raw external identifier, or

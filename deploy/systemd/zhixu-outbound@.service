@@ -1,0 +1,47 @@
+[Unit]
+Description=Zhixu outbound-only channel worker (%i)
+After=network-online.target zhixu-api.service
+Wants=network-online.target
+Requires=zhixu-api.service
+
+[Service]
+Type=simple
+User=zhixu
+Group=zhixu
+UMask=0077
+LoadCredential=outbound_config:/etc/zhixu/outbound/%i.json
+LoadCredential=outbound_field_key:/etc/zhixu/credentials/outbound_field_key
+LoadCredential=channel_service_token:/etc/zhixu/credentials/channel_service_token
+ExecStart=/opt/zhixu/current/venv/bin/zhixu-outbound --database /var/lib/zhixu/outbound/targets.sqlite3 --config-file %d/outbound_config --field-key-file %d/outbound_field_key --channel-service-token-file %d/channel_service_token
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/zhixu/outbound
+InaccessiblePaths=/var/lib/zhixu/zhixu.sqlite3 /var/lib/zhixu/zhixu.sqlite3-wal /var/lib/zhixu/zhixu.sqlite3-shm /var/lib/zhixu/qq /var/lib/zhixu-vault
+SystemCallArchitectures=native
+LogNamespace=zhixu
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=100
+
+[Install]
+WantedBy=multi-user.target

@@ -11,6 +11,7 @@ from zhixu.domain import (
     DataClassification,
     ExceptionAction,
     MissedReminderPolicy,
+    NoteAttachment,
     TaskStatus,
 )
 from zhixu.domain.errors import ConflictError, ValidationError
@@ -101,6 +102,7 @@ class CreateNote:
     title: str
     body: str
     tags: tuple[str, ...] = ()
+    attachments: tuple[NoteAttachment, ...] = ()
     classification: DataClassification = DataClassification.PERSONAL
 
 
@@ -111,6 +113,7 @@ class UpdateNote:
     title: str
     body: str
     tags: tuple[str, ...] = ()
+    attachments: tuple[NoteAttachment, ...] = ()
     classification: DataClassification = DataClassification.PERSONAL
 
 

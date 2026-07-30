@@ -32,14 +32,16 @@ dev = [
 zhixu = "zhixu.cli:main"
 zhixu-api = "zhixu.runtime.api:main"
 zhixu-backup = "zhixu.runtime.backup:main"
+zhixu-outbound = "zhixu.runtime.outbound:main"
 zhixu-qq = "zhixu.runtime.channel_qq:main"
 zhixu-worker = "zhixu.runtime.worker:main"
 zhixu-vault = "zhixu_vault.cli:main"
 zhixu-vault-backup = "zhixu_vault.backup_runtime:main"
 zhixu-vault-runtime = "zhixu_vault.runtime:main"
+zhixu-pat-executor = "zhixu_integration.runtime:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/zhixu", "src/zhixu_vault"]
+packages = ["src/zhixu", "src/zhixu_vault", "src/zhixu_integration"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -54,7 +56,7 @@ line-length = 100
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.importlinter]
-root_packages = ["zhixu", "zhixu_vault"]
+root_packages = ["zhixu", "zhixu_vault", "zhixu_integration"]
 exclude_type_checking_imports = true
 
 [[tool.importlinter.contracts]]
@@ -99,3 +101,9 @@ name = "ports do not depend on concrete adapters"
 type = "forbidden"
 source_modules = ["zhixu.ports"]
 forbidden_modules = ["zhixu.adapters"]
+
+[[tool.importlinter.contracts]]
+name = "integration executor is isolated from application and vault implementation"
+type = "forbidden"
+source_modules = ["zhixu_integration"]
+forbidden_modules = ["zhixu", "zhixu_vault"]

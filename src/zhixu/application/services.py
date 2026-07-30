@@ -303,6 +303,7 @@ class ZhixuServices:
             title=command.title,
             body=command.body,
             tags=command.tags,
+            attachments=command.attachments,
             classification=command.classification,
         )
         authorization = self.policy.require(
@@ -324,6 +325,7 @@ class ZhixuServices:
             title=command.title,
             body=command.body,
             tags=command.tags,
+            attachments=command.attachments,
             classification=command.classification,
             version=command.expected_version + 1,
         )

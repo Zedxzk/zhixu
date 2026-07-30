@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Protocol
 from urllib.parse import urlsplit
 
-from zhixu.adapters.channels.targets import OutboundTargetStore
+from zhixu.adapters.channels.targets import OutboundTargetResolver
 from zhixu.channels import ChannelCapabilities, ChannelDeliveryResult, OutboundMessage
 from zhixu.domain import DataClassification
 from zhixu.domain.errors import PermissionDenied, ValidationError
@@ -197,7 +197,7 @@ class WebhookOutboundAdapter:
     def __init__(
         self,
         credentials: WebhookCredentials,
-        targets: OutboundTargetStore,
+        targets: OutboundTargetResolver,
         policy: WebhookEgressPolicy,
         *,
         transport: WebhookTransport | None = None,

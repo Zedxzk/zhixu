@@ -15,7 +15,7 @@ from .classification import (
 )
 from .identity import EncryptedIdentifier, ExternalIdentity, User, UserStatus
 from .job import JobRun, JobRunStatus, ScheduledJob
-from .note import Note
+from .note import Note, NoteAttachment
 from .policy import (
     Action,
     AuthenticationStrength,
@@ -43,6 +43,7 @@ __all__ = [
     "JobRunStatus",
     "MissedReminderPolicy",
     "Note",
+    "NoteAttachment",
     "PolicyEngine",
     "RecurrenceException",
     "RecurrenceRule",

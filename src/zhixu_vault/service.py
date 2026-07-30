@@ -114,43 +114,66 @@ class VaultService:
         value: SecretValue,
         classification: VaultClassification | None = None,
     ) -> SecretMetadata:
+        grant: VerifiedGrant | None = None
         try:
             grant = self.verifier.verify_and_consume(
                 token,
                 secret_id=secret_id,
                 action=VaultAction.CREATE.value,
             )
+            if grant.subject != owner_user_id or grant.authentication != "step_up":
+                raise PermissionError("secret creation grant is invalid")
+            return self.create_secret(
+                secret_id=secret_id,
+                owner_user_id=owner_user_id,
+                label=label,
+                kind=kind,
+                value=value,
+                authentication=grant.authentication,
+                classification=classification,
+            )
         except Exception:
             value.clear()
+            self._record_denial(
+                actor=grant.subject if grant is not None else "unknown",
+                action=VaultAction.CREATE,
+                secret_id=secret_id,
+            )
             raise
-        if grant.subject != owner_user_id or grant.authentication != "step_up":
-            value.clear()
-            raise PermissionError("secret creation grant is invalid")
-        return self.create_secret(
-            secret_id=secret_id,
-            owner_user_id=owner_user_id,
-            label=label,
-            kind=kind,
-            value=value,
-            authentication=grant.authentication,
-            classification=classification,
-        )
 
     def list_owned_metadata(self, token: str) -> list[SecretMetadata]:
-        grant = self.verifier.verify_and_consume(
-            token,
-            secret_id="*",
-            action=VaultAction.LIST_METADATA.value,
-        )
-        return self.repository.list_metadata(grant.subject)
+        grant: VerifiedGrant | None = None
+        try:
+            grant = self.verifier.verify_and_consume(
+                token,
+                secret_id="*",
+                action=VaultAction.LIST_METADATA.value,
+            )
+            values = self.repository.list_metadata(grant.subject)
+            self._record_success(grant, VaultAction.LIST_METADATA, "*")
+            return values
+        except Exception:
+            self._record_denial(
+                actor=grant.subject if grant is not None else "unknown",
+                action=VaultAction.LIST_METADATA,
+                secret_id="*",
+            )
+            raise
 
     def list_metadata(self, token: str, secret_id: str) -> list[SecretMetadata]:
-        _grant, metadata = self._authorize(token, secret_id, VaultAction.LIST_METADATA)
+        grant, metadata = self._authorize(token, secret_id, VaultAction.LIST_METADATA)
+        self._record_success(grant, VaultAction.LIST_METADATA, secret_id)
         return [metadata]
 
     def reveal(self, token: str, secret_id: str) -> SecretValue:
-        self._authorize(token, secret_id, VaultAction.REVEAL)
-        return self.repository.decrypt(secret_id)
+        grant, _metadata = self._authorize(token, secret_id, VaultAction.REVEAL)
+        value = self.repository.decrypt(secret_id)
+        try:
+            self._record_success(grant, VaultAction.REVEAL, secret_id)
+        except Exception:
+            value.clear()
+            raise
+        return value
 
     def use(
         self,
@@ -160,9 +183,15 @@ class VaultService:
         executor_name: str,
         request: dict[str, Any],
     ) -> ExecutionResult:
-        self._authorize(token, secret_id, VaultAction.USE)
+        grant, _metadata = self._authorize(token, secret_id, VaultAction.USE)
         executor = self.executors.get(executor_name)
         if executor is None:
+            self._record_denial(
+                actor=grant.subject,
+                action=VaultAction.USE,
+                secret_id=secret_id,
+                reason_code="executor_unavailable",
+            )
             raise KeyError("machine secret executor is unavailable")
         with self.repository.decrypt(secret_id) as secret:
             result = executor.execute(secret, request)
@@ -174,7 +203,14 @@ class VaultService:
                 default=lambda _value: "<unsupported>",
             )
             if secret.text() and secret.text() in serialized:
+                self._record_denial(
+                    actor=grant.subject,
+                    action=VaultAction.USE,
+                    secret_id=secret_id,
+                    reason_code="secret_echo_blocked",
+                )
                 raise PermissionError("executor attempted to return secret material")
+        self._record_success(grant, VaultAction.USE, secret_id)
         return result
 
     def update(
@@ -210,7 +246,7 @@ class VaultService:
         *,
         export_passphrase: str,
     ) -> bytes:
-        self._authorize(token, secret_id, VaultAction.EXPORT)
+        grant, _metadata = self._authorize(token, secret_id, VaultAction.EXPORT)
         salt = os.urandom(16)
         export_key = Argon2Parameters().derive(export_passphrase, salt)
         metadata = self.repository.get_metadata(secret_id)
@@ -235,7 +271,9 @@ class VaultService:
                 context=f"secret-export:{secret_id}",
             ),
         }
-        return json.dumps(envelope, sort_keys=True, separators=(",", ":")).encode()
+        result = json.dumps(envelope, sort_keys=True, separators=(",", ":")).encode()
+        self._record_success(grant, VaultAction.EXPORT, secret_id)
+        return result
 
     def rotate_keys(
         self,
@@ -266,19 +304,62 @@ class VaultService:
         secret_id: str,
         action: VaultAction,
     ) -> tuple[VerifiedGrant, SecretMetadata]:
-        grant = self.verifier.verify_and_consume(
-            token,
-            secret_id=secret_id,
+        grant: VerifiedGrant | None = None
+        try:
+            grant = self.verifier.verify_and_consume(
+                token,
+                secret_id=secret_id,
+                action=action.value,
+            )
+            metadata = self.repository.get_metadata(secret_id)
+            self.policy.require(
+                grant,
+                kind=metadata.kind,
+                acl_allowed=self.repository.has_acl(
+                    secret_id,
+                    grant.subject,
+                    action.value,
+                ),
+            )
+            return grant, metadata
+        except Exception:
+            self._record_denial(
+                actor=grant.subject if grant is not None else "unknown",
+                action=action,
+                secret_id=secret_id,
+            )
+            raise
+
+    def _record_success(
+        self,
+        grant: VerifiedGrant,
+        action: VaultAction,
+        secret_id: str,
+    ) -> None:
+        self.repository.record_access(
+            actor=grant.subject,
             action=action.value,
+            secret_id=secret_id,
+            outcome="completed",
         )
-        metadata = self.repository.get_metadata(secret_id)
-        self.policy.require(
-            grant,
-            kind=metadata.kind,
-            acl_allowed=self.repository.has_acl(
-                secret_id,
-                grant.subject,
-                action.value,
-            ),
-        )
-        return grant, metadata
+
+    def _record_denial(
+        self,
+        *,
+        actor: str,
+        action: VaultAction,
+        secret_id: str,
+        reason_code: str = "authorization_denied",
+    ) -> None:
+        try:
+            self.repository.record_access(
+                actor=actor,
+                action=action.value,
+                secret_id=secret_id,
+                outcome="denied",
+                reason_code=reason_code,
+            )
+        except Exception:
+            # Denials remain fail-closed even when a sealed vault cannot derive
+            # the audit MAC key. The Unix runtime emits only the exception type.
+            return

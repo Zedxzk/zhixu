@@ -17,6 +17,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from .crypto import VaultKeyring
 from .database import VaultDatabase
+from .executors import UnixSocketMachineExecutor
 from .grants import CapabilityGrantVerifier
 from .service import VaultService
 from .storage import VaultRepository
@@ -35,6 +36,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--passkey-rp-id", required=True)
     parser.add_argument("--passkey-origin", required=True)
     parser.add_argument("--idle-timeout-seconds", type=int, default=600)
+    parser.add_argument(
+        "--executor",
+        action="append",
+        default=[],
+        metavar="NAME=UNIX_SOCKET",
+        help="register a fixed local machine-secret executor boundary",
+    )
     return parser
 
 
@@ -63,7 +71,12 @@ async def run(args: argparse.Namespace) -> None:
         issuers={args.issuer: _public_key(args.issuer_public_key_file)},
         now=now,
     )
-    service = VaultService(VaultRepository(database, keyring, now), verifier)
+    executors = _executors(args.executor)
+    service = VaultService(
+        VaultRepository(database, keyring, now),
+        verifier,
+        executors=executors,
+    )
     passkeys = PasskeyManager(
         database,
         rp_id=args.passkey_rp_id,
@@ -90,6 +103,22 @@ async def run(args: argparse.Namespace) -> None:
     finally:
         keyring.lock()
         await server.close()
+
+
+def _executors(values: Sequence[str]) -> dict[str, UnixSocketMachineExecutor]:
+    result: dict[str, UnixSocketMachineExecutor] = {}
+    for value in values:
+        name, separator, raw_path = value.partition("=")
+        if (
+            not separator
+            or not name
+            or len(name) > 80
+            or not all(character.isalnum() or character in "._-" for character in name)
+            or name in result
+        ):
+            raise ValueError("machine executor registration is invalid")
+        result[name] = UnixSocketMachineExecutor(Path(raw_path))
+    return result
 
 
 def main(argv: Sequence[str] | None = None) -> int:

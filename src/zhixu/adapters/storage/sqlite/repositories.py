@@ -23,6 +23,7 @@ from zhixu.domain import (
     JobRunStatus,
     MissedReminderPolicy,
     Note,
+    NoteAttachment,
     RecurrenceException,
     RecurrenceRule,
     Reminder,
@@ -864,6 +865,31 @@ class NoteRepository:
         ).fetchall()
         return tuple(str(row["name"]) for row in rows)
 
+    @staticmethod
+    def _attachments(
+        connection: sqlite3.Connection,
+        note_id: str,
+    ) -> tuple[NoteAttachment, ...]:
+        rows = connection.execute(
+            """
+            SELECT id,filename,media_type,size_bytes,content_ref
+            FROM note_attachments
+            WHERE note_id=?
+            ORDER BY id
+            """,
+            (note_id,),
+        ).fetchall()
+        return tuple(
+            NoteAttachment(
+                id=str(row["id"]),
+                filename=str(row["filename"]),
+                media_type=str(row["media_type"]),
+                size_bytes=int(row["size_bytes"]),
+                content_ref=str(row["content_ref"]),
+            )
+            for row in rows
+        )
+
     @classmethod
     def _from_row(cls, connection: sqlite3.Connection, row: sqlite3.Row) -> Note:
         return Note(
@@ -872,6 +898,7 @@ class NoteRepository:
             title=str(row["title"]),
             body=str(row["body"]),
             tags=cls._tags(connection, str(row["id"])),
+            attachments=cls._attachments(connection, str(row["id"])),
             classification=DataClassification(int(row["classification"])),
             version=int(row["version"]),
             created_at=_load_datetime(str(row["created_at"])),
@@ -904,6 +931,31 @@ class NoteRepository:
                 """,
                 (note.id, int(row["id"])),
             )
+
+    @staticmethod
+    def _write_attachments(connection: sqlite3.Connection, note: Note) -> None:
+        connection.execute(
+            "DELETE FROM note_attachments WHERE note_id=?",
+            (note.id,),
+        )
+        connection.executemany(
+            """
+            INSERT INTO note_attachments(
+                note_id,id,filename,media_type,size_bytes,content_ref
+            ) VALUES(?,?,?,?,?,?)
+            """,
+            (
+                (
+                    note.id,
+                    item.id,
+                    item.filename,
+                    item.media_type,
+                    item.size_bytes,
+                    item.content_ref,
+                )
+                for item in note.attachments
+            ),
+        )
 
     @staticmethod
     def _write_fts(connection: sqlite3.Connection, note: Note) -> None:
@@ -952,6 +1004,7 @@ class NoteRepository:
                     ),
                 )
                 self._write_tags(connection, stored)
+                self._write_attachments(connection, stored)
                 self._write_fts(connection, stored)
                 _audit(connection, authorization)
         except sqlite3.IntegrityError as exc:
@@ -1021,6 +1074,7 @@ class NoteRepository:
             if cursor.rowcount != 1:
                 raise ConcurrencyConflict("note changed or does not exist")
             self._write_tags(connection, stored)
+            self._write_attachments(connection, stored)
             self._write_fts(connection, stored)
             _audit(connection, authorization)
         return stored

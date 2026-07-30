@@ -11,12 +11,39 @@ from .errors import ValidationError
 
 
 @dataclass(frozen=True, slots=True)
+class NoteAttachment:
+    """Metadata-only attachment reference; binary content lives outside ordinary storage."""
+
+    id: str
+    filename: str
+    media_type: str
+    size_bytes: int
+    content_ref: str
+
+    def __post_init__(self) -> None:
+        if (
+            not self.id.strip()
+            or len(self.id) > 160
+            or not self.filename.strip()
+            or len(self.filename) > 500
+            or not self.media_type.strip()
+            or len(self.media_type) > 200
+            or not self.content_ref.strip()
+            or len(self.content_ref) > 500
+        ):
+            raise ValidationError("note attachment metadata is invalid")
+        if self.size_bytes < 0 or self.size_bytes > 10 * 1024 * 1024 * 1024:
+            raise ValidationError("note attachment size is invalid")
+
+
+@dataclass(frozen=True, slots=True)
 class Note:
     id: str
     owner_user_id: str
     title: str
     body: str
     tags: tuple[str, ...] = ()
+    attachments: tuple[NoteAttachment, ...] = ()
     classification: DataClassification = DataClassification.PERSONAL
     version: int = 1
     created_at: datetime | None = None
@@ -37,4 +64,7 @@ class Note:
             raise ValidationError("tags must not be empty")
         if len(set(self.tags)) != len(self.tags):
             raise ValidationError("tags must be unique")
+        attachment_ids = [item.id for item in self.attachments]
+        if len(set(attachment_ids)) != len(attachment_ids):
+            raise ValidationError("note attachment ids must be unique")
         require_ordinary_storage(self.classification)

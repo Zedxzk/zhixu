@@ -54,7 +54,7 @@ NOW = datetime(2026, 6, 1, 8, tzinfo=UTC)
 @pytest.fixture
 def database(tmp_path: Path) -> Database:
     value = Database(tmp_path / "zhixu.sqlite3")
-    assert value.migrate() == [1, 2, 3, 4, 5, 6]
+    assert value.migrate() == [1, 2, 3, 4, 5, 6, 7]
     return value
 
 
@@ -415,6 +415,28 @@ class FakeTransport:
         return 200, {"id": "provider-message-test"}
 
 
+def test_qq_access_token_is_cached_and_refreshed_before_expiry(
+    database: Database,
+    privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
+) -> None:
+    contacts = register_account(database, privacy_primitives)
+    transport = FakeTransport()
+    adapter = QQHttpAdapter(
+        QQBotCredentials("bot_test_a", "synthetic-app", "synthetic-secret"),
+        contacts,
+        transport=transport,
+    )
+
+    assert adapter.access_token(now=NOW) == "synthetic-token"
+    assert adapter.access_token(now=NOW + timedelta(hours=1)) == "synthetic-token"
+    assert adapter.access_token(now=NOW + timedelta(hours=2)) == "synthetic-token"
+
+    token_requests = [
+        request for request in transport.requests if request[0].endswith("getAppAccessToken")
+    ]
+    assert len(token_requests) == 2
+
+
 def test_qq_http_supports_image_upload(
     database: Database,
     privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
@@ -576,6 +598,45 @@ def test_gateway_persists_resume_state_encrypted_and_emits_ephemeral_event(
         b"gateway-body-canary",
     ):
         assert canary not in database_bytes
+
+
+def test_gateway_heartbeat_reconnect_and_invalid_session_state_machine(
+    database: Database,
+    privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
+) -> None:
+    cipher, _references = privacy_primitives
+    contacts = register_account(database, privacy_primitives)
+    store = QQGatewaySessionStore(database, cipher)
+    protocol = QQGatewayProtocol(
+        channel_account="bot_test_a",
+        mapper=QQEventMapper("bot_test_a", contacts),
+        session_store=store,
+        on_event=lambda _event: None,
+    )
+    assert protocol.handle(
+        {
+            "op": 0,
+            "t": "READY",
+            "s": 7,
+            "d": {
+                "session_id": "synthetic-session",
+                "resume_gateway_url": "wss://example.invalid/resume",
+            },
+        },
+        received_at=NOW,
+    ) == "ready"
+    assert protocol.heartbeat_payload() == {"op": 1, "d": 7}
+    assert not protocol.state.heartbeat_acknowledged
+    assert protocol.handle({"op": 11}, received_at=NOW) == "heartbeat_ack"
+    assert protocol.state.heartbeat_acknowledged
+    assert protocol.handle({"op": 7}, received_at=NOW) == "reconnect"
+
+    assert protocol.handle({"op": 9, "d": True}, received_at=NOW) == "reconnect"
+    assert protocol.state.session_id == "synthetic-session"
+    assert protocol.handle({"op": 9, "d": False}, received_at=NOW) == "reconnect"
+    assert protocol.state.session_id == ""
+    assert protocol.state.sequence is None
+    assert store.load("bot_test_a").session_id == ""
 
 
 def test_gateway_does_not_advance_resume_sequence_when_forwarding_fails(

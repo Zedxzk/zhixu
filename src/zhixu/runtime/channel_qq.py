@@ -45,12 +45,20 @@ class InternalChannelClient:
             parsed.scheme != "http"
             or parsed.hostname not in {"127.0.0.1", "::1"}
             or parsed.path not in {"", "/"}
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
         ):
             raise ValueError("internal channel API must be a loopback HTTP origin")
         if len(service_token) < 32:
             raise ValueError("internal channel service token is too short")
         self.base_url = base_url.rstrip("/")
         self._service_token = service_token
+        self._opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}),
+            _RejectRedirects(),
+        )
 
     def event(self, event: InboundEvent) -> None:
         self._post(
@@ -114,14 +122,30 @@ class InternalChannelClient:
             },
         )
         try:
-            with urllib.request.urlopen(request, timeout=10) as response:
-                value = json.loads(response.read(1024 * 1024))
+            with self._opener.open(request, timeout=10) as response:
+                raw = response.read(1024 * 1024 + 1)
         except urllib.error.HTTPError as exc:
             exc.read(4096)
             raise RuntimeError("internal channel API rejected a request") from exc
+        if len(raw) > 1024 * 1024:
+            raise RuntimeError("internal channel API response is too large")
+        value = json.loads(raw)
         if not isinstance(value, dict):
             raise RuntimeError("internal channel API returned an invalid response")
         return value
+
+
+class _RejectRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        _request: urllib.request.Request,
+        _file_pointer: object,
+        _code: int,
+        _message: str,
+        _headers: object,
+        _new_url: str,
+    ) -> None:
+        return None
 
 
 def build_parser() -> argparse.ArgumentParser:

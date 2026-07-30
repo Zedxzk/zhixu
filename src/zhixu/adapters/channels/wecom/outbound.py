@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from zhixu.adapters.channels.http import JsonTransport, UrllibJsonTransport
-from zhixu.adapters.channels.targets import OutboundTargetStore
+from zhixu.adapters.channels.targets import OutboundTargetResolver
 from zhixu.channels import ChannelCapabilities, ChannelDeliveryResult, OutboundMessage
 from zhixu.domain import DataClassification
 from zhixu.domain.errors import ValidationError
@@ -43,7 +43,7 @@ class WeComOutboundAdapter:
     def __init__(
         self,
         credentials: WeComCredentials,
-        targets: OutboundTargetStore,
+        targets: OutboundTargetResolver,
         *,
         transport: JsonTransport | None = None,
     ) -> None:

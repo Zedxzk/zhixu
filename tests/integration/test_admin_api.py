@@ -7,6 +7,11 @@ from pathlib import Path
 
 import pytest
 
+from zhixu.adapters.channels import (
+    ChannelRegistry,
+    OutboundTargetStore,
+    RegisteredChannel,
+)
 from zhixu.adapters.storage.sqlite import (
     AdminCredentialStore,
     AdminReadStore,
@@ -45,6 +50,8 @@ SYNTHETIC_INVALID_CREDENTIAL = "wrong synthetic password"
 class AdminParts:
     api: AdminAPI
     database: Database
+    outbound_database: Database
+    outbound_targets: OutboundTargetStore
     reads: AdminReadStore
     sessions: AdminSessionStore
     token: str
@@ -58,7 +65,7 @@ class AdminParts:
 @pytest.fixture
 def admin(tmp_path: Path) -> AdminParts:
     database = Database(tmp_path / "zhixu.sqlite3")
-    assert database.migrate() == [1, 2, 3, 4, 5, 6]
+    assert database.migrate() == [1, 2, 3, 4, 5, 6, 7]
     clock = FrozenClock(NOW)
     grants = GrantRepository(database)
     policy = PolicyEngine(grants.has_grant)
@@ -86,6 +93,13 @@ def admin(tmp_path: Path) -> AdminParts:
         now=NOW,
     )
     reads = AdminReadStore(database)
+    outbound_database = Database(tmp_path / "outbound-targets.sqlite3")
+    assert outbound_database.migrate() == [1, 2, 3, 4, 5, 6, 7]
+    outbound_targets = OutboundTargetStore(
+        outbound_database,
+        FieldCipher(b"o" * 32),
+        OpaqueReferenceFactory(b"r" * 32),
+    )
     api = AdminAPI(
         services=ZhixuServices(
             agenda=AgendaRepository(database),
@@ -110,8 +124,45 @@ def admin(tmp_path: Path) -> AdminParts:
         ),
         credentials=credentials,
         outbox=OutboxStore(database),
+        channels=ChannelRegistry(
+            declared=(
+                RegisteredChannel(
+                    "qq",
+                    "account_synthetic",
+                    "conversational",
+                    {
+                        "inbound_text": True,
+                        "outbound_text": True,
+                        "proactive_push": True,
+                    },
+                ),
+                RegisteredChannel(
+                    "email",
+                    "account_synthetic",
+                    "outbound-only",
+                    {
+                        "inbound_text": False,
+                        "outbound_text": True,
+                        "proactive_push": True,
+                    },
+                ),
+            ),
+        ),
+        outbound_targets=outbound_targets,
+        outbound_target_kinds={
+            ("email", "account_synthetic"): "recipient",
+        },
     )
-    return AdminParts(api, database, reads, sessions, token.value, grants)
+    return AdminParts(
+        api,
+        database,
+        outbound_database,
+        outbound_targets,
+        reads,
+        sessions,
+        token.value,
+        grants,
+    )
 
 
 def _json(data: dict[str, object]) -> bytes:
@@ -449,6 +500,7 @@ def test_wrong_identity_code_attempts_persist_and_lock_challenge(admin: AdminPar
             }
         ),
     )
+    assert issued.status == 201
     challenge_id = str(issued.body["challenge_id"])
     correct_code = _challenge_code(admin, challenge_id)
     for _ in range(5):
@@ -482,6 +534,54 @@ def test_wrong_identity_code_attempts_persist_and_lock_challenge(admin: AdminPar
             (challenge_id,),
         ).fetchone()["attempts"]
     assert attempts == 5
+
+
+def test_outbound_identity_target_is_encrypted_in_an_isolated_database(
+    admin: AdminParts,
+    tmp_path: Path,
+) -> None:
+    recipient = "identity-recipient@example.invalid"
+    issued = admin.api.dispatch(
+        "POST",
+        "/admin/identity-challenges",
+        headers=admin.headers,
+        body=_json(
+            {
+                "channel": "email",
+                "channel_account": "account_synthetic",
+                "external_subject": recipient,
+            }
+        ),
+    )
+    assert issued.status == 201
+    opaque_ref = str(issued.body["opaque_ref"])
+    resolved = admin.outbound_targets.resolve(
+        channel="email",
+        channel_account="account_synthetic",
+        opaque_ref=opaque_ref,
+    )
+    assert resolved.kind == "recipient"
+    assert resolved.value == recipient
+
+    with admin.database.connect() as connection:
+        delivery = connection.execute(
+            """
+            SELECT target_ref,payload_json
+            FROM outbox_deliveries
+            WHERE idempotency_key=?
+            """,
+            (str(issued.body["challenge_id"]),),
+        ).fetchone()
+    assert delivery is not None
+    assert str(delivery["target_ref"]) == opaque_ref
+    assert recipient not in str(delivery["payload_json"])
+
+    database_bytes = b"".join(
+        path.read_bytes()
+        for path in tmp_path.iterdir()
+        if path.name.startswith(("zhixu.sqlite3", "outbound-targets.sqlite3"))
+    )
+    assert recipient.encode() not in database_bytes
 
 
 def test_admin_domain_management_and_acl_use_internal_user_ids(
@@ -556,3 +656,104 @@ def test_admin_domain_management_and_acl_use_internal_user_ids(
     assert len(admin.api.dispatch("GET", "/admin/agenda", headers=admin.headers).body) == 1
     assert len(admin.api.dispatch("GET", "/admin/tasks", headers=admin.headers).body) == 1
     assert len(admin.api.dispatch("GET", "/admin/notes", headers=admin.headers).body) == 1
+
+
+def test_admin_manages_recurrence_exceptions_and_note_attachment_metadata(
+    admin: AdminParts,
+) -> None:
+    start = NOW + timedelta(days=1)
+    agenda = admin.api.dispatch(
+        "POST",
+        "/admin/agenda",
+        headers=admin.headers,
+        body=_json(
+            {
+                "title": "Synthetic recurring agenda",
+                "start_at": start.isoformat(),
+                "end_at": (start + timedelta(hours=1)).isoformat(),
+                "timezone": "UTC",
+                "recurrence_rule": "FREQ=DAILY;COUNT=3",
+            }
+        ),
+    )
+    assert agenda.status == 201
+    agenda_id = str(agenda.body["id"])
+    cancelled_at = start + timedelta(days=1)
+    exception = admin.api.dispatch(
+        "POST",
+        f"/admin/agenda/{agenda_id}/exceptions",
+        headers=admin.headers,
+        body=_json(
+            {
+                "occurrence_at": cancelled_at.isoformat(),
+                "action": "cancel",
+            }
+        ),
+    )
+    assert exception.status == 201
+    occurrences = AgendaRepository(admin.database).occurrences(
+        "user_owner",
+        start - timedelta(minutes=1),
+        start + timedelta(days=4),
+    )
+    assert [item.start_at for item in occurrences] == [
+        start,
+        start + timedelta(days=2),
+    ]
+
+    note = admin.api.dispatch(
+        "POST",
+        "/admin/notes",
+        headers=admin.headers,
+        body=_json(
+            {
+                "title": "Synthetic attachment note",
+                "body": "Metadata only.",
+                "attachments": [
+                    {
+                        "id": "attachment_synthetic",
+                        "filename": "synthetic.pdf",
+                        "media_type": "application/pdf",
+                        "size_bytes": 2048,
+                        "content_ref": "attachment_ref_synthetic",
+                    }
+                ],
+            }
+        ),
+    )
+    assert note.status == 201
+    assert note.body["attachments"] == [
+        {
+            "id": "attachment_synthetic",
+            "filename": "synthetic.pdf",
+            "media_type": "application/pdf",
+            "size_bytes": 2048,
+            "content_ref": "attachment_ref_synthetic",
+        }
+    ]
+    stored = NoteRepository(admin.database).get(str(note.body["id"]))
+    assert stored is not None
+    assert stored.attachments[0].content_ref == "attachment_ref_synthetic"
+
+    rejected_binary = admin.api.dispatch(
+        "POST",
+        "/admin/notes",
+        headers=admin.headers,
+        body=_json(
+            {
+                "title": "Synthetic rejected note",
+                "body": "No binary payloads.",
+                "attachments": [
+                    {
+                        "id": "attachment_rejected",
+                        "filename": "synthetic.bin",
+                        "media_type": "application/octet-stream",
+                        "size_bytes": 4,
+                        "content_ref": "attachment_ref_rejected",
+                        "content": "AAAA",
+                    }
+                ],
+            }
+        ),
+    )
+    assert rejected_binary.status == 422

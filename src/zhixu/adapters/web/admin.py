@@ -10,7 +10,10 @@ from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-from zhixu.adapters.channels import ChannelRegistry
+from zhixu.adapters.channels import (
+    ChannelRegistry,
+    OutboundTargetStore,
+)
 from zhixu.adapters.storage.sqlite import (
     AdminCredentialStore,
     AdminReadStore,
@@ -29,6 +32,7 @@ from zhixu.application.commands import (
     DeleteNote,
     DeleteTask,
     PostponeTask,
+    SetAgendaException,
     TransitionTask,
     UpdateAgenda,
     UpdateNote,
@@ -43,6 +47,8 @@ from zhixu.domain import (
     CommandContext,
     DataClassification,
     EncryptedIdentifier,
+    ExceptionAction,
+    NoteAttachment,
     PolicyEngine,
     RequestChannel,
     ResourceRef,
@@ -125,6 +131,8 @@ class AdminAPI:
         credentials: AdminCredentialStore | None = None,
         channel_routes: ChannelRouteStore | None = None,
         outbox: OutboxStore | None = None,
+        outbound_targets: OutboundTargetStore | None = None,
+        outbound_target_kinds: Mapping[tuple[str, str], str] | None = None,
         vault_client: UnixVaultClient | None = None,
         grant_issuer: CapabilityGrantIssuer | None = None,
     ) -> None:
@@ -142,6 +150,8 @@ class AdminAPI:
         self.credentials = credentials
         self.channel_routes = channel_routes
         self.outbox = outbox
+        self.outbound_targets = outbound_targets
+        self.outbound_target_kinds = dict(outbound_target_kinds or {})
         self.vault_client = vault_client
         self.grant_issuer = grant_issuer
         self.health = health or HealthRegistry(
@@ -306,6 +316,14 @@ class AdminAPI:
                     return self._list_agenda(context)
                 if method == "POST":
                     return self._create_agenda(self._object_body(body), context)
+            if path.startswith("/admin/agenda/") and path.endswith("/exceptions"):
+                parts = path.strip("/").split("/")
+                if method == "POST" and len(parts) == 4:
+                    return self._set_agenda_exception(
+                        parts[2],
+                        self._object_body(body),
+                        context,
+                    )
             if path.startswith("/admin/agenda/"):
                 item_id = path.rsplit("/", 1)[-1]
                 if method == "PUT":
@@ -809,7 +827,27 @@ class AdminAPI:
         channel = self._string(data, "channel", maximum=40)
         account = self._string(data, "channel_account", maximum=160)
         subject = self._string(data, "external_subject", maximum=512)
-        opaque = self.references.create("identity", channel, account, subject)
+        registered = {
+            (item.channel, item.channel_account): item for item in self.channels.describe()
+        }
+        descriptor = registered.get((channel, account))
+        if descriptor is None:
+            raise ValidationError("channel account is not registered")
+        target_kind = self.outbound_target_kinds.get((channel, account))
+        if target_kind is not None:
+            if self.outbound_targets is None:
+                raise RuntimeError("outbound target registry is unavailable")
+            opaque = self.outbound_targets.register(
+                channel=channel,
+                channel_account=account,
+                kind=target_kind,
+                target=subject,
+                now=self.clock.now(),
+            )
+        elif channel == "qq" and descriptor.mode == "conversational":
+            opaque = self.references.create("identity", channel, account, subject)
+        else:
+            raise ValidationError("channel account cannot deliver identity verification")
         context = f"external-identity:{channel}:{account}:{opaque}"
         encrypted = EncryptedIdentifier(self.field_cipher.encrypt(subject, context=context))
         challenge = self.identity_links.issue(
@@ -1075,6 +1113,48 @@ class AdminAPI:
         )
         return AdminResponse(200, self._agenda_json(item))
 
+    def _set_agenda_exception(
+        self,
+        item_id: str,
+        data: dict[str, object],
+        context: CommandContext,
+    ) -> AdminResponse:
+        self._fields(
+            data,
+            required={"occurrence_at", "action"},
+            optional={"replacement_start", "replacement_end"},
+        )
+        try:
+            action = ExceptionAction(self._string(data, "action", maximum=20))
+        except ValueError as exc:
+            raise ValidationError("invalid recurrence exception action") from exc
+        replacement_start = self._nullable_datetime(data, "replacement_start")
+        replacement_end = self._nullable_datetime(data, "replacement_end")
+        self.services.set_agenda_exception(
+            SetAgendaException(
+                item_id=item_id,
+                occurrence_at=self._datetime(data, "occurrence_at"),
+                action=action,
+                replacement_start=replacement_start,
+                replacement_end=replacement_end,
+            ),
+            context,
+        )
+        return AdminResponse(
+            201,
+            {
+                "agenda_item_id": item_id,
+                "occurrence_at": self._datetime(data, "occurrence_at").isoformat(),
+                "action": action.value,
+                "replacement_start": (
+                    replacement_start.isoformat() if replacement_start else None
+                ),
+                "replacement_end": (
+                    replacement_end.isoformat() if replacement_end else None
+                ),
+            },
+        )
+
     def _list_tasks(self, context: CommandContext) -> AdminResponse:
         items = self.services.tasks.list_for_owner(context.actor_user_id)
         for item in items:
@@ -1188,13 +1268,14 @@ class AdminAPI:
         self._fields(
             data,
             required={"title", "body"},
-            optional={"tags", "classification"},
+            optional={"tags", "attachments", "classification"},
         )
         note = self.services.create_note(
             CreateNote(
                 title=self._string(data, "title", maximum=500, allow_empty=True),
                 body=self._string(data, "body", maximum=200_000, allow_empty=True),
                 tags=self._tags(data),
+                attachments=self._attachments(data),
                 classification=self._classification(data),
             ),
             context,
@@ -1210,7 +1291,7 @@ class AdminAPI:
         self._fields(
             data,
             required={"expected_version", "title", "body"},
-            optional={"tags", "classification"},
+            optional={"tags", "attachments", "classification"},
         )
         note = self.services.update_note(
             UpdateNote(
@@ -1219,6 +1300,7 @@ class AdminAPI:
                 title=self._string(data, "title", maximum=500, allow_empty=True),
                 body=self._string(data, "body", maximum=200_000, allow_empty=True),
                 tags=self._tags(data),
+                attachments=self._attachments(data),
                 classification=self._classification(data),
             ),
             context,
@@ -1260,6 +1342,16 @@ class AdminAPI:
             "title": item.title,
             "body": item.body,
             "tags": list(item.tags),
+            "attachments": [
+                {
+                    "id": attachment.id,
+                    "filename": attachment.filename,
+                    "media_type": attachment.media_type,
+                    "size_bytes": attachment.size_bytes,
+                    "content_ref": attachment.content_ref,
+                }
+                for attachment in item.attachments
+            ],
             "classification": int(item.classification),
             "version": item.version,
         }
@@ -1403,6 +1495,44 @@ class AdminAPI:
         if len(value) > 100 or any(not tag.strip() or len(tag) > 80 for tag in value):
             raise ValidationError("tags contain an invalid value")
         return tuple(value)
+
+    @classmethod
+    def _attachments(
+        cls,
+        data: Mapping[str, object],
+    ) -> tuple[NoteAttachment, ...]:
+        value = data.get("attachments", [])
+        if not isinstance(value, list) or len(value) > 100:
+            raise ValidationError("attachments must be a bounded list")
+        attachments: list[NoteAttachment] = []
+        for item in value:
+            if not isinstance(item, dict):
+                raise ValidationError("attachment metadata must be an object")
+            cls._fields(
+                item,
+                required={
+                    "id",
+                    "filename",
+                    "media_type",
+                    "size_bytes",
+                    "content_ref",
+                },
+            )
+            attachments.append(
+                NoteAttachment(
+                    id=cls._string(item, "id", maximum=160),
+                    filename=cls._string(item, "filename", maximum=500),
+                    media_type=cls._string(item, "media_type", maximum=200),
+                    size_bytes=cls._integer(
+                        item,
+                        "size_bytes",
+                        minimum=0,
+                        maximum=10 * 1024 * 1024 * 1024,
+                    ),
+                    content_ref=cls._string(item, "content_ref", maximum=500),
+                )
+            )
+        return tuple(attachments)
 
     @staticmethod
     def _query_value(query: Mapping[str, list[str]], key: str) -> str:

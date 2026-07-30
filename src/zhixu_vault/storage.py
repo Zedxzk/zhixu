@@ -39,6 +39,32 @@ class VaultRepository:
         self.now = now
         self.audit = VaultAuditLog(database)
 
+    def record_access(
+        self,
+        *,
+        actor: str,
+        action: str,
+        secret_id: str,
+        outcome: str,
+        reason_code: str = "",
+    ) -> None:
+        """Append a non-secret authorization/access decision to the audit chain."""
+
+        now = self.now().astimezone(UTC)
+        with self.database.transaction() as connection:
+            self.audit.append(
+                connection,
+                AuditEvent(
+                    now,
+                    actor[:160] or "unknown",
+                    action[:80],
+                    secret_id[:160],
+                    outcome[:40],
+                    reason_code[:80],
+                ),
+                audit_key=self.keyring.audit_key(),
+            )
+
     @staticmethod
     def _metadata(row: sqlite3.Row) -> SecretMetadata:
         return SecretMetadata(

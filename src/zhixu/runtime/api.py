@@ -15,6 +15,7 @@ from pathlib import Path
 from zhixu.adapters.channels import (
     ChannelRegistry,
     InboundReceiptStore,
+    OutboundTargetStore,
     RegisteredChannel,
 )
 from zhixu.adapters.llm import OpenAICompatibleLLM
@@ -175,6 +176,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--qq-account", required=True)
     parser.add_argument("--grant-issuer-private-key-file", required=True)
     parser.add_argument("--vault-socket", default="/run/zhixu/vault.sock")
+    parser.add_argument("--outbound-target-database", default="")
+    parser.add_argument("--outbound-field-key-file", default="")
+    parser.add_argument("--outbound-accounts-file", default="")
     parser.add_argument(
         "--llm-base-url",
         default=os.environ.get("ZHIXU_LLM_BASE_URL", ""),
@@ -229,6 +233,25 @@ def create_api(args: argparse.Namespace) -> CompositePrivateAPI:
     )
     users = UserRepository(database)
     routes = ChannelRouteStore(database)
+    outbound_configuration = _outbound_accounts(args.outbound_accounts_file)
+    outbound_values = (
+        args.outbound_target_database,
+        args.outbound_field_key_file,
+        args.outbound_accounts_file,
+    )
+    if any(outbound_values) and not all(outbound_values):
+        raise ValueError("outbound target runtime configuration is incomplete")
+    outbound_targets = None
+    if all(outbound_values):
+        outbound_database = Database(Path(args.outbound_target_database))
+        outbound_database.migrate()
+        outbound_targets = OutboundTargetStore(
+            outbound_database,
+            FieldCipher(
+                read_key_file(args.outbound_field_key_file, exact_bytes=32)
+            ),
+            references,
+        )
     classifier = None
     llm_gateway = None
     if bool(args.llm_base_url) != bool(args.llm_model):
@@ -284,6 +307,23 @@ def create_api(args: argparse.Namespace) -> CompositePrivateAPI:
         attachments=True,
         groups=True,
     )
+    declared_channels = (
+        RegisteredChannel(
+            "qq",
+            args.qq_account,
+            "conversational",
+            {
+                "inbound_text": True,
+                "outbound_text": True,
+                "proactive_push": True,
+                "buttons": True,
+                "attachments": True,
+                "voice": False,
+                "groups": True,
+            },
+        ),
+        *(item[0] for item in outbound_configuration),
+    )
     admin = AdminAPI(
         services=services,
         policy=policy,
@@ -302,23 +342,13 @@ def create_api(args: argparse.Namespace) -> CompositePrivateAPI:
             issuer="zhixu-auth",
         ),
         channels=ChannelRegistry(
-            declared=(
-                RegisteredChannel(
-                    "qq",
-                    args.qq_account,
-                    "conversational",
-                    {
-                        "inbound_text": True,
-                        "outbound_text": True,
-                        "proactive_push": True,
-                        "buttons": True,
-                        "attachments": True,
-                        "voice": False,
-                        "groups": True,
-                    },
-                ),
-            ),
+            declared=declared_channels,
         ),
+        outbound_targets=outbound_targets,
+        outbound_target_kinds={
+            (descriptor.channel, descriptor.channel_account): target_kind
+            for descriptor, target_kind in outbound_configuration
+        },
         identity_links=IdentityLinkStore(
             database,
             challenge_key=read_key_file(args.challenge_key_file),
@@ -358,7 +388,14 @@ def create_api(args: argparse.Namespace) -> CompositePrivateAPI:
         ),
         references=references,
         capabilities={
-            "qq": qq_capabilities
+            "qq": qq_capabilities,
+            **{
+                descriptor.channel: ChannelCapabilities(
+                    outbound_text=True,
+                    proactive_push=True,
+                )
+                for descriptor, _target_kind in outbound_configuration
+            },
         },
     )
     return CompositePrivateAPI(admin, internal)
@@ -366,6 +403,64 @@ def create_api(args: argparse.Namespace) -> CompositePrivateAPI:
 
 def _environment_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _outbound_accounts(
+    path: str,
+) -> tuple[tuple[RegisteredChannel, str], ...]:
+    if not path:
+        return ()
+    raw = Path(path).read_bytes()
+    if len(raw) > 64 * 1024:
+        raise ValueError("outbound account configuration is too large")
+    value = json.loads(raw)
+    if not isinstance(value, list):
+        raise ValueError("outbound account configuration must be a list")
+    result: list[tuple[RegisteredChannel, str]] = []
+    supported = {
+        "email": "recipient",
+        "wecom": "user",
+        "webhook": "endpoint",
+    }
+    seen: set[tuple[str, str]] = set()
+    for item in value:
+        if not isinstance(item, dict) or set(item) != {
+            "channel",
+            "channel_account",
+        }:
+            raise ValueError("outbound account declaration is invalid")
+        channel = item["channel"]
+        account = item["channel_account"]
+        if (
+            not isinstance(channel, str)
+            or channel not in supported
+            or not isinstance(account, str)
+            or not account.strip()
+            or len(account) > 160
+            or (channel, account) in seen
+        ):
+            raise ValueError("outbound account declaration is invalid")
+        seen.add((channel, account))
+        result.append(
+            (
+                RegisteredChannel(
+                    channel,
+                    account,
+                    "outbound-only",
+                    {
+                        "inbound_text": False,
+                        "outbound_text": True,
+                        "proactive_push": True,
+                        "buttons": False,
+                        "attachments": False,
+                        "voice": False,
+                        "groups": False,
+                    },
+                ),
+                supported[channel],
+            )
+        )
+    return tuple(result)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

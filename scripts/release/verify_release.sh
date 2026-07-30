@@ -5,7 +5,7 @@ umask 027
 python -m compileall -q src
 ruff check .
 python -m pytest -q
-lint-imports
+PYTHONPATH=src lint-imports
 python scripts/privacy_scan.py
 python scripts/history_privacy_scan.py
 

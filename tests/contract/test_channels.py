@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import urllib.request
 from datetime import UTC, datetime
 from email.message import EmailMessage
 from pathlib import Path
@@ -10,6 +11,7 @@ import pytest
 
 from zhixu.adapters.channels import ChannelRegistry, OutboundTargetStore
 from zhixu.adapters.channels.email import EmailCredentials, EmailOutboundAdapter
+from zhixu.adapters.channels.http import UrllibJsonTransport
 from zhixu.adapters.channels.webhook import (
     WebhookCredentials,
     WebhookEgressPolicy,
@@ -35,7 +37,7 @@ NOW = datetime(2026, 7, 30, 12, tzinfo=UTC)
 def target_store(tmp_path: Path) -> tuple[OutboundTargetStore, Path]:
     path = tmp_path / "zhixu.sqlite3"
     database = Database(path)
-    assert database.migrate() == [1, 2, 3, 4, 5, 6]
+    assert database.migrate() == [1, 2, 3, 4, 5, 6, 7]
     return (
         OutboundTargetStore(
             database,
@@ -143,6 +145,45 @@ def test_wecom_email_and_webhook_are_explicitly_outbound_only(
     assert registry.conversational() == []
     assert {item.mode for item in registry.describe()} == {"outbound-only"}
     assert all(not item.capabilities["inbound_text"] for item in registry.describe())
+
+
+def test_fixed_provider_transport_disables_proxies_and_redirects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[object] = []
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self, _limit: int) -> bytes:
+            return b'{"ok":true}'
+
+    class Opener:
+        def open(self, _request: object, *, timeout: float) -> Response:
+            assert timeout == 10
+            return Response()
+
+    def build_opener(*handlers: object) -> Opener:
+        captured.extend(handlers)
+        return Opener()
+
+    monkeypatch.setattr("urllib.request.build_opener", build_opener)
+    status, value = UrllibJsonTransport().request(
+        "https://provider.example.invalid/fixed",
+    )
+
+    assert status == 200 and value == {"ok": True}
+    proxy = next(
+        item for item in captured if isinstance(item, urllib.request.ProxyHandler)
+    )
+    assert proxy.proxies == {}
+    assert any(type(item).__name__ == "_RejectRedirects" for item in captured)
 
 
 def test_wecom_delivery_uses_encrypted_target_and_fixed_provider(

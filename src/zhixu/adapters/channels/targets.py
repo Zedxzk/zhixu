@@ -20,15 +20,53 @@ class ResolvedOutboundTarget:
     opaque_ref: str
 
 
-class OutboundTargetStore:
+class OutboundTargetResolver:
+    def __init__(
+        self,
+        database: Database,
+        cipher: FieldCipher,
+    ) -> None:
+        self.database = database
+        self.cipher = cipher
+
+    def resolve(
+        self,
+        *,
+        channel: str,
+        channel_account: str,
+        opaque_ref: str,
+    ) -> ResolvedOutboundTarget:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT channel,channel_account,opaque_ref,target_enc,target_kind
+                FROM outbound_targets
+                WHERE channel=? AND channel_account=? AND opaque_ref=?
+                """,
+                (channel, channel_account, opaque_ref),
+            ).fetchone()
+        if row is None:
+            raise NotFoundError("outbound target was not found")
+        kind = str(row["target_kind"])
+        context = f"outbound-target:{channel}:{channel_account}:{kind}:{opaque_ref}"
+        target = self.cipher.decrypt(str(row["target_enc"]), context=context)
+        return ResolvedOutboundTarget(
+            channel,
+            channel_account,
+            kind,
+            target,
+            opaque_ref,
+        )
+
+
+class OutboundTargetStore(OutboundTargetResolver):
     def __init__(
         self,
         database: Database,
         cipher: FieldCipher,
         references: OpaqueReferenceFactory,
     ) -> None:
-        self.database = database
-        self.cipher = cipher
+        super().__init__(database, cipher)
         self.references = references
 
     def register(
@@ -78,32 +116,3 @@ class OutboundTargetStore:
                 ),
             )
         return opaque_ref
-
-    def resolve(
-        self,
-        *,
-        channel: str,
-        channel_account: str,
-        opaque_ref: str,
-    ) -> ResolvedOutboundTarget:
-        with self.database.connect() as connection:
-            row = connection.execute(
-                """
-                SELECT channel,channel_account,opaque_ref,target_enc,target_kind
-                FROM outbound_targets
-                WHERE channel=? AND channel_account=? AND opaque_ref=?
-                """,
-                (channel, channel_account, opaque_ref),
-            ).fetchone()
-        if row is None:
-            raise NotFoundError("outbound target was not found")
-        kind = str(row["target_kind"])
-        context = f"outbound-target:{channel}:{channel_account}:{kind}:{opaque_ref}"
-        target = self.cipher.decrypt(str(row["target_enc"]), context=context)
-        return ResolvedOutboundTarget(
-            channel,
-            channel_account,
-            kind,
-            target,
-            opaque_ref,
-        )

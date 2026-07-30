@@ -1,0 +1,123 @@
+from __future__ import annotations
+
+import tomllib
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+SYSTEMD = ROOT / "deploy" / "systemd"
+
+
+def _unit(name: str) -> str:
+    return (SYSTEMD / name).read_text(encoding="utf-8")
+
+
+def test_all_long_running_services_have_the_security_baseline() -> None:
+    required = {
+        "NoNewPrivileges=yes",
+        "PrivateTmp=yes",
+        "ProtectSystem=strict",
+        "ProtectHome=yes",
+        "RestrictSUIDSGID=yes",
+        "RestrictRealtime=yes",
+        "LockPersonality=yes",
+        "CapabilityBoundingSet=",
+    }
+    long_running = sorted(SYSTEMD.glob("*.service"))
+    assert long_running
+    for path in long_running:
+        content = path.read_text(encoding="utf-8")
+        assert required <= set(content.splitlines()), path.name
+
+
+def test_runtime_units_preserve_network_and_database_boundaries() -> None:
+    api = _unit("zhixu-api.service")
+    qq = _unit("zhixu-qq.service")
+    outbound = _unit("zhixu-outbound@.service")
+    vault = _unit("zhixu-vault.service")
+    executor = _unit("zhixu-pat-executor.service")
+
+    assert "--bind 127.0.0.1" in api
+    assert "IPAddressDeny=any" in api and "IPAddressAllow=localhost" in api
+    assert "InaccessiblePaths=/var/lib/zhixu-vault" in api
+
+    assert "--database /var/lib/zhixu/qq/qq.sqlite3" in qq
+    assert "/var/lib/zhixu/zhixu.sqlite3" in qq
+    assert "/var/lib/zhixu-vault" in qq
+
+    assert "--database /var/lib/zhixu/outbound/targets.sqlite3" in outbound
+    assert "/var/lib/zhixu/zhixu.sqlite3" in outbound
+    assert "/var/lib/zhixu-vault" in outbound
+    assert "app_reference_key" not in outbound
+
+    assert "PrivateNetwork=yes" in vault
+    assert "RestrictAddressFamilies=AF_UNIX" in vault
+    assert "--executor pat=/run/zhixu/pat-executor.sock" in vault
+    assert "InaccessiblePaths=/var/lib/zhixu" in vault
+
+    assert "User=zhixu-integration" in executor
+    assert "--allowed-user zhixu-vault" in executor
+    assert (
+        "InaccessiblePaths=/var/lib/zhixu /var/lib/zhixu-vault "
+        "/etc/zhixu/credentials"
+    ) in executor
+
+
+def test_every_systemd_entrypoint_exists_in_the_package_manifest() -> None:
+    manifest = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    scripts = set(manifest["project"]["scripts"])
+    expected = {
+        "zhixu-api",
+        "zhixu-backup",
+        "zhixu-outbound",
+        "zhixu-pat-executor",
+        "zhixu-qq",
+        "zhixu-vault-backup",
+        "zhixu-vault-runtime",
+        "zhixu-worker",
+    }
+    assert expected <= scripts
+    for unit in SYSTEMD.glob("*.service"):
+        content = unit.read_text(encoding="utf-8")
+        command = next(
+            (
+                line.split("/venv/bin/", 1)[1].split(" ", 1)[0]
+                for line in content.splitlines()
+                if line.startswith("ExecStart=") and "/venv/bin/" in line
+            ),
+            "",
+        )
+        assert command in scripts, unit.name
+
+
+def test_activation_and_rollback_include_every_stateful_runtime() -> None:
+    activation = (
+        ROOT / "scripts" / "deploy" / "20_activate_root.sh"
+    ).read_text(encoding="utf-8")
+    rollback = (
+        ROOT / "scripts" / "deploy" / "30_rollback_root.sh"
+    ).read_text(encoding="utf-8")
+    for service in (
+        "zhixu-api.service",
+        "zhixu-worker.service",
+        "zhixu-qq.service",
+        "zhixu-pat-executor.service",
+        "zhixu-vault.service",
+    ):
+        assert service in activation
+        assert service in rollback
+    assert "databases were not overwritten" in rollback
+
+
+def test_backup_unit_covers_every_persistent_database_boundary() -> None:
+    backup = _unit("zhixu-backup.service")
+    for database, destination in (
+        ("/var/lib/zhixu/zhixu.sqlite3", "/var/backups/zhixu/application"),
+        ("/var/lib/zhixu/qq/qq.sqlite3", "/var/backups/zhixu/qq"),
+        (
+            "/var/lib/zhixu/outbound/targets.sqlite3",
+            "/var/backups/zhixu/outbound",
+        ),
+    ):
+        assert f"--database {database}" in backup
+        assert f"--destination {destination}" in backup
+    assert "/var/lib/zhixu-vault" in backup
