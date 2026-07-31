@@ -68,6 +68,13 @@ _HELP_TEXT = """# 知序 · 帮助
 
 > 提醒卡片可直接选择延后 5/15/30/60 分钟、完成或取消。"""
 
+_PROJECT_ADMIN_HELP_TEXT = f"""{_HELP_TEXT}
+
+## 项目管理
+- `/登记内部群` — 生成一次性群登记码
+
+> 该命令仅对项目管理员开放。"""
+
 _HELP_BUTTONS = (
     MessageButton("今日日程", "/今天"),
     MessageButton("待办列表", "/待办"),
@@ -229,6 +236,13 @@ class AssistantEngine:
             if "internal_group_member" in context.roles:
                 return AssistantReply(
                     _INTERNAL_GROUP_HELP_TEXT,
+                    "ok",
+                    intent.source,
+                    buttons=_HELP_BUTTONS,
+                )
+            if "project_admin" in context.roles:
+                return AssistantReply(
+                    _PROJECT_ADMIN_HELP_TEXT,
                     "ok",
                     intent.source,
                     buttons=_HELP_BUTTONS,

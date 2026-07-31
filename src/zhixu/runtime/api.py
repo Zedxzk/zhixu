@@ -416,6 +416,9 @@ def create_api(args: argparse.Namespace) -> CompositePrivateAPI:
                 for descriptor, _target_kind in outbound_configuration
             },
         },
+        field_cipher=FieldCipher(
+            read_key_file(args.field_key_file, exact_bytes=32)
+        ),
     )
     return CompositePrivateAPI(
         admin,

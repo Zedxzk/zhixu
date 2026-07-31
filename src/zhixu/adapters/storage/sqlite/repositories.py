@@ -268,6 +268,58 @@ class UserRepository:
             created_at=created_at,
         )
 
+    def has_role(self, user_id: str, role_id: str) -> bool:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT 1 FROM role_bindings
+                WHERE user_id=? AND role_id=?
+                """,
+                (user_id, role_id),
+            ).fetchone()
+        return row is not None
+
+    def assign_project_admin_if_vacant(
+        self,
+        user_id: str,
+        *,
+        now: datetime,
+    ) -> bool:
+        """Assign the singleton bootstrap role without replacing an existing admin."""
+        require_aware(now, "now")
+        with self.database.transaction() as connection:
+            existing = connection.execute(
+                """
+                SELECT user_id FROM role_bindings
+                WHERE role_id='project_admin'
+                """
+            ).fetchone()
+            if existing is not None:
+                return str(existing["user_id"]) == user_id
+            active_user = connection.execute(
+                "SELECT 1 FROM users WHERE id=? AND status='active'",
+                (user_id,),
+            ).fetchone()
+            if active_user is None:
+                raise ValidationError("project administrator must be an active user")
+            connection.execute(
+                """
+                INSERT INTO role_bindings(user_id,role_id,created_at)
+                VALUES(?,'project_admin',?)
+                """,
+                (user_id, _dump_datetime(now)),
+            )
+            connection.execute(
+                """
+                INSERT INTO audit_events(
+                    occurred_at,actor_user_id,action,resource_kind,
+                    resource_id,outcome,reason_code
+                ) VALUES(?,?,'grant','role','project_admin','completed','bootstrap')
+                """,
+                (_dump_datetime(now), user_id),
+            )
+        return True
+
     def bind_identity(
         self,
         identity: ExternalIdentity,

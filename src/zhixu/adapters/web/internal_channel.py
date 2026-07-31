@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import hmac
 import json
+import re
+import secrets
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from zhixu.adapters.channels import InboundReceiptStore
 from zhixu.adapters.storage.sqlite import (
+    ChannelRoute,
     ChannelRouteStore,
     GroupMode,
     UserRepository,
@@ -28,13 +31,18 @@ from zhixu.channels import (
 from zhixu.delivery import OutboxStore, QuotaManager, render_for_capabilities
 from zhixu.delivery.quota import QuotaScope
 from zhixu.domain import (
+    Action,
     AuthenticationStrength,
     CommandContext,
+    EncryptedIdentifier,
+    ExternalIdentity,
     RequestChannel,
+    ResourceRef,
+    User,
     UserStatus,
 )
 from zhixu.domain.errors import ConflictError, PermissionDenied, ValidationError
-from zhixu.security import OpaqueReferenceFactory
+from zhixu.security import FieldCipher, OpaqueReferenceFactory
 
 from .admin import AdminResponse
 
@@ -86,6 +94,7 @@ class ChannelAdmissionDecision:
     roles: frozenset[str] = frozenset()
     shared_owner_user_id: str | None = None
     readable_shared_owner_user_ids: tuple[str, ...] = ()
+    reply: AssistantReply | None = None
 
 
 class InternalChannelAPI:
@@ -101,6 +110,7 @@ class InternalChannelAPI:
         quota: QuotaManager,
         references: OpaqueReferenceFactory,
         capabilities: dict[str, ChannelCapabilities],
+        field_cipher: FieldCipher | None = None,
     ) -> None:
         if len(service_token) < 32:
             raise ValueError("internal channel service token is too short")
@@ -113,6 +123,7 @@ class InternalChannelAPI:
         self.quota = quota
         self.references = references
         self.capabilities = capabilities
+        self.field_cipher = field_cipher
 
     def dispatch(
         self,
@@ -201,7 +212,7 @@ class InternalChannelAPI:
                     else RequestChannel.PRIVATE_CHAT
                 ),
             )
-            reply = self.assistant.handle(
+            reply = decision.reply or self.assistant.handle(
                 event.text or "",
                 context,
                 target_ref=event.external_conversation_ref,
@@ -240,6 +251,14 @@ class InternalChannelAPI:
                 event.channel_account,
                 event.external_conversation_ref,
             )
+            activation = re.fullmatch(
+                r"/启用内部群\s+(\d{8})",
+                (event.text or "").strip(),
+            )
+            if activation is not None:
+                activated = self._activate_group(event, activation.group(1))
+                if activated is not None:
+                    return activated
             if (
                 route is None
                 or not route.commands_enabled
@@ -279,7 +298,9 @@ class InternalChannelAPI:
                 event.external_actor_ref,
             )
             if identity is None:
-                return ChannelAdmissionDecision(False, None, "identity_unbound")
+                identity = self._provision_group_member(event, route)
+                if identity is None:
+                    return ChannelAdmissionDecision(False, None, "identity_unbound")
             user = self.users.get(identity.user_id)
             if user is None or user.status is not UserStatus.ACTIVE:
                 return ChannelAdmissionDecision(False, identity.user_id, "user_disabled")
@@ -289,10 +310,17 @@ class InternalChannelAPI:
                 event.external_conversation_ref,
                 identity.user_id,
             ):
-                return ChannelAdmissionDecision(
-                    False,
-                    identity.user_id,
-                    "group_permission_denied",
+                if route.owner_user_id is None:
+                    return ChannelAdmissionDecision(
+                        False,
+                        identity.user_id,
+                        "group_permission_denied",
+                    )
+                self.routes.add_member(
+                    route=route,
+                    user_id=identity.user_id,
+                    added_by_user_id=route.owner_user_id,
+                    now=event.received_at,
                 )
             if route.shared_owner_user_id is None:
                 return ChannelAdmissionDecision(
@@ -321,18 +349,235 @@ class InternalChannelAPI:
         user = self.users.get(identity.user_id)
         if user is None or user.status is not UserStatus.ACTIVE:
             return ChannelAdmissionDecision(False, identity.user_id, "user_disabled")
+        if (event.text or "").strip() == "/登记内部群":
+            if not self.users.has_role(identity.user_id, "project_admin"):
+                return ChannelAdmissionDecision(
+                    False,
+                    identity.user_id,
+                    "group_permission_denied",
+                )
+            code = f"{secrets.randbelow(100_000_000):08d}"
+            self.routes.issue_activation(
+                code_hash=self.references.create(
+                    "group_activation",
+                    event.channel,
+                    event.channel_account,
+                    code,
+                ),
+                user_id=identity.user_id,
+                channel=event.channel,
+                channel_account=event.channel_account,
+                group_mode=GroupMode.INTERNAL,
+                expires_at=event.received_at + timedelta(minutes=10),
+                now=event.received_at,
+            )
+            return ChannelAdmissionDecision(
+                True,
+                identity.user_id,
+                "accepted",
+                reply=AssistantReply(
+                    f"群登记码：{code}\n10分钟内在目标群发送：/启用内部群 {code}",
+                    "group_activation_issued",
+                    "deterministic",
+                ),
+            )
         shared_owners = self.routes.shared_owners_for_member(identity.user_id)
+        roles = set()
+        if shared_owners:
+            roles.add("shared_workspace_member")
+        if self.users.has_role(identity.user_id, "project_admin"):
+            roles.add("project_admin")
         return ChannelAdmissionDecision(
             True,
             identity.user_id,
             "accepted",
-            (
-                frozenset({"shared_workspace_member"})
-                if shared_owners
-                else frozenset()
-            ),
+            frozenset(roles),
             None,
             shared_owners,
+        )
+
+    def _activate_group(
+        self,
+        event: InboundEvent,
+        code: str,
+    ) -> ChannelAdmissionDecision | None:
+        if self.field_cipher is None:
+            return None
+        consumed = self.routes.consume_activation(
+            code_hash=self.references.create(
+                "group_activation",
+                event.channel,
+                event.channel_account,
+                code,
+            ),
+            channel=event.channel,
+            channel_account=event.channel_account,
+            now=event.received_at,
+        )
+        if consumed is None:
+            return None
+        user_id, mode = consumed
+        user = self.users.get(user_id)
+        if (
+            user is None
+            or user.status is not UserStatus.ACTIVE
+            or not self.users.has_role(user_id, "project_admin")
+        ):
+            return None
+        identity = self.users.identity_by_opaque_ref(
+            event.channel,
+            event.channel_account,
+            event.external_actor_ref,
+        )
+        if identity is not None and identity.user_id != user_id:
+            return None
+        if identity is None:
+            identity_id = self.references.create(
+                "identity",
+                event.channel,
+                event.channel_account,
+                event.external_actor_ref,
+            )
+            context = CommandContext(actor_user_id=user_id, now=event.received_at)
+            self.users.bind_identity(
+                ExternalIdentity(
+                    identity_id,
+                    user_id,
+                    event.channel,
+                    event.channel_account,
+                    EncryptedIdentifier(
+                        self.field_cipher.encrypt(
+                            event.external_actor_ref,
+                            context=(
+                                f"external-identity:{event.channel}:"
+                                f"{event.channel_account}:{event.external_actor_ref}"
+                            ),
+                        )
+                    ),
+                    event.external_actor_ref,
+                    event.received_at,
+                ),
+                self.assistant.services.policy.require(
+                    context,
+                    Action.CREATE,
+                    ResourceRef("external_identity", identity_id, user_id),
+                ),
+            )
+        self.routes.set_commands_enabled(
+            channel=event.channel,
+            channel_account=event.channel_account,
+            opaque_ref=event.external_conversation_ref,
+            enabled=True,
+            actor_user_id=user_id,
+            now=event.received_at,
+            group_mode=mode,
+            member_user_ids=(user_id,),
+        )
+        route = self.routes.get(
+            event.channel,
+            event.channel_account,
+            event.external_conversation_ref,
+        )
+        if route is None or route.shared_owner_user_id is None:
+            return None
+        return ChannelAdmissionDecision(
+            True,
+            user_id,
+            "accepted",
+            frozenset(
+                {
+                    "project_admin",
+                    "group_owner",
+                    "internal_group_member",
+                    "shared_workspace_member",
+                }
+            ),
+            route.shared_owner_user_id,
+            (route.shared_owner_user_id,),
+            AssistantReply(
+                "内部群已自动登记。已绑定成员可直接使用，新群成员首次使用时会自动加入本群共享库。",
+                "group_activated",
+                "deterministic",
+            ),
+        )
+
+    def _provision_group_member(
+        self,
+        event: InboundEvent,
+        route: ChannelRoute,
+    ) -> ExternalIdentity | None:
+        if self.field_cipher is None or route.owner_user_id is None:
+            return None
+        member_id = self.references.create(
+            "group_member",
+            event.channel,
+            event.channel_account,
+            event.external_actor_ref,
+        )
+        now = event.received_at
+        context = CommandContext(actor_user_id=member_id, now=now)
+        if self.users.get(member_id) is None:
+            try:
+                self.users.create(
+                    User(member_id, "QQ group member", UserStatus.ACTIVE, now),
+                    self.assistant.services.policy.require(
+                        context,
+                        Action.CREATE,
+                        ResourceRef("user", member_id, member_id),
+                    ),
+                )
+            except ConflictError:
+                if self.users.get(member_id) is None:
+                    return None
+        identity_id = self.references.create(
+            "identity",
+            event.channel,
+            event.channel_account,
+            event.external_actor_ref,
+        )
+        try:
+            self.users.bind_identity(
+                ExternalIdentity(
+                    identity_id,
+                    member_id,
+                    event.channel,
+                    event.channel_account,
+                    EncryptedIdentifier(
+                        self.field_cipher.encrypt(
+                            event.external_actor_ref,
+                            context=(
+                                f"external-identity:{event.channel}:"
+                                f"{event.channel_account}:{event.external_actor_ref}"
+                            ),
+                        )
+                    ),
+                    event.external_actor_ref,
+                    now,
+                ),
+                self.assistant.services.policy.require(
+                    context,
+                    Action.CREATE,
+                    ResourceRef("external_identity", identity_id, member_id),
+                ),
+            )
+        except ConflictError:
+            existing = self.users.identity_by_opaque_ref(
+                event.channel,
+                event.channel_account,
+                event.external_actor_ref,
+            )
+            if existing is None or existing.user_id != member_id:
+                return None
+        self.routes.add_member(
+            route=route,
+            user_id=member_id,
+            added_by_user_id=route.owner_user_id,
+            now=now,
+        )
+        return self.users.identity_by_opaque_ref(
+            event.channel,
+            event.channel_account,
+            event.external_actor_ref,
         )
 
     @staticmethod

@@ -176,6 +176,109 @@ class ChannelRouteStore:
             ).fetchall()
         return tuple(str(row["shared_owner_user_id"]) for row in rows)
 
+    def issue_activation(
+        self,
+        *,
+        code_hash: str,
+        user_id: str,
+        channel: str,
+        channel_account: str,
+        group_mode: GroupMode,
+        expires_at: datetime,
+        now: datetime,
+    ) -> None:
+        require_aware(expires_at, "expires_at")
+        require_aware(now, "now")
+        if group_mode is GroupMode.DISABLED:
+            raise ValidationError("activation group mode is invalid")
+        with self.database.transaction() as connection:
+            connection.execute(
+                """
+                DELETE FROM group_activation_challenges
+                WHERE user_id=? AND channel=? AND channel_account=?
+                  AND consumed_at IS NULL
+                """,
+                (user_id, channel, channel_account),
+            )
+            connection.execute(
+                """
+                INSERT INTO group_activation_challenges(
+                    code_hash,user_id,channel,channel_account,group_mode,
+                    expires_at,consumed_at,created_at
+                ) VALUES(?,?,?,?,?,?,NULL,?)
+                """,
+                (
+                    code_hash,
+                    user_id,
+                    channel,
+                    channel_account,
+                    group_mode.value,
+                    expires_at.astimezone(UTC).isoformat(),
+                    now.astimezone(UTC).isoformat(),
+                ),
+            )
+
+    def consume_activation(
+        self,
+        *,
+        code_hash: str,
+        channel: str,
+        channel_account: str,
+        now: datetime,
+    ) -> tuple[str, GroupMode] | None:
+        require_aware(now, "now")
+        now_text = now.astimezone(UTC).isoformat()
+        with self.database.transaction() as connection:
+            row = connection.execute(
+                """
+                SELECT user_id,group_mode FROM group_activation_challenges
+                WHERE code_hash=? AND channel=? AND channel_account=?
+                  AND consumed_at IS NULL AND expires_at>?
+                """,
+                (code_hash, channel, channel_account, now_text),
+            ).fetchone()
+            if row is None:
+                return None
+            changed = connection.execute(
+                """
+                UPDATE group_activation_challenges SET consumed_at=?
+                WHERE code_hash=? AND consumed_at IS NULL
+                """,
+                (now_text, code_hash),
+            ).rowcount
+            if changed != 1:
+                return None
+        return str(row["user_id"]), GroupMode(str(row["group_mode"]))
+
+    def add_member(
+        self,
+        *,
+        route: ChannelRoute,
+        user_id: str,
+        added_by_user_id: str,
+        now: datetime,
+    ) -> None:
+        require_aware(now, "now")
+        if route.group_mode is not GroupMode.INTERNAL:
+            raise ValidationError("members require an internal group")
+        with self.database.transaction() as connection:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO channel_route_members(
+                    channel,channel_account,opaque_ref,user_id,
+                    added_by_user_id,created_at
+                ) VALUES(?,?,?,?,?,?)
+                """,
+                (
+                    route.channel,
+                    route.channel_account,
+                    route.opaque_ref,
+                    user_id,
+                    added_by_user_id,
+                    now.astimezone(UTC).isoformat(),
+                ),
+            )
+
     def set_commands_enabled(
         self,
         *,

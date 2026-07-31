@@ -65,8 +65,8 @@ def test_qq_network_database_is_separate_and_duplicate_events_are_idempotent(
 ) -> None:
     application_database = Database(tmp_path / "application.sqlite3")
     qq_database = Database(tmp_path / "qq.sqlite3")
-    assert application_database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-    assert qq_database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    assert application_database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    assert qq_database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     references = OpaqueReferenceFactory(b"R" * 32)
     cipher = FieldCipher(b"E" * 32)
     raw_actor = "synthetic-qq-actor"
@@ -579,10 +579,37 @@ def test_group_modes_enforce_public_isolation_and_internal_member_acl(
         headers=headers,
         body=json.dumps(event("event_outsider", "actor_user_outsider", "/帮助")).encode(),
     )
-    assert outsider.body == {
-        "accepted": False,
-        "reason_code": "group_permission_denied",
-    }
+    assert outsider.status == 202
+    assert routes.is_member(
+        "qq",
+        "qq_synthetic",
+        "group_synthetic",
+        "user_outsider",
+    )
+    outsider_delivery = internal.dispatch(
+        "POST",
+        "/internal/channel/delivery/claim",
+        headers=headers,
+        body=json.dumps(
+            {
+                "channel": "qq",
+                "channel_account": "qq_synthetic",
+                "worker_id": "worker_synthetic",
+            }
+        ).encode(),
+    ).body["delivery"]
+    internal.dispatch(
+        "POST",
+        "/internal/channel/delivery/complete",
+        headers=headers,
+        body=json.dumps(
+            {
+                "delivery_id": outsider_delivery["id"],
+                "lease_token": outsider_delivery["lease_token"],
+                "ok": True,
+            }
+        ).encode(),
+    )
     created = internal.dispatch(
         "POST",
         "/internal/channel/event",
@@ -673,3 +700,193 @@ def test_group_modes_enforce_public_isolation_and_internal_member_acl(
     assert reminder_row["owner_user_id"] == route.shared_owner_user_id
     assert reminder_row["creator_user_id"] == "user_owner"
     assert reminder_row["target_ref"] == "group_synthetic"
+
+
+def test_project_admin_activates_group_and_members_enrol_on_first_use(
+    tmp_path: Path,
+) -> None:
+    database = Database(tmp_path / "application.sqlite3")
+    database.migrate()
+    references = OpaqueReferenceFactory(b"R" * 32)
+    cipher = FieldCipher(b"E" * 32)
+    policy = PolicyEngine()
+    users = UserRepository(database)
+    users.create(
+        User("user_admin", "Synthetic Administrator", UserStatus.ACTIVE, NOW),
+        policy.require(
+            CommandContext(actor_user_id="user_admin", now=NOW),
+            Action.CREATE,
+            ResourceRef("user", "user_admin", "user_admin"),
+        ),
+    )
+    users.bind_identity(
+        ExternalIdentity(
+            "identity_admin",
+            "user_admin",
+            "qq",
+            "qq_synthetic",
+            EncryptedIdentifier("enc:synthetic-admin"),
+            "actor_admin",
+            NOW,
+        ),
+        policy.require(
+            CommandContext(actor_user_id="user_admin", now=NOW),
+            Action.CREATE,
+            ResourceRef("external_identity", "identity_admin", "user_admin"),
+        ),
+    )
+    assert users.assign_project_admin_if_vacant("user_admin", now=NOW)
+
+    clock = FrozenClock(NOW)
+    services = ZhixuServices(
+        agenda=AgendaRepository(database),
+        tasks=TaskRepository(database),
+        notes=NoteRepository(database),
+        reminders=ReminderRepository(database),
+        policy=policy,
+        clock=clock,
+    )
+    routes = ChannelRouteStore(database)
+    internal = InternalChannelAPI(
+        service_token=SERVICE_TOKEN,
+        users=users,
+        routes=routes,
+        receipts=InboundReceiptStore(database, references),
+        assistant=AssistantEngine(
+            services=services,
+            router=RuleIntentRouter(clock),
+        ),
+        outbox=OutboxStore(database),
+        quota=QuotaManager(
+            database,
+            (QuotaRule("provider", QuotaWindow.SECOND, 100),),
+        ),
+        references=references,
+        capabilities={"qq": ChannelCapabilities(outbound_text=True, groups=True)},
+        field_cipher=cipher,
+    )
+    headers = {"authorization": f"Bearer {SERVICE_TOKEN}"}
+
+    def dispatch(
+        event_id: str,
+        *,
+        actor: str,
+        conversation: str,
+        kind: str,
+        text: str,
+    ):
+        return internal.dispatch(
+            "POST",
+            "/internal/channel/event",
+            headers=headers,
+            body=json.dumps(
+                {
+                    "event_id": event_id,
+                    "channel": "qq",
+                    "channel_account": "qq_synthetic",
+                    "actor_ref": actor,
+                    "conversation_ref": conversation,
+                    "conversation_kind": kind,
+                    "message_kind": "text",
+                    "text": text,
+                    "received_at": NOW.isoformat(),
+                    "mentioned": False,
+                }
+            ).encode(),
+        )
+
+    def claim_and_complete() -> dict[str, object]:
+        delivery = internal.dispatch(
+            "POST",
+            "/internal/channel/delivery/claim",
+            headers=headers,
+            body=json.dumps(
+                {
+                    "channel": "qq",
+                    "channel_account": "qq_synthetic",
+                    "worker_id": "worker_synthetic",
+                }
+            ).encode(),
+        ).body["delivery"]
+        internal.dispatch(
+            "POST",
+            "/internal/channel/delivery/complete",
+            headers=headers,
+            body=json.dumps(
+                {
+                    "delivery_id": delivery["id"],
+                    "lease_token": delivery["lease_token"],
+                    "ok": True,
+                }
+            ).encode(),
+        )
+        return delivery
+
+    issued = dispatch(
+        "event_issue",
+        actor="actor_admin",
+        conversation="actor_admin",
+        kind="private",
+        text="/登记内部群",
+    )
+    assert issued.status == 202
+    issue_delivery = claim_and_complete()
+    code = str(issue_delivery["text"]).split("群登记码：", 1)[1][:8]
+    assert code.isdigit() and len(code) == 8
+
+    activated = dispatch(
+        "event_activate",
+        actor="actor_admin",
+        conversation="group_synthetic",
+        kind="group",
+        text=f"/启用内部群 {code}",
+    )
+    assert activated.status == 202
+    assert "内部群已自动登记" in str(claim_and_complete()["text"])
+    route = routes.get("qq", "qq_synthetic", "group_synthetic")
+    assert route is not None
+    assert route.commands_enabled
+    assert route.group_mode is GroupMode.INTERNAL
+    assert route.owner_user_id == "user_admin"
+    assert route.member_user_ids == ("user_admin",)
+
+    created = dispatch(
+        "event_member_create",
+        actor="actor_new_member",
+        conversation="group_synthetic",
+        kind="group",
+        text="/记 first-use shared note",
+    )
+    assert created.status == 202
+    assert "已保存群共享备忘" in str(claim_and_complete()["text"])
+    member_identity = users.identity_by_opaque_ref(
+        "qq",
+        "qq_synthetic",
+        "actor_new_member",
+    )
+    assert member_identity is not None
+    assert not users.has_role(member_identity.user_id, "project_admin")
+    assert routes.is_member(
+        "qq",
+        "qq_synthetic",
+        "group_synthetic",
+        member_identity.user_id,
+    )
+    with database.connect() as connection:
+        note = connection.execute(
+            """
+            SELECT owner_user_id,creator_user_id FROM notes
+            WHERE title='first-use shared note'
+            """
+        ).fetchone()
+        admins = connection.execute(
+            "SELECT user_id FROM role_bindings WHERE role_id='project_admin'"
+        ).fetchall()
+        challenge = connection.execute(
+            "SELECT code_hash,consumed_at FROM group_activation_challenges"
+        ).fetchone()
+    assert note["owner_user_id"] == route.shared_owner_user_id
+    assert note["creator_user_id"] == member_identity.user_id
+    assert [str(row["user_id"]) for row in admins] == ["user_admin"]
+    assert challenge["code_hash"] != code
+    assert challenge["consumed_at"] is not None

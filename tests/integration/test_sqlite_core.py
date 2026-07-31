@@ -59,7 +59,7 @@ class SequentialIds:
 @pytest.fixture
 def database(tmp_path: Path) -> Database:
     database = Database(tmp_path / "zhixu.sqlite3")
-    assert database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    assert database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     assert database.migrate() == []
     return database
 
@@ -120,7 +120,28 @@ def test_migration_creates_required_phase_one_tables(database: Database) -> None
         "llm_call_events",
         "audit_events",
         "schema_migrations",
+        "group_activation_challenges",
     } <= names
+
+
+def test_project_admin_bootstrap_role_is_singleton(
+    app: tuple[ZhixuServices, FrozenClock, UserRepository],
+) -> None:
+    _services, _clock, users = app
+    assert users.assign_project_admin_if_vacant("user_test", now=NOW)
+    assert users.has_role("user_test", "project_admin")
+
+    policy = PolicyEngine()
+    users.create(
+        User("user_second", "Synthetic Second User", UserStatus.ACTIVE, NOW),
+        policy.require(
+            CommandContext(actor_user_id="user_second", now=NOW),
+            Action.CREATE,
+            ResourceRef("user", "user_second", "user_second"),
+        ),
+    )
+    assert not users.assign_project_admin_if_vacant("user_second", now=NOW)
+    assert not users.has_role("user_second", "project_admin")
 
 
 def test_command_and_query_buses_execute_without_model_dependency(

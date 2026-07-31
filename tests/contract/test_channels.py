@@ -37,7 +37,7 @@ NOW = datetime(2026, 7, 30, 12, tzinfo=UTC)
 def target_store(tmp_path: Path) -> tuple[OutboundTargetStore, Path]:
     path = tmp_path / "zhixu.sqlite3"
     database = Database(path)
-    assert database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    assert database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     return (
         OutboundTargetStore(
             database,

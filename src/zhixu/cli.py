@@ -215,6 +215,8 @@ def _bootstrap_admin(args: argparse.Namespace) -> int:
             User(user_id, display_name, UserStatus.ACTIVE, now),
             authorization,
         )
+    if not users.assign_project_admin_if_vacant(user_id, now=datetime.now(UTC)):
+        raise PermissionError("a different project administrator already exists")
     AdminCredentialStore(database).set_password(
         user_id,
         first,
@@ -316,6 +318,8 @@ def _bootstrap_qq_owner(args: argparse.Namespace) -> int:
     users = UserRepository(database)
     users.create(user, user_authorization)
     users.bind_identity(identity, identity_authorization)
+    if not users.assign_project_admin_if_vacant(args.user_id, now=now):
+        raise PermissionError("a different project administrator already exists")
     print("Headless QQ owner initialized.")
     return 0
 

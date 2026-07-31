@@ -37,8 +37,22 @@ notes instead of failing.
 
 ## Group modes and data scope
 
-Every observed group is disabled by default. An administrator must explicitly configure
-it as either `public` or `internal`.
+Every observed group is disabled by default. The singleton project administrator can
+register an internal group without copying platform identifiers or editing the database:
+
+```text
+# In the administrator's private conversation:
+/登记内部群
+
+# Within 10 minutes, in the target group:
+/启用内部群 12345678
+```
+
+The eight-digit code is random and single-use; the server-side activation challenge stores
+only a keyed opaque reference to it.
+The group sender used for activation is linked to the project administrator. Other group
+senders are enrolled into that group automatically on first use; those principals can use
+only the current group's shared database and are not granted access to any private database.
 
 - A public group accepts only `/帮助` and `/问`. This remains true even when the sender has
   a bound account; public-group execution cannot read or write private or shared records.
