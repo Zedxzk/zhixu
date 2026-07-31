@@ -64,6 +64,12 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         try:
             value = json.loads(self.rfile.read(length))
             messages = value["messages"]
+            response_format = value.get("response_format", {})
+            schema = (
+                response_format.get("json_schema", {}).get("schema")
+                if isinstance(response_format, dict)
+                else None
+            )
             if (
                 not isinstance(value, dict)
                 or not isinstance(messages, list)
@@ -76,6 +82,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                     or len(item["content"]) > 16_000
                     for item in messages
                 )
+                or not isinstance(schema, dict)
             ):
                 raise ValueError
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
@@ -83,10 +90,15 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
             return
         server = self.server
         assert isinstance(server, DeepSeekProxyServer)
+        forwarded_messages = [dict(item) for item in messages]
+        forwarded_messages[0]["content"] += (
+            "\nRequired JSON schema (follow exactly; omit no required fields):\n"
+            + json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
+        )
         payload = json.dumps(
             {
                 "model": server.model,
-                "messages": messages,
+                "messages": forwarded_messages,
                 "response_format": {"type": "json_object"},
                 "thinking": {"type": "disabled"},
                 "max_tokens": 1000,

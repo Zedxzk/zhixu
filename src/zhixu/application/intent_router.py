@@ -237,7 +237,9 @@ class ModelIntentClassifier:
             system_prompt=(
                 "Classify the request into the provided schema. Never invent identifiers, "
                 "times, or actions. Resolve relative time only from the supplied reference "
-                f"time. Return only JSON.{temporal_context}"
+                "time. For a reminder request use action=create_reminder and include title, "
+                "confidence, and an ISO-8601 fire_at with timezone. Return only JSON."
+                f"{temporal_context}"
             ),
             user_prompt=text,
             response_schema=ModelIntentProposal.model_json_schema(),
