@@ -65,8 +65,8 @@ def test_qq_network_database_is_separate_and_duplicate_events_are_idempotent(
 ) -> None:
     application_database = Database(tmp_path / "application.sqlite3")
     qq_database = Database(tmp_path / "qq.sqlite3")
-    assert application_database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
-    assert qq_database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    assert application_database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    assert qq_database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     references = OpaqueReferenceFactory(b"R" * 32)
     cipher = FieldCipher(b"E" * 32)
     raw_actor = "synthetic-qq-actor"
@@ -176,6 +176,7 @@ def test_qq_network_database_is_separate_and_duplicate_events_are_idempotent(
         "text": "明天9点提醒我提交合成报告",
         "received_at": NOW.isoformat(),
         "mentioned": False,
+        "reply_context_ref": "qqr_synthetic_reply_context",
     }
     headers = {"authorization": f"Bearer {SERVICE_TOKEN}"}
 
@@ -211,6 +212,7 @@ def test_qq_network_database_is_separate_and_duplicate_events_are_idempotent(
     )
     delivery = claim.body["delivery"]
     assert delivery["target_ref"] == actor_ref
+    assert delivery["reply_context_ref"] == "qqr_synthetic_reply_context"
     completed = internal.dispatch(
         "POST",
         "/internal/channel/delivery/complete",

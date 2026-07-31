@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import threading
 import urllib.parse
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -89,10 +90,12 @@ class QQHttpAdapter:
         contacts: QQContactStore,
         *,
         transport: JsonTransport | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.credentials = credentials
         self.contacts = contacts
         self.transport = transport or UrllibJsonTransport()
+        self.clock = clock or (lambda: datetime.now(UTC))
         self._token_lock = threading.Lock()
         self._token = ""
         self._token_expires_at = datetime.min.replace(tzinfo=UTC)
@@ -171,6 +174,22 @@ class QQHttpAdapter:
         if message.classification >= DataClassification.CONFIDENTIAL:
             return ChannelDeliveryResult(False, False, "classification_blocked")
         target = self.contacts.resolve(message.channel_account, message.target_ref)
+        reply_context = (
+            self.contacts.resolve_reply_context(
+                message.channel_account,
+                message.reply_context_ref,
+                target_ref=message.target_ref,
+                now=self.clock(),
+            )
+            if message.reply_context_ref
+            else None
+        )
+        if message.reply_context_ref and reply_context is None:
+            self.contacts.remove_reply_context(
+                message.channel_account,
+                message.reply_context_ref,
+            )
+            return ChannelDeliveryResult(False, False, "reply_context_unavailable")
         token = self.access_token()
         payload: dict[str, Any] = {"content": message.text}
         if target.kind in {"private", "group"}:
@@ -219,6 +238,9 @@ class QQHttpAdapter:
                 payload = {"msg_type": 7, "media": {"file_info": file_info}}
             if message.kind is MessageKind.ATTACHMENT and message.text:
                 payload.setdefault("content", message.text)
+        if reply_context is not None:
+            payload[reply_context.field] = reply_context.identifier
+            payload["msg_seq"] = 1
         status, value = self.transport.request(
             self._message_endpoint(target),
             method="POST",
@@ -226,20 +248,35 @@ class QQHttpAdapter:
             headers=self._headers(token),
         )
         if status in {400, 403} and message.buttons and not message.attachment_url:
+            fallback = _plain_button_fallback(message)
+            if reply_context is not None:
+                fallback[reply_context.field] = reply_context.identifier
+                fallback["msg_seq"] = 2
             status, value = self.transport.request(
                 self._message_endpoint(target),
                 method="POST",
-                payload=_plain_button_fallback(message),
+                payload=fallback,
                 headers=self._headers(token),
             )
         if 200 <= status < 300:
+            if message.reply_context_ref:
+                self.contacts.remove_reply_context(
+                    message.channel_account,
+                    message.reply_context_ref,
+                )
             return ChannelDeliveryResult(
                 True,
                 provider_code="ok",
                 provider_message_id=str(value.get("id") or ""),
             )
+        retryable = status == 429 or status >= 500
+        if message.reply_context_ref and not retryable:
+            self.contacts.remove_reply_context(
+                message.channel_account,
+                message.reply_context_ref,
+            )
         return ChannelDeliveryResult(
             False,
-            retryable=status == 429 or status >= 500,
+            retryable=retryable,
             provider_code=f"http_{status}",
         )

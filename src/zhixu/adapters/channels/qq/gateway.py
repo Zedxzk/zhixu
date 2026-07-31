@@ -267,6 +267,15 @@ class QQEventMapper:
             mentioned = event_type == "AT_MESSAGE_CREATE"
         else:
             return None
+        reply_context_ref = self.contacts.record_reply_context(
+            channel_account=self.channel_account,
+            target_ref=conversation_ref,
+            external_context=event_id,
+            context_kind=(
+                "event_id" if event_type == "INTERACTION_CREATE" else "msg_id"
+            ),
+            now=received_at,
+        )
         return InboundEvent(
             event_id=event_id,
             channel="qq",
@@ -281,7 +290,10 @@ class QQEventMapper:
             ),
             received_at=received_at,
             text=text,
-            metadata={"mentioned": mentioned},
+            metadata={
+                "mentioned": mentioned,
+                "reply_context_ref": reply_context_ref,
+            },
         )
 
 

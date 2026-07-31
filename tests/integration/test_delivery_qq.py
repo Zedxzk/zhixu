@@ -60,7 +60,7 @@ NOW = datetime(2026, 6, 1, 8, tzinfo=UTC)
 @pytest.fixture
 def database(tmp_path: Path) -> Database:
     value = Database(tmp_path / "zhixu.sqlite3")
-    assert value.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    assert value.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     return value
 
 
@@ -431,6 +431,7 @@ def test_qq_access_token_is_cached_and_refreshed_before_expiry(
         QQBotCredentials("bot_test_a", "synthetic-app", "synthetic-secret"),
         contacts,
         transport=transport,
+        clock=lambda: NOW,
     )
 
     assert adapter.access_token(now=NOW) == "synthetic-token"
@@ -536,6 +537,64 @@ def test_qq_http_supports_image_upload(
     final_payload = transport.requests[-1][2]
     assert final_payload is not None
     assert final_payload["media"]["file_info"] == "synthetic-file"
+
+
+def test_qq_group_reply_uses_encrypted_message_context(
+    database: Database,
+    privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
+) -> None:
+    contacts = register_account(database, privacy_primitives)
+    target_ref = contacts.record(
+        channel_account="bot_test_a",
+        kind="group",
+        external_identifier="group-openid-reply-context-canary",
+        now=NOW,
+    )
+    reply_ref = contacts.record_reply_context(
+        channel_account="bot_test_a",
+        target_ref=target_ref,
+        external_context="message-id-reply-context-canary",
+        context_kind="msg_id",
+        now=NOW,
+    )
+    transport = FakeTransport()
+    adapter = QQHttpAdapter(
+        QQBotCredentials("bot_test_a", "synthetic-app", "synthetic-secret"),
+        contacts,
+        transport=transport,
+        clock=lambda: NOW,
+    )
+
+    result = adapter.send(
+        OutboundMessage(
+            channel="qq",
+            channel_account="bot_test_a",
+            target_ref=target_ref,
+            kind=MessageKind.TEXT,
+            text="Synthetic passive group reply",
+            reply_context_ref=reply_ref,
+        )
+    )
+
+    assert result.ok
+    payload = transport.requests[-1][2]
+    assert payload is not None
+    assert payload["msg_id"] == "message-id-reply-context-canary"
+    assert payload["msg_seq"] == 1
+    assert (
+        contacts.resolve_reply_context(
+            "bot_test_a",
+            reply_ref,
+            target_ref=target_ref,
+            now=NOW,
+        )
+        is None
+    )
+    database_bytes = database.path.read_bytes()
+    wal = database.path.with_name(database.path.name + "-wal")
+    if wal.exists():
+        database_bytes += wal.read_bytes()
+    assert b"message-id-reply-context-canary" not in database_bytes
 
 
 def test_qq_http_sends_official_callback_keyboard_and_acknowledges_interaction(
@@ -728,6 +787,16 @@ def test_gateway_persists_resume_state_encrypted_and_emits_ephemeral_event(
     ) == "event"
     assert len(received) == 1
     assert received[0].text == "gateway-body-canary"
+    reply_ref = str(received[0].metadata["reply_context_ref"])
+    reply_context = contacts.resolve_reply_context(
+        "bot_test_a",
+        reply_ref,
+        target_ref=received[0].external_conversation_ref,
+        now=NOW,
+    )
+    assert reply_context is not None
+    assert reply_context.field == "msg_id"
+    assert reply_context.identifier == "event_gateway_test"
     restored = store.load("bot_test_a")
     assert restored == QQGatewayState(
         session_id="session-canary",
@@ -744,6 +813,7 @@ def test_gateway_persists_resume_state_encrypted_and_emits_ephemeral_event(
         b"group-openid-gateway-canary",
         b"member-openid-gateway-canary",
         b"gateway-body-canary",
+        b"event_gateway_test",
     ):
         assert canary not in database_bytes
 

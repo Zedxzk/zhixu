@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from zhixu.adapters.storage.sqlite.database import Database
 from zhixu.domain.agenda import require_aware
@@ -17,6 +17,12 @@ class ResolvedQQTarget:
     kind: str
     identifier: str = field(repr=False)
     opaque_ref: str
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedQQReplyContext:
+    field: str
+    identifier: str = field(repr=False)
 
 
 class QQContactStore:
@@ -140,3 +146,100 @@ class QQContactStore:
         context = f"qq-contact:{channel_account}:{kind}:{opaque_ref}"
         identifier = self.cipher.decrypt(str(row["external_target_enc"]), context=context)
         return ResolvedQQTarget(channel_account, kind, identifier, opaque_ref)
+
+    def record_reply_context(
+        self,
+        *,
+        channel_account: str,
+        target_ref: str,
+        external_context: str,
+        context_kind: str,
+        now: datetime,
+    ) -> str:
+        require_aware(now, "now")
+        if context_kind not in {"msg_id", "event_id"}:
+            raise ValidationError("QQ reply context kind is invalid")
+        raw = external_context.strip()
+        if not raw or not target_ref.strip():
+            raise ValidationError("QQ reply context is incomplete")
+        opaque_ref = self.references.create(
+            "qqr",
+            channel_account,
+            context_kind,
+            raw,
+        )
+        encrypted = self.cipher.encrypt(
+            raw,
+            context=f"qq-reply:{channel_account}:{opaque_ref}",
+        )
+        cutoff = now - timedelta(minutes=10)
+        with self.database.transaction() as connection:
+            connection.execute(
+                """
+                DELETE FROM qq_reply_contexts
+                WHERE channel_account=? AND received_at<?
+                """,
+                (
+                    channel_account,
+                    cutoff.astimezone(UTC).isoformat(),
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO qq_reply_contexts(
+                    channel_account,opaque_ref,target_ref,context_kind,
+                    external_context_enc,received_at
+                ) VALUES(?,?,?,?,?,?)
+                ON CONFLICT(channel_account,opaque_ref) DO UPDATE SET
+                    target_ref=excluded.target_ref,
+                    context_kind=excluded.context_kind,
+                    external_context_enc=excluded.external_context_enc,
+                    received_at=excluded.received_at
+                """,
+                (
+                    channel_account,
+                    opaque_ref,
+                    target_ref,
+                    context_kind,
+                    encrypted,
+                    now.astimezone(UTC).isoformat(),
+                ),
+            )
+        return opaque_ref
+
+    def resolve_reply_context(
+        self,
+        channel_account: str,
+        opaque_ref: str,
+        *,
+        target_ref: str,
+        now: datetime | None = None,
+    ) -> ResolvedQQReplyContext | None:
+        current = now or datetime.now(UTC)
+        cutoff = current - timedelta(minutes=10)
+        with self.database.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT context_kind,external_context_enc,received_at
+                FROM qq_reply_contexts
+                WHERE channel_account=? AND opaque_ref=? AND target_ref=?
+                """,
+                (channel_account, opaque_ref, target_ref),
+            ).fetchone()
+        if row is None or datetime.fromisoformat(str(row["received_at"])) < cutoff:
+            return None
+        identifier = self.cipher.decrypt(
+            str(row["external_context_enc"]),
+            context=f"qq-reply:{channel_account}:{opaque_ref}",
+        )
+        return ResolvedQQReplyContext(str(row["context_kind"]), identifier)
+
+    def remove_reply_context(self, channel_account: str, opaque_ref: str) -> None:
+        with self.database.transaction() as connection:
+            connection.execute(
+                """
+                DELETE FROM qq_reply_contexts
+                WHERE channel_account=? AND opaque_ref=?
+                """,
+                (channel_account, opaque_ref),
+            )

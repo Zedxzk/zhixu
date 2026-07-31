@@ -62,6 +62,7 @@ class InboundPayload(_StrictModel):
     text: str = Field(min_length=1, max_length=20_000)
     received_at: datetime
     mentioned: bool = False
+    reply_context_ref: str = Field(default="", max_length=160)
 
     @field_validator("received_at")
     @classmethod
@@ -171,7 +172,10 @@ class InternalChannelAPI:
             message_kind=payload.message_kind,
             received_at=payload.received_at,
             text=payload.text,
-            metadata={"mentioned": payload.mentioned},
+            metadata={
+                "mentioned": payload.mentioned,
+                "reply_context_ref": payload.reply_context_ref,
+            },
         )
         self.routes.observe(
             channel=event.channel,
@@ -591,6 +595,7 @@ class InternalChannelAPI:
             MessageKind.BUTTON if reply.buttons else MessageKind.TEXT,
             reply.text,
             buttons=reply.buttons,
+            reply_context_ref=str(event.metadata.get("reply_context_ref") or ""),
         )
 
     def _claim(self, payload: ClaimPayload) -> AdminResponse:
@@ -640,6 +645,7 @@ class InternalChannelAPI:
                         for button in rendered.buttons
                     ],
                     "attachment_url": rendered.attachment_url,
+                    "reply_context_ref": rendered.reply_context_ref,
                     "classification": int(rendered.classification),
                 }
             },

@@ -74,6 +74,9 @@ class InternalChannelClient:
                 "text": event.text,
                 "received_at": event.received_at.isoformat(),
                 "mentioned": bool(event.metadata.get("mentioned")),
+                "reply_context_ref": str(
+                    event.metadata.get("reply_context_ref") or ""
+                ),
             },
         )
 
@@ -261,6 +264,7 @@ def _message(value: dict[str, object]) -> OutboundMessage:
         attachment_url=(
             str(value["attachment_url"]) if value.get("attachment_url") else None
         ),
+        reply_context_ref=str(value.get("reply_context_ref") or ""),
         classification=DataClassification(int(value["classification"])),
     )
 

@@ -83,6 +83,7 @@ class OutboundMessage:
     text: str = field(repr=False)
     buttons: tuple[MessageButton, ...] = field(default_factory=tuple, repr=False)
     attachment_url: str | None = field(default=None, repr=False)
+    reply_context_ref: str = field(default="", repr=False)
     classification: DataClassification = DataClassification.PERSONAL
 
     def __post_init__(self) -> None:
@@ -92,6 +93,8 @@ class OutboundMessage:
             raise ValidationError("outbound target_ref is required")
         if not self.text.strip() and self.attachment_url is None:
             raise ValidationError("outbound message content is required")
+        if len(self.reply_context_ref) > 160:
+            raise ValidationError("reply context reference is too long")
         if self.classification > DataClassification.CONFIDENTIAL:
             raise ValidationError("high-sensitivity data cannot enter channel output")
 

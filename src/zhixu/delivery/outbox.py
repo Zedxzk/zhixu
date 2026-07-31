@@ -39,6 +39,7 @@ def _message_json(message: OutboundMessage) -> str:
                 for button in message.buttons
             ],
             "attachment_url": message.attachment_url,
+            "reply_context_ref": message.reply_context_ref,
         },
         ensure_ascii=False,
         separators=(",", ":"),
@@ -58,6 +59,7 @@ def _message_from_row(row: object) -> OutboundMessage:
             for item in payload.get("buttons", [])
         ),
         attachment_url=payload.get("attachment_url"),
+        reply_context_ref=str(payload.get("reply_context_ref") or ""),
         classification=DataClassification(int(row["classification"])),  # type: ignore[index]
     )
 
