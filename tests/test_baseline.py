@@ -2,10 +2,12 @@ import base64
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from zhixu import __version__
+from zhixu.adapters.storage.sqlite import Database
 from zhixu.channels import (
     ChannelCapabilities,
     ConversationKind,
@@ -44,6 +46,94 @@ def test_cli_generates_matching_grant_key_pair(
         serialization.Encoding.Raw,
         serialization.PublicFormat.Raw,
     )
+
+
+def _observe_private_route(database: Database, opaque_ref: str) -> None:
+    observed_at = datetime.now(UTC).isoformat()
+    with database.transaction() as connection:
+        connection.execute(
+            """
+            INSERT INTO channel_routes(
+                channel,channel_account,opaque_ref,route_kind,
+                commands_enabled,last_seen_at
+            ) VALUES('qq','qq-synthetic',?,'private',0,?)
+            """,
+            (opaque_ref, observed_at),
+        )
+        connection.execute(
+            """
+            INSERT INTO inbound_event_receipts(
+                channel,channel_account,event_id_hash,message_hash,
+                actor_ref,conversation_ref,intent_kind,outcome,received_at
+            ) VALUES('qq','qq-synthetic',?,? ,?,?,'','identity_unbound',?)
+            """,
+            (
+                f"event-{opaque_ref}",
+                f"message-{opaque_ref}",
+                opaque_ref,
+                opaque_ref,
+                observed_at,
+            ),
+        )
+
+
+def test_headless_qq_bootstrap_binds_one_recent_opaque_route_once(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    database_path = tmp_path / "application.sqlite3"
+    database = Database(database_path)
+    database.migrate()
+    _observe_private_route(database, "opaque-synthetic")
+    key_path = tmp_path / "field-key"
+    key_path.write_bytes(base64.urlsafe_b64encode(b"K" * 32))
+    key_path.chmod(0o600)
+    arguments = [
+        "bootstrap-qq-owner",
+        "--database",
+        str(database_path),
+        "--field-key-file",
+        str(key_path),
+        "--user-id",
+        "owner_synthetic",
+        "--display-name",
+        "Synthetic Owner",
+    ]
+
+    assert main(arguments) == 0
+    assert "opaque-synthetic" not in capsys.readouterr().out
+    with database.connect() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1
+        identity = connection.execute(
+            "SELECT opaque_ref,external_subject_enc FROM external_identities"
+        ).fetchone()
+    assert identity["opaque_ref"] == "opaque-synthetic"
+    assert identity["external_subject_enc"] != "opaque-synthetic"
+    with pytest.raises(PermissionError, match="already closed"):
+        main(arguments)
+
+
+def test_headless_qq_bootstrap_rejects_ambiguous_recent_routes(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "application.sqlite3"
+    database = Database(database_path)
+    database.migrate()
+    _observe_private_route(database, "opaque-first")
+    _observe_private_route(database, "opaque-second")
+    key_path = tmp_path / "field-key"
+    key_path.write_bytes(base64.urlsafe_b64encode(b"K" * 32))
+
+    with pytest.raises(PermissionError, match="exactly one"):
+        main(
+            [
+                "bootstrap-qq-owner",
+                "--database",
+                str(database_path),
+                "--field-key-file",
+                str(key_path),
+            ]
+        )
 
 
 def test_public_version_is_development_version() -> None:

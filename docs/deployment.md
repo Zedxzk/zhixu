@@ -59,6 +59,24 @@ HTTPS must set `ZHIXU_ADMIN_WEB_ENABLED=false` and omit the Passkey values. In t
 loopback API exposes only health probes and authenticated `/internal/` channel routes; all
 browser administration routes are unavailable and the vault has no Passkey handler.
 
+After activation, send one private QQ message. Stop the application writers and run the
+one-time owner bootstrap through a transient `zhixu` service with the application field key
+loaded as a systemd credential:
+
+```bash
+sudo systemctl stop zhixu-qq.service zhixu-worker.service zhixu-api.service
+sudo systemd-run --wait --pipe --collect \
+  --uid=zhixu --gid=zhixu \
+  --property=LoadCredential=app_field_key:/etc/zhixu/credentials/app_field_key \
+  /opt/zhixu/current/venv/bin/zhixu bootstrap-qq-owner \
+  --database /var/lib/zhixu/zhixu.sqlite3
+sudo systemctl start zhixu-api.service zhixu-worker.service zhixu-qq.service
+```
+
+The command accepts only a fresh, uniquely observed, unbound private QQ route. It closes
+permanently after creating the first user or identity, stores only the opaque route in the
+application database, and never prints the QQ identifier.
+
 To enable browser administration later, set `ZHIXU_ADMIN_WEB_ENABLED=true` and configure
 both Passkey values. The Passkey origin must exactly match the private HTTPS origin.
 

@@ -12,7 +12,7 @@ import sys
 import urllib.error
 import urllib.request
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -23,7 +23,18 @@ from .adapters.storage.sqlite import (
     Database,
     UserRepository,
 )
-from .domain import Action, CommandContext, PolicyEngine, ResourceRef, User, UserStatus
+from .application.services import random_id
+from .domain import (
+    Action,
+    CommandContext,
+    EncryptedIdentifier,
+    ExternalIdentity,
+    PolicyEngine,
+    ResourceRef,
+    User,
+    UserStatus,
+)
+from .runtime.common import read_key_file
 from .runtime.preflight import (
     PreflightFailure,
     require_root,
@@ -36,6 +47,7 @@ from .runtime.provision import (
     create_deployment_bundle,
     install_deployment_bundle,
 )
+from .security import FieldCipher
 from .vault_client import CapabilityGrantIssuer
 
 
@@ -60,6 +72,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     bootstrap = commands.add_parser("bootstrap-admin")
     bootstrap.add_argument("--database", required=True)
+
+    bootstrap_qq = commands.add_parser("bootstrap-qq-owner")
+    bootstrap_qq.add_argument("--database", required=True)
+    bootstrap_qq.add_argument("--field-key-file", default="")
+    bootstrap_qq.add_argument("--user-id", default="owner")
+    bootstrap_qq.add_argument("--display-name", default="Owner")
+    bootstrap_qq.add_argument("--max-route-age-seconds", type=int, default=600)
 
     backup = commands.add_parser("backup")
     backup.add_argument("--database", required=True)
@@ -205,6 +224,102 @@ def _bootstrap_admin(args: argparse.Namespace) -> int:
     return 0
 
 
+def _bootstrap_qq_owner(args: argparse.Namespace) -> int:
+    if not 60 <= args.max_route_age_seconds <= 3600:
+        raise ValueError("QQ bootstrap route age is outside the allowed range")
+    database = Database(args.database)
+    database.migrate()
+    now = datetime.now(UTC)
+    cutoff = now - timedelta(seconds=args.max_route_age_seconds)
+    with database.connect() as connection:
+        user_count = int(connection.execute("SELECT COUNT(*) FROM users").fetchone()[0])
+        identity_count = int(
+            connection.execute("SELECT COUNT(*) FROM external_identities").fetchone()[0]
+        )
+        candidates = connection.execute(
+            """
+            SELECT routes.channel_account,routes.opaque_ref,routes.last_seen_at
+            FROM channel_routes AS routes
+            WHERE routes.channel='qq'
+              AND routes.route_kind='private'
+              AND NOT EXISTS (
+                  SELECT 1 FROM external_identities AS identities
+                  WHERE identities.channel=routes.channel
+                    AND identities.channel_account=routes.channel_account
+                    AND identities.opaque_ref=routes.opaque_ref
+              )
+              AND EXISTS (
+                  SELECT 1 FROM inbound_event_receipts AS receipts
+                  WHERE receipts.channel=routes.channel
+                    AND receipts.channel_account=routes.channel_account
+                    AND receipts.actor_ref=routes.opaque_ref
+                    AND receipts.outcome='identity_unbound'
+              )
+            ORDER BY routes.last_seen_at DESC
+            """
+        ).fetchall()
+    recent = [
+        row
+        for row in candidates
+        if datetime.fromisoformat(str(row["last_seen_at"])) >= cutoff
+    ]
+    if user_count or identity_count:
+        raise PermissionError("headless QQ bootstrap is already closed")
+    if len(recent) != 1:
+        raise PermissionError("headless QQ bootstrap requires exactly one recent private route")
+
+    credential_directory = os.environ.get("CREDENTIALS_DIRECTORY", "")
+    field_key_file = args.field_key_file or (
+        str(Path(credential_directory) / "app_field_key")
+        if credential_directory
+        else ""
+    )
+    if not field_key_file:
+        raise ValueError("application field key credential is unavailable")
+    route = recent[0]
+    account = str(route["channel_account"])
+    opaque_ref = str(route["opaque_ref"])
+    identity_id = random_id("identity")
+    context = CommandContext(actor_user_id=args.user_id, now=now)
+    policy = PolicyEngine()
+    user = User(args.user_id, args.display_name, UserStatus.ACTIVE, now)
+    user_authorization = policy.require(
+        context,
+        Action.CREATE,
+        ResourceRef("user", args.user_id, args.user_id),
+    )
+    identity = ExternalIdentity(
+        identity_id,
+        args.user_id,
+        "qq",
+        account,
+        EncryptedIdentifier(
+            FieldCipher(
+                read_key_file(field_key_file, exact_bytes=32)
+            ).encrypt(
+                opaque_ref,
+                context=f"external-identity:qq:{account}:{opaque_ref}",
+            )
+        ),
+        opaque_ref,
+        now,
+    )
+    identity_authorization = policy.require(
+        context,
+        Action.CREATE,
+        ResourceRef(
+            "external_identity",
+            identity_id,
+            args.user_id,
+        ),
+    )
+    users = UserRepository(database)
+    users.create(user, user_authorization)
+    users.bind_identity(identity, identity_authorization)
+    print("Headless QQ owner initialized.")
+    return 0
+
+
 def _backup(args: argparse.Namespace) -> int:
     _require_tty()
     first = getpass.getpass("Backup passphrase: ")
@@ -314,6 +429,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _preflight()
     if args.command == "bootstrap-admin":
         return _bootstrap_admin(args)
+    if args.command == "bootstrap-qq-owner":
+        return _bootstrap_qq_owner(args)
     if args.command == "backup":
         return _backup(args)
     if args.command == "restore":
