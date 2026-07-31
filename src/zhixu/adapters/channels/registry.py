@@ -57,6 +57,7 @@ class ChannelRegistry:
                     {
                         "inbound_text": capabilities.inbound_text,
                         "outbound_text": capabilities.outbound_text,
+                        "markdown": capabilities.markdown,
                         "proactive_push": capabilities.proactive_push,
                         "buttons": capabilities.buttons,
                         "attachments": capabilities.attachments,

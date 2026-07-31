@@ -773,7 +773,13 @@ class InternalChannelAPI:
             event.channel,
             event.channel_account,
             event.external_conversation_ref,
-            MessageKind.BUTTON if reply.buttons else MessageKind.TEXT,
+            (
+                MessageKind.BUTTON
+                if reply.buttons
+                else MessageKind.MARKDOWN
+                if reply.rich_text
+                else MessageKind.TEXT
+            ),
             reply.text,
             buttons=reply.buttons,
             reply_context_ref=str(event.metadata.get("reply_context_ref") or ""),

@@ -67,3 +67,4 @@ class AssistantReply:
     code: str
     source: str
     buttons: tuple[MessageButton, ...] = field(default_factory=tuple, repr=False)
+    rich_text: bool = False

@@ -61,7 +61,7 @@ def test_web_answer_requires_final_text() -> None:
     [
         "file:///etc/passwd",
         "http://localhost/private",
-        "https://user:pass@example.com/private",
+        "https://user@example.com/private",
         "https://example.com/page#fragment",
     ],
 )

@@ -671,6 +671,42 @@ def test_qq_http_sends_official_callback_keyboard_and_acknowledges_interaction(
     assert acknowledgement[2] == {"code": 0}
 
 
+def test_qq_http_sends_markdown_without_a_keyboard(
+    database: Database,
+    privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
+) -> None:
+    contacts = register_account(database, privacy_primitives)
+    target_ref = contacts.record(
+        channel_account="bot_test_a",
+        kind="private",
+        external_identifier="private-openid-markdown-only-test",
+        now=NOW,
+    )
+    transport = FakeTransport()
+    adapter = QQHttpAdapter(
+        QQBotCredentials("bot_test_a", "synthetic-app", "synthetic-secret"),
+        contacts,
+        transport=transport,
+    )
+
+    result = adapter.send(
+        OutboundMessage(
+            channel="qq",
+            channel_account="bot_test_a",
+            target_ref=target_ref,
+            kind=MessageKind.MARKDOWN,
+            text="# Synthetic heading\n\n- item",
+        )
+    )
+
+    assert result.ok
+    payload = transport.requests[-1][2]
+    assert payload == {
+        "msg_type": 2,
+        "markdown": {"content": "# Synthetic heading\n\n- item"},
+    }
+
+
 def test_qq_http_falls_back_to_plain_text_when_markdown_is_rejected(
     database: Database,
     privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],

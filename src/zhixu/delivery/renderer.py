@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 
 from zhixu.channels import ChannelCapabilities, MessageKind, OutboundMessage
 from zhixu.domain.errors import ValidationError
+
+
+def _plain_markdown(value: str) -> str:
+    text = re.sub(r"(?m)^#{1,6}\s*", "", value)
+    text = text.replace("**", "").replace("__", "")
+    return re.sub(r"\\([\\`*_{}\[\]()#+\-.!>|])", r"\1", text)
 
 
 def render_for_capabilities(
@@ -18,6 +25,9 @@ def render_for_capabilities(
     buttons = message.buttons
     attachment_url = message.attachment_url
     kind = message.kind
+    if kind is MessageKind.MARKDOWN and not capabilities.markdown:
+        text = _plain_markdown(text)
+        kind = MessageKind.TEXT
     if buttons and not capabilities.buttons:
         choices = "\n".join(
             f"{index}. {button.label} — {button.action}"

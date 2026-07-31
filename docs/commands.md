@@ -13,7 +13,8 @@ same deterministic behavior.
 ```
 
 Help is rendered as a deterministic Markdown card with quick buttons for today's agenda,
-the task list, and the reminder list. It never calls an LLM.
+the task list, and the reminder list. Public-group help uses the same Markdown rendering
+without adding a dummy button. It never calls an LLM.
 
 ## Agenda, tasks, and notes
 
@@ -119,7 +120,8 @@ bound to the current internal user.
 An explicit `/问` may use the configured model provider's web-search tool. Only the literal
 question is sent: note bodies, private records, shared-group records, platform identifiers,
 and conversation history are never added to the search prompt. The reply lists up to five
-provider-returned public sources. Likely credentials, account numbers, email addresses,
+provider-returned public sources in a Markdown message; a keyboard is not required. Likely
+credentials, account numbers, email addresses,
 network addresses, and other token-shaped values are rejected before egress. Operators can
 disable this path with `ZHIXU_LLM_WEB_SEARCH=false`.
 

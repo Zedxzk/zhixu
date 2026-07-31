@@ -78,6 +78,7 @@ class QQHttpAdapter:
     capabilities = ChannelCapabilities(
         inbound_text=True,
         outbound_text=True,
+        markdown=True,
         proactive_push=True,
         buttons=True,
         attachments=True,
@@ -194,9 +195,12 @@ class QQHttpAdapter:
         payload: dict[str, Any] = {"content": message.text}
         if target.kind in {"private", "group"}:
             payload["msg_type"] = 0
-        if message.buttons:
-            if len(message.buttons) > _KEYBOARD_COLUMNS * _KEYBOARD_MAX_ROWS:
-                return ChannelDeliveryResult(False, False, "keyboard_too_large")
+        if (
+            message.buttons
+            and len(message.buttons) > _KEYBOARD_COLUMNS * _KEYBOARD_MAX_ROWS
+        ):
+            return ChannelDeliveryResult(False, False, "keyboard_too_large")
+        if message.kind is MessageKind.MARKDOWN or message.buttons:
             button_values = [
                 _button_payload(button, index)
                 for index, button in enumerate(message.buttons, start=1)
@@ -204,14 +208,15 @@ class QQHttpAdapter:
             payload = {"markdown": {"content": message.text}}
             if target.kind in {"private", "group"}:
                 payload["msg_type"] = 2
-            payload["keyboard"] = {
-                "content": {
-                    "rows": [
-                        {"buttons": button_values[start : start + _KEYBOARD_COLUMNS]}
-                        for start in range(0, len(button_values), _KEYBOARD_COLUMNS)
-                    ]
+            if button_values:
+                payload["keyboard"] = {
+                    "content": {
+                        "rows": [
+                            {"buttons": button_values[start : start + _KEYBOARD_COLUMNS]}
+                            for start in range(0, len(button_values), _KEYBOARD_COLUMNS)
+                        ]
+                    }
                 }
-            }
         if message.attachment_url:
             try:
                 file_url = self._file_endpoint(target)
@@ -247,7 +252,11 @@ class QQHttpAdapter:
             payload=payload,
             headers=self._headers(token),
         )
-        if status in {400, 403} and message.buttons and not message.attachment_url:
+        if (
+            status in {400, 403}
+            and (message.kind is MessageKind.MARKDOWN or message.buttons)
+            and not message.attachment_url
+        ):
             fallback = _plain_button_fallback(message)
             if reply_context is not None:
                 fallback[reply_context.field] = reply_context.identifier

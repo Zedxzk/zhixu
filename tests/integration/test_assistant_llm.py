@@ -176,6 +176,7 @@ def test_public_group_answer_and_help_never_search_private_notes(
     assert "private needle must never" not in answer.text
     assert "公开群不能读取或写入任何个人数据库" in help_reply.text
     assert help_reply.buttons == ()
+    assert help_reply.rich_text is True
 
 
 def test_fixed_commands_stay_deterministic_but_reminders_use_model(
@@ -490,6 +491,7 @@ def test_explicit_question_uses_controlled_web_search_with_sources(
     reply = engine.handle("/问 current synthetic fact", context)
 
     assert reply.source == "web"
+    assert reply.rich_text is True
     assert "Synthetic current answer." in reply.text
     assert "https://example.com/current" in reply.text
     assert client.requests[0].web_search is True

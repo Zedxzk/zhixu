@@ -20,6 +20,7 @@ class ConversationKind(StrEnum):
 
 class MessageKind(StrEnum):
     TEXT = "text"
+    MARKDOWN = "markdown"
     BUTTON = "button"
     ATTACHMENT = "attachment"
     VOICE = "voice"
@@ -29,6 +30,7 @@ class MessageKind(StrEnum):
 class ChannelCapabilities:
     inbound_text: bool = False
     outbound_text: bool = False
+    markdown: bool = False
     proactive_push: bool = False
     buttons: bool = False
     attachments: bool = False

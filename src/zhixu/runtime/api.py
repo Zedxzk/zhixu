@@ -326,6 +326,7 @@ def create_api(args: argparse.Namespace) -> CompositePrivateAPI:
     qq_capabilities = ChannelCapabilities(
         inbound_text=True,
         outbound_text=True,
+        markdown=True,
         proactive_push=True,
         buttons=True,
         attachments=True,
@@ -339,6 +340,7 @@ def create_api(args: argparse.Namespace) -> CompositePrivateAPI:
             {
                 "inbound_text": True,
                 "outbound_text": True,
+                "markdown": True,
                 "proactive_push": True,
                 "buttons": True,
                 "attachments": True,

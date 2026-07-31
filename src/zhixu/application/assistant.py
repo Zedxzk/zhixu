@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import timedelta
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -53,6 +54,10 @@ class _WebAnswerEnvelope(BaseModel):
 
     answer: str = Field(min_length=1, max_length=3200)
     sources: list[_WebSourceEnvelope] = Field(max_length=5)
+
+
+def _escape_markdown_text(value: str) -> str:
+    return re.sub(r"([\\`*_{}\[\]()#+\-.!>|])", r"\\\1", value)
 
 
 _HELP_TEXT = """# 知序 · 帮助
@@ -250,6 +255,7 @@ class AssistantEngine:
                     _PUBLIC_GROUP_HELP_TEXT,
                     "ok",
                     intent.source,
+                    rich_text=True,
                 )
             if "internal_group_member" in context.roles:
                 return AssistantReply(
@@ -257,6 +263,7 @@ class AssistantEngine:
                     "ok",
                     intent.source,
                     buttons=_HELP_BUTTONS,
+                    rich_text=True,
                 )
             if "project_admin" in context.roles:
                 return AssistantReply(
@@ -264,12 +271,14 @@ class AssistantEngine:
                     "ok",
                     intent.source,
                     buttons=_HELP_BUTTONS,
+                    rich_text=True,
                 )
             return AssistantReply(
                 _HELP_TEXT,
                 "ok",
                 intent.source,
                 buttons=_HELP_BUTTONS,
+                rich_text=True,
             )
         if intent.action is IntentAction.LIST_AGENDA:
             local_now = self.services.clock.now().astimezone(self.router.timezone)
@@ -585,16 +594,18 @@ class AssistantEngine:
     def _web_answer_reply(answer: _WebAnswerEnvelope) -> AssistantReply:
         if not answer.sources:
             return AssistantReply(
-                answer.answer + "\n\n（本次搜索未返回可验证来源）",
+                answer.answer + "\n\n> 本次搜索未返回可验证来源",
                 "ok",
                 "web",
+                rich_text=True,
             )
         source_lines = [
-            f"{index}. {source.title}\n{source.url}"
+            f"{index}. {_escape_markdown_text(source.title)}\n{source.url}"
             for index, source in enumerate(answer.sources, start=1)
         ]
         return AssistantReply(
-            answer.answer + "\n\n参考来源：\n" + "\n".join(source_lines),
+            answer.answer + "\n\n## 参考来源\n" + "\n".join(source_lines),
             "ok",
             "web",
+            rich_text=True,
         )

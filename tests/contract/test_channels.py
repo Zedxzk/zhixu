@@ -357,3 +357,19 @@ def test_capability_contract_degrades_buttons_and_attachments(
     assert rendered.attachment_url is None
     assert "/ack" in rendered.text
     assert "https://assets.example.invalid/synthetic.png" in rendered.text
+
+
+def test_capability_contract_degrades_markdown_to_plain_text() -> None:
+    rendered = render_for_capabilities(
+        OutboundMessage(
+            "synthetic",
+            "account_synthetic",
+            "target_synthetic",
+            MessageKind.MARKDOWN,
+            "# Synthetic heading\n\n**body**",
+        ),
+        ChannelCapabilities(outbound_text=True),
+    )
+
+    assert rendered.kind is MessageKind.TEXT
+    assert rendered.text == "Synthetic heading\n\nbody"
