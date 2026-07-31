@@ -29,6 +29,7 @@ from zhixu.domain import (
     Action,
     CommandContext,
     DataClassification,
+    MissedReminderPolicy,
     PolicyEngine,
     ResourceRef,
     ScheduledJob,
@@ -264,6 +265,52 @@ def test_reminder_tick_is_atomic_and_idempotent(
     assert scheduler.tick() == 0
     assert outbox.count() == 1
     assert ReminderRepository(database).get(reminder.id).status.value == "fired"
+
+
+def test_missed_reminder_policy_fires_or_skips_after_grace_window(
+    app: tuple[ZhixuServices, FrozenClock, UserRepository],
+    database: Database,
+) -> None:
+    services, clock, _users = app
+    context = CommandContext(actor_user_id="user_test", now=NOW)
+    fire = services.create_reminder(
+        CreateReminder(
+            title="Synthetic late reminder to deliver",
+            fire_at=NOW - timedelta(minutes=10),
+            target_ref="target_opaque_test",
+            missed_policy=MissedReminderPolicy.FIRE,
+        ),
+        context,
+    )
+    skip = services.create_reminder(
+        CreateReminder(
+            title="Synthetic late reminder to skip",
+            fire_at=NOW - timedelta(minutes=10),
+            target_ref="target_opaque_test",
+            missed_policy=MissedReminderPolicy.SKIP,
+        ),
+        context,
+    )
+
+    scheduler = ReminderScheduler(
+        ReminderRepository(database),
+        clock,
+        late_grace_seconds=300,
+    )
+    assert scheduler.tick() == 1
+    repository = ReminderRepository(database)
+    assert repository.get(fire.id).status.value == "fired"
+    assert repository.get(skip.id).status.value == "cancelled"
+    assert OutboxRepository(database).count() == 1
+    with database.connect() as connection:
+        skipped = connection.execute(
+            """
+            SELECT reason_code FROM audit_events
+            WHERE resource_kind='reminder' AND resource_id=? AND action='skip'
+            """,
+            (skip.id,),
+        ).fetchone()
+    assert skipped is not None and skipped["reason_code"] == "missed_policy"
 
 
 def test_scheduled_job_run_is_idempotent(

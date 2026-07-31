@@ -443,6 +443,65 @@ def test_qq_access_token_is_cached_and_refreshed_before_expiry(
     assert len(token_requests) == 2
 
 
+@pytest.mark.parametrize(
+    ("status", "retryable"),
+    ((400, False), (429, True), (503, True)),
+)
+def test_qq_http_classifies_permanent_and_retryable_provider_failures(
+    database: Database,
+    privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
+    status: int,
+    retryable: bool,
+) -> None:
+    contacts = register_account(database, privacy_primitives)
+    target_ref = contacts.record(
+        channel_account="bot_test_a",
+        kind="private",
+        external_identifier="private-openid-provider-failure-test",
+        now=NOW,
+    )
+
+    class StatusTransport(FakeTransport):
+        def request(
+            self,
+            url: str,
+            *,
+            method: str = "GET",
+            payload: dict[str, Any] | None = None,
+            headers: dict[str, str] | None = None,
+            timeout: float = 10,
+        ) -> tuple[int, dict[str, Any]]:
+            if url.endswith("getAppAccessToken"):
+                return super().request(
+                    url,
+                    method=method,
+                    payload=payload,
+                    headers=headers,
+                    timeout=timeout,
+                )
+            self.requests.append((url, method, payload, headers))
+            return status, {}
+
+    adapter = QQHttpAdapter(
+        QQBotCredentials("bot_test_a", "synthetic-app", "synthetic-secret"),
+        contacts,
+        transport=StatusTransport(),
+    )
+    result = adapter.send(
+        OutboundMessage(
+            channel="qq",
+            channel_account="bot_test_a",
+            target_ref=target_ref,
+            kind=MessageKind.TEXT,
+            text="Synthetic provider failure",
+        )
+    )
+
+    assert not result.ok
+    assert result.retryable is retryable
+    assert result.provider_code == f"http_{status}"
+
+
 def test_qq_http_supports_image_upload(
     database: Database,
     privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
