@@ -7,6 +7,7 @@ from datetime import timedelta
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from zhixu.channels import MessageButton
 from zhixu.domain import CommandContext, TaskStatus
 from zhixu.domain.errors import (
     InvalidModelOutput,
@@ -37,6 +38,41 @@ class _SummaryEnvelope(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     summary: str = Field(min_length=1, max_length=4000)
+
+
+_HELP_TEXT = """# 知序 · 帮助
+
+> 日程、待办、备忘、提醒与快速问答
+
+## 查看
+- `/今天` 或 `/日程` — 今日安排
+- `/待办` — 待办列表
+- `/提醒` — 待处理提醒
+
+## 创建
+- `/任务 要做的事` — 新建待办
+- `/记 需要记住的内容` — 保存备忘
+- `明天上午9点提醒我提交报告` — 创建提醒
+
+## 查找与问答
+- `/搜索 关键词` — 搜索备忘
+- `/总结 关键词` — 总结相关备忘
+- `/问 问题` — 快速问答
+
+## 管理
+- `/完成 task_ID`
+- `/延期 task_ID 30分钟`
+- `/取消提醒 reminder_ID`
+- `/提醒完成 reminder_ID`
+- `/提醒稍后 reminder_ID 15分钟`
+
+> 提醒卡片可直接选择延后 5/15/30/60 分钟、完成或取消。"""
+
+_HELP_BUTTONS = (
+    MessageButton("今日日程", "/今天"),
+    MessageButton("待办列表", "/待办"),
+    MessageButton("提醒列表", "/提醒"),
+)
 
 
 class AssistantEngine:
@@ -141,6 +177,13 @@ class AssistantEngine:
                 intent.source,
             )
         arguments = intent.arguments
+        if intent.action is IntentAction.HELP:
+            return AssistantReply(
+                _HELP_TEXT,
+                "ok",
+                intent.source,
+                buttons=_HELP_BUTTONS,
+            )
         if intent.action is IntentAction.LIST_AGENDA:
             local_now = self.services.clock.now().astimezone(self.router.timezone)
             start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)

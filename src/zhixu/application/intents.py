@@ -9,8 +9,11 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from zhixu.channels import MessageButton
+
 
 class IntentAction(StrEnum):
+    HELP = "help"
     LIST_AGENDA = "list_agenda"
     LIST_TASKS = "list_tasks"
     LIST_REMINDERS = "list_reminders"
@@ -63,3 +66,4 @@ class AssistantReply:
     text: str
     code: str
     source: str
+    buttons: tuple[MessageButton, ...] = field(default_factory=tuple, repr=False)

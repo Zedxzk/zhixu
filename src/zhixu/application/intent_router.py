@@ -37,6 +37,8 @@ class RuleIntentRouter:
     def route(self, text: str) -> ParsedIntent | None:
         value = text.strip()
         compact = re.sub(r"\s+", "", value)
+        if value.lower() in {"/帮助", "/help", "帮助", "help", "/菜单", "菜单"}:
+            return ParsedIntent(IntentAction.HELP)
         if value in {"/今天", "/日程"} or compact in {
             "今天有什么安排",
             "今天的日程",

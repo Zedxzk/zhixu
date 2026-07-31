@@ -224,6 +224,49 @@ def test_qq_network_database_is_separate_and_duplicate_events_are_idempotent(
     )
     assert completed.body == {"status": "sent"}
 
+    help_event = {
+        **event,
+        "event_id": "event_synthetic_help",
+        "text": "/帮助",
+    }
+    assert internal.dispatch(
+        "POST",
+        "/internal/channel/event",
+        headers=headers,
+        body=json.dumps(help_event).encode(),
+    ).status == 202
+    help_delivery = internal.dispatch(
+        "POST",
+        "/internal/channel/delivery/claim",
+        headers=headers,
+        body=json.dumps(
+            {
+                "channel": "qq",
+                "channel_account": account,
+                "worker_id": "qq:synthetic",
+            }
+        ).encode(),
+    ).body["delivery"]
+    assert help_delivery["kind"] == "button"
+    assert help_delivery["text"].startswith("# 知序 · 帮助")
+    assert [button["action"] for button in help_delivery["buttons"]] == [
+        "/今天",
+        "/待办",
+        "/提醒",
+    ]
+    internal.dispatch(
+        "POST",
+        "/internal/channel/delivery/complete",
+        headers=headers,
+        body=json.dumps(
+            {
+                "delivery_id": help_delivery["id"],
+                "lease_token": help_delivery["lease_token"],
+                "ok": True,
+            }
+        ).encode(),
+    )
+
     clock.set((NOW + timedelta(days=1)).replace(hour=9))
     assert ReminderScheduler(ReminderRepository(application_database), clock).tick() == 1
     proactive = internal.dispatch(

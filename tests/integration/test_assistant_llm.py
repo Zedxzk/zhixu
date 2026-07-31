@@ -177,6 +177,7 @@ def test_fixed_commands_stay_deterministic_but_reminders_use_model(
     )
     engine = engine_with(services, clock, database, client)
 
+    help_reply = engine.handle("/帮助", context)
     created_task = engine.handle("/任务 Synthetic deterministic task", context)
     listed = engine.handle("/待办", context)
     created_note = engine.handle("/记 Synthetic router handbook", context)
@@ -214,6 +215,14 @@ def test_fixed_commands_stay_deterministic_but_reminders_use_model(
     )
     today = engine.handle("/今天", context)
 
+    assert help_reply.code == "ok"
+    assert help_reply.source == "deterministic"
+    assert help_reply.text.startswith("# 知序 · 帮助")
+    assert [button.action for button in help_reply.buttons] == [
+        "/今天",
+        "/待办",
+        "/提醒",
+    ]
     assert created_task.code == "created"
     assert "Synthetic deterministic task" in listed.text
     assert created_note.code == "created"

@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from zhixu.adapters.channels import InboundReceiptStore
 from zhixu.adapters.storage.sqlite import ChannelRouteStore, UserRepository
-from zhixu.application import AssistantEngine
+from zhixu.application import AssistantEngine, AssistantReply
 from zhixu.channels import (
     ChannelCapabilities,
     ChannelDeliveryResult,
@@ -203,7 +203,7 @@ class InternalChannelAPI:
                 delivery_id=reply_ref,
                 idempotency_key=reply_ref,
                 owner_user_id=decision.user_id,
-                message=self._reply_message(event, reply.text),
+                message=self._reply_message(event, reply),
                 now=event.received_at,
             )
             return AdminResponse(202, {"accepted": True, "reason_code": "accepted"})
@@ -241,15 +241,16 @@ class InternalChannelAPI:
         return ChannelAdmissionDecision(True, identity.user_id, "accepted")
 
     @staticmethod
-    def _reply_message(event: InboundEvent, text: str):
+    def _reply_message(event: InboundEvent, reply: AssistantReply):
         from zhixu.channels import OutboundMessage
 
         return OutboundMessage(
             event.channel,
             event.channel_account,
             event.external_conversation_ref,
-            MessageKind.TEXT,
-            text,
+            MessageKind.BUTTON if reply.buttons else MessageKind.TEXT,
+            reply.text,
+            buttons=reply.buttons,
         )
 
     def _claim(self, payload: ClaimPayload) -> AdminResponse:

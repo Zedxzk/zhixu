@@ -4,6 +4,17 @@ QQ is the first conversational channel, but these commands belong to the channel
 assistant. A future inbound adapter can submit the same normalized events and receive the
 same deterministic behavior.
 
+## Help
+
+```text
+/帮助
+/help
+/菜单
+```
+
+Help is rendered as a deterministic Markdown card with quick buttons for today's agenda,
+the task list, and the reminder list. It never calls an LLM.
+
 ## Agenda, tasks, and notes
 
 ```text
