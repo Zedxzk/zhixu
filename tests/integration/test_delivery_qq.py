@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -770,6 +772,81 @@ def test_gateway_maps_button_interaction_to_deterministic_command(
     assert event.conversation_kind is ConversationKind.PRIVATE
     assert event.text == "/提醒稍后 reminder_synthetic 15分钟"
     assert event.metadata["mentioned"] is True
+
+
+def test_gateway_acknowledges_button_before_forwarding_command(
+    database: Database,
+    privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
+) -> None:
+    from zhixu.adapters.channels.qq.gateway import QQGatewayRunner
+
+    contacts = register_account(database, privacy_primitives)
+    transport = FakeTransport()
+    adapter = QQHttpAdapter(
+        QQBotCredentials("bot_test_a", "synthetic-app", "synthetic-secret"),
+        contacts,
+        transport=transport,
+    )
+
+    class ProtocolSpy:
+        state = QQGatewayState(resume_url="wss://example.invalid/resume")
+
+        def handle(
+            self,
+            payload: dict[str, Any],
+            *,
+            received_at: datetime,
+        ) -> str:
+            del payload, received_at
+            assert any(
+                request[0].endswith("/interactions/synthetic-interaction")
+                for request in transport.requests
+            )
+            return "reconnect"
+
+    class SyntheticWebSocket:
+        def __enter__(self) -> SyntheticWebSocket:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def send(self, _data: str) -> None:
+            return None
+
+        def recv(self, timeout: float | None = None) -> str:
+            del timeout
+            return json.dumps(
+                {
+                    "op": 0,
+                    "t": "INTERACTION_CREATE",
+                    "s": 8,
+                    "d": {
+                        "id": "synthetic-interaction",
+                        "type": 11,
+                        "user_openid": "synthetic-private-actor",
+                        "data": {
+                            "resolved": {
+                                "button_data": (
+                                    "/提醒完成 reminder_synthetic"
+                                ),
+                            },
+                        },
+                    },
+                }
+            )
+
+    runner = QQGatewayRunner(
+        adapter,
+        ProtocolSpy(),  # type: ignore[arg-type]
+        connector=lambda *_args, **_kwargs: SyntheticWebSocket(),
+    )
+    runner.connect_once(threading.Event())
+
+    acknowledgement = transport.requests[-1]
+    assert acknowledgement[0].endswith("/interactions/synthetic-interaction")
+    assert acknowledgement[1] == "PUT"
+    assert acknowledgement[2] == {"code": 0}
 
 
 def test_gateway_error_log_does_not_include_exception_message(

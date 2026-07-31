@@ -471,13 +471,19 @@ class QQGatewayRunner:
                     )
                     websocket.send(json.dumps(self.protocol.handshake_payload(token)))
                     continue
-                action = self.protocol.handle(payload, received_at=datetime.now(UTC))
                 if (
-                    action == "event"
+                    payload.get("op") == OP_DISPATCH
                     and str(payload.get("t") or "") == "INTERACTION_CREATE"
                 ):
+                    # QQ expects interaction callbacks to be acknowledged promptly.
+                    # Do this before forwarding the command to the internal API,
+                    # whose deterministic processing and persistence may take longer
+                    # than the client-side interaction deadline.
                     data = payload.get("d") if isinstance(payload.get("d"), dict) else {}
-                    self.adapter.acknowledge_interaction(str(data.get("id") or ""))
+                    interaction_id = str(data.get("id") or "")
+                    if interaction_id:
+                        self.adapter.acknowledge_interaction(interaction_id)
+                action = self.protocol.handle(payload, received_at=datetime.now(UTC))
                 if action == "reconnect":
                     return
 
