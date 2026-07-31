@@ -191,6 +191,23 @@ class AdminReadStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def llm_calls(self, user_id: str, *, limit: int = 100) -> list[dict[str, object]]:
+        """Expose bounded usage metadata without prompts, responses, or provider keys."""
+
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT occurred_at,model_ref,reason,outcome,
+                       estimated_input_units,output_units
+                FROM llm_call_events
+                WHERE owner_user_id=?
+                ORDER BY occurred_at DESC,id DESC
+                LIMIT ?
+                """,
+                (user_id, _bounded_limit(limit)),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def create_channel_session(
         self,
         *,

@@ -14,7 +14,7 @@ from zhixu.domain.errors import (
     PermissionDenied,
     ValidationError,
 )
-from zhixu.ports import LLMRequest
+from zhixu.ports import LLMCallReason, LLMRequest
 
 from .commands import (
     AcknowledgeReminder,
@@ -77,7 +77,11 @@ class AssistantEngine:
                     "deterministic",
                 )
             try:
-                intent = self.classifier.classify(context.actor_user_id, text)
+                intent = self.classifier.classify(
+                    context.actor_user_id,
+                    text,
+                    reason=LLMCallReason.DETERMINISTIC_PARSER_MISS,
+                )
             except (LLMUnavailable, PermissionDenied):
                 return AssistantReply(
                     "模型暂时不可用，但日程、待办、备忘和提醒命令仍可使用。",
@@ -298,6 +302,7 @@ class AssistantEngine:
                         response_schema=_SummaryEnvelope.model_json_schema(),
                     ),
                     classification=classification,
+                    reason=LLMCallReason.NOTE_SUMMARY_REQUESTED,
                 )
                 summary = _SummaryEnvelope.model_validate_json(response.content)
             except (LLMUnavailable, PermissionDenied):
@@ -319,6 +324,7 @@ class AssistantEngine:
                         proposed = self.classifier.classify(
                             context.actor_user_id,
                             query,
+                            reason=LLMCallReason.GENERAL_QUESTION,
                         )
                     except (LLMUnavailable, PermissionDenied):
                         proposed = None

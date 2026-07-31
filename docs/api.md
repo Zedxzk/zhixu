@@ -70,6 +70,7 @@ GET                  /admin/channels
 GET|PATCH            /admin/channel-routes
 GET                  /admin/outbox
 GET                  /admin/audit
+GET                  /admin/llm-usage
 GET                  /admin/status
 ```
 
@@ -84,6 +85,10 @@ notification times. Reminder cancellation requires the confirmation header.
 Deletion requires the confirmation header. External identities and delivery targets are
 represented by opaque references; status and audit endpoints do not return raw platform
 identifiers, credentials, message bodies, or database paths.
+
+The LLM usage view contains only timestamp, model reference, fixed invocation reason,
+success/failure outcome, and unit counts. It never stores or returns a prompt, response,
+note body, question, or provider credential.
 
 ## Isolated high-sensitivity vault
 

@@ -10,6 +10,7 @@ from zhixu.domain.errors import LLMBudgetExceeded, LLMUnavailable
 from zhixu.ports import (
     Clock,
     LLMBudgetLimit,
+    LLMCallReason,
     LLMPort,
     LLMRequest,
     LLMResponse,
@@ -57,6 +58,7 @@ class LLMGateway:
         owner_user_id: str,
         request: LLMRequest,
         classification: DataClassification,
+        reason: LLMCallReason,
     ) -> LLMResponse:
         self.egress.require(classification, provider_is_local=self.client.is_local)
         now = self.clock.now()
@@ -67,12 +69,14 @@ class LLMGateway:
             1,
             (len(request.system_prompt) + len(request.user_prompt) + 3) // 4,
         )
-        if not self.usage.reserve(
+        call_id = self.usage.reserve(
             owner_user_id=owner_user_id,
             model_ref=model_ref,
+            reason=reason,
             estimated_input_units=estimated_input,
             limits=self.limits,
-        ):
+        )
+        if call_id is None:
             raise LLMBudgetExceeded("LLM usage budget has been exhausted")
         try:
             response = self.client.generate(
@@ -80,15 +84,24 @@ class LLMGateway:
                 timeout_seconds=self.timeout_seconds,
             )
         except Exception as exc:
+            self.usage.record_result(
+                call_id=call_id,
+                owner_user_id=owner_user_id,
+                model_ref=model_ref,
+                outcome="failed",
+                output_units=0,
+            )
             self._circuit.failures += 1
             if self._circuit.failures >= self.failure_threshold:
                 self._circuit.open_until = now + timedelta(seconds=self.recovery_seconds)
             raise LLMUnavailable("LLM request failed") from exc
         self._circuit.failures = 0
         self._circuit.open_until = None
-        self.usage.record_output(
+        self.usage.record_result(
+            call_id=call_id,
             owner_user_id=owner_user_id,
             model_ref=model_ref,
+            outcome="completed",
             output_units=response.output_units,
         )
         return response

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any, Protocol
 
 
@@ -19,6 +20,12 @@ class LLMResponse:
     content: str = field(repr=False)
     input_units: int = 0
     output_units: int = 0
+
+
+class LLMCallReason(StrEnum):
+    DETERMINISTIC_PARSER_MISS = "deterministic_parser_miss"
+    NOTE_SUMMARY_REQUESTED = "note_summary_requested"
+    GENERAL_QUESTION = "general_question"
 
 
 class LLMPort(Protocol):
@@ -48,14 +55,17 @@ class LLMUsagePort(Protocol):
         *,
         owner_user_id: str,
         model_ref: str,
+        reason: LLMCallReason,
         estimated_input_units: int,
         limits: tuple[LLMBudgetLimit, ...],
-    ) -> bool: ...
+    ) -> int | None: ...
 
-    def record_output(
+    def record_result(
         self,
         *,
+        call_id: int,
         owner_user_id: str,
         model_ref: str,
+        outcome: str,
         output_units: int,
     ) -> None: ...

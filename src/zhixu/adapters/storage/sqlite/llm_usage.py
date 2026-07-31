@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from zhixu.ports import LLMBudgetLimit
+from zhixu.ports import LLMBudgetLimit, LLMCallReason
 
 from .database import Database
 
@@ -28,9 +28,10 @@ class SQLiteLLMUsage:
         *,
         owner_user_id: str,
         model_ref: str,
+        reason: LLMCallReason,
         estimated_input_units: int,
         limits: tuple[LLMBudgetLimit, ...],
-    ) -> bool:
+    ) -> int | None:
         now = self.clock.now()
         with self.database.transaction() as connection:
             rows: list[tuple[LLMBudgetLimit, str, object | None]] = []
@@ -52,7 +53,7 @@ class SQLiteLLMUsage:
                     or inputs + estimated_input_units > limit.input_units
                     or outputs >= limit.output_units
                 ):
-                    return False
+                    return None
                 rows.append((limit, start, row))
             for limit, start, _row in rows:
                 connection.execute(
@@ -74,29 +75,68 @@ class SQLiteLLMUsage:
                         estimated_input_units,
                     ),
                 )
-        return True
+            cursor = connection.execute(
+                """
+                INSERT INTO llm_call_events(
+                    occurred_at,owner_user_id,model_ref,reason,outcome,
+                    estimated_input_units,output_units
+                ) VALUES(?,?,?,?,?, ?,0)
+                """,
+                (
+                    now.astimezone(UTC).isoformat(),
+                    owner_user_id,
+                    model_ref,
+                    reason.value,
+                    "reserved",
+                    estimated_input_units,
+                ),
+            )
+            call_id = int(cursor.lastrowid)
+        return call_id
 
-    def record_output(
+    def record_result(
         self,
         *,
+        call_id: int,
         owner_user_id: str,
         model_ref: str,
+        outcome: str,
         output_units: int,
     ) -> None:
+        if outcome not in {"completed", "failed"}:
+            raise ValueError("LLM call outcome is invalid")
         now = self.clock.now()
         with self.database.transaction() as connection:
-            for kind in ("day", "month"):
-                connection.execute(
-                    """
-                    UPDATE llm_usage SET output_units=output_units+?
-                    WHERE owner_user_id=? AND model_ref=?
-                      AND window_kind=? AND window_start=?
-                    """,
-                    (
-                        max(0, output_units),
-                        owner_user_id,
-                        model_ref,
-                        kind,
-                        _window_start(now, kind),
-                    ),
-                )
+            recorded_output = max(0, output_units) if outcome == "completed" else 0
+            if outcome == "completed":
+                for kind in ("day", "month"):
+                    connection.execute(
+                        """
+                        UPDATE llm_usage SET output_units=output_units+?
+                        WHERE owner_user_id=? AND model_ref=?
+                          AND window_kind=? AND window_start=?
+                        """,
+                        (
+                            recorded_output,
+                            owner_user_id,
+                            model_ref,
+                            kind,
+                            _window_start(now, kind),
+                        ),
+                    )
+            changed = connection.execute(
+                """
+                UPDATE llm_call_events
+                SET outcome=?,output_units=?
+                WHERE id=? AND owner_user_id=? AND model_ref=? AND outcome='reserved'
+                """,
+                (
+                    outcome,
+                    recorded_output,
+                    call_id,
+                    owner_user_id,
+                    model_ref,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise RuntimeError("LLM call event is missing or already finalized")

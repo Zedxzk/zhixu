@@ -4,6 +4,7 @@ from .channel import ChannelAdapter
 from .clock import Clock, FrozenClock, SystemClock
 from .llm import (
     LLMBudgetLimit,
+    LLMCallReason,
     LLMPort,
     LLMRequest,
     LLMResponse,
@@ -24,6 +25,7 @@ __all__ = [
     "ChannelAdapter",
     "FrozenClock",
     "LLMBudgetLimit",
+    "LLMCallReason",
     "LLMPort",
     "LLMRequest",
     "LLMResponse",

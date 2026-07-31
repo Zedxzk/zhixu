@@ -54,7 +54,7 @@ class SequentialIds:
 @pytest.fixture
 def database(tmp_path: Path) -> Database:
     database = Database(tmp_path / "zhixu.sqlite3")
-    assert database.migrate() == [1, 2, 3, 4, 5, 6, 7]
+    assert database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8]
     assert database.migrate() == []
     return database
 
@@ -111,6 +111,8 @@ def test_migration_creates_required_phase_one_tables(database: Database) -> None
         "notes_fts",
         "reminders",
         "outbox_deliveries",
+        "llm_usage",
+        "llm_call_events",
         "audit_events",
         "schema_migrations",
     } <= names

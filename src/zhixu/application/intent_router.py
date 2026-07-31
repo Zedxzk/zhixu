@@ -11,7 +11,7 @@ from pydantic import ValidationError as PydanticValidationError
 
 from zhixu.domain import DataClassification
 from zhixu.domain.errors import InvalidModelOutput, LLMUnavailable
-from zhixu.ports import Clock, LLMRequest
+from zhixu.ports import Clock, LLMCallReason, LLMRequest
 
 from .intents import IntentAction, ModelIntentProposal, ParsedIntent
 from .llm import LLMGateway
@@ -219,7 +219,13 @@ class ModelIntentClassifier:
         self.model = model
         self.confidence_threshold = confidence_threshold
 
-    def classify(self, owner_user_id: str, text: str) -> ParsedIntent:
+    def classify(
+        self,
+        owner_user_id: str,
+        text: str,
+        *,
+        reason: LLMCallReason,
+    ) -> ParsedIntent:
         request = LLMRequest(
             model=self.model,
             system_prompt=(
@@ -233,6 +239,7 @@ class ModelIntentClassifier:
             owner_user_id=owner_user_id,
             request=request,
             classification=DataClassification.PERSONAL,
+            reason=reason,
         )
         try:
             proposal = ModelIntentProposal.model_validate_json(response.content)

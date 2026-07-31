@@ -398,6 +398,14 @@ class AdminAPI:
                         limit=self._query_limit(query),
                     ),
                 )
+            if method == "GET" and path == "/admin/llm-usage":
+                return AdminResponse(
+                    200,
+                    self.reads.llm_calls(
+                        principal.user_id,
+                        limit=self._query_limit(query),
+                    ),
+                )
             return self._error(404, "not_found", "route was not found")
         except Exception as exc:
             return self._exception_response(exc)

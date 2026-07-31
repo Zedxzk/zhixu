@@ -35,7 +35,13 @@ from zhixu.domain import (
     UserStatus,
 )
 from zhixu.domain.errors import LLMBudgetExceeded, LLMUnavailable, PermissionDenied
-from zhixu.ports import FrozenClock, LLMBudgetLimit, LLMRequest, LLMResponse
+from zhixu.ports import (
+    FrozenClock,
+    LLMBudgetLimit,
+    LLMCallReason,
+    LLMRequest,
+    LLMResponse,
+)
 from zhixu.security import LLMEgressPolicy
 
 NOW = datetime(2026, 6, 1, 8, tzinfo=UTC)
@@ -79,7 +85,7 @@ def assistant_parts(
     tmp_path: Path,
 ) -> tuple[ZhixuServices, FrozenClock, Database, CommandContext]:
     database = Database(tmp_path / "zhixu.sqlite3")
-    assert database.migrate() == [1, 2, 3, 4, 5, 6, 7]
+    assert database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8]
     clock = FrozenClock(NOW)
     users = UserRepository(database)
     policy = PolicyEngine()
@@ -342,11 +348,21 @@ def test_general_answer_and_summary_use_strict_json(
             "answer": "Synthetic concise answer.",
         }
     )
+    explicit_answer = json.dumps(
+        {
+            "action": "answer",
+            "confidence": 0.96,
+            "answer": "Synthetic explicit answer.",
+        }
+    )
     summary = json.dumps({"summary": "Synthetic note summary."})
-    client = FakeLLM([answer, summary])
+    client = FakeLLM([answer, explicit_answer, summary])
     engine = engine_with(services, clock, database, client)
 
     assert engine.handle("A completely open synthetic question", context).text.endswith(
+        "answer."
+    )
+    assert engine.handle("/问 A synthetic explicit question", context).text.endswith(
         "answer."
     )
     engine.handle("/记 Synthetic summary source keyword", context)
@@ -354,6 +370,26 @@ def test_general_answer_and_summary_use_strict_json(
     assert summarized.text == "Synthetic note summary."
     assert client.requests[0].response_schema is not None
     assert client.requests[1].response_schema is not None
+    assert client.requests[2].response_schema is not None
+    with database.connect() as connection:
+        events = connection.execute(
+            """
+            SELECT reason,outcome,estimated_input_units,output_units
+            FROM llm_call_events ORDER BY id
+            """
+        ).fetchall()
+    assert [str(event["reason"]) for event in events] == [
+        "deterministic_parser_miss",
+        "general_question",
+        "note_summary_requested",
+    ]
+    assert all(str(event["outcome"]) == "completed" for event in events)
+    assert all(int(event["estimated_input_units"]) > 0 for event in events)
+    assert all(int(event["output_units"]) == 5 for event in events)
+    raw_database = database.path.read_bytes()
+    assert b"A completely open synthetic question" not in raw_database
+    assert b"A synthetic explicit question" not in raw_database
+    assert b"Synthetic concise answer." not in raw_database
 
 
 def test_budget_timeout_and_circuit_breaker_fail_without_affecting_core(
@@ -380,12 +416,14 @@ def test_budget_timeout_and_circuit_breaker_fail_without_affecting_core(
         owner_user_id="user_test",
         request=request,
         classification=DataClassification.PERSONAL,
+        reason=LLMCallReason.GENERAL_QUESTION,
     )
     with pytest.raises(LLMBudgetExceeded):
         limited.generate(
             owner_user_id="user_test",
             request=request,
             classification=DataClassification.PERSONAL,
+            reason=LLMCallReason.GENERAL_QUESTION,
         )
 
     failing = FakeLLM([TimeoutError(), TimeoutError(), TimeoutError(), TimeoutError()])
@@ -396,14 +434,25 @@ def test_budget_timeout_and_circuit_breaker_fail_without_affecting_core(
                 owner_user_id="user_test",
                 request=request,
                 classification=DataClassification.PERSONAL,
+                reason=LLMCallReason.DETERMINISTIC_PARSER_MISS,
             )
     with pytest.raises(LLMUnavailable):
         protected.generate(
             owner_user_id="user_test",
             request=request,
             classification=DataClassification.PERSONAL,
+            reason=LLMCallReason.DETERMINISTIC_PARSER_MISS,
         )
     assert failing.calls == 3
+    with database.connect() as connection:
+        failed_events = connection.execute(
+            """
+            SELECT COUNT(*) AS count FROM llm_call_events
+            WHERE reason='deterministic_parser_miss' AND outcome='failed'
+            """
+        ).fetchone()
+    assert failed_events is not None
+    assert int(failed_events["count"]) == 3
 
     deterministic = AssistantEngine(
         services=services,
@@ -430,11 +479,13 @@ def test_egress_policy_rejects_sensitive_external_prompts_before_call(
             owner_user_id="user_test",
             request=request,
             classification=DataClassification.CONFIDENTIAL,
+            reason=LLMCallReason.GENERAL_QUESTION,
         )
     with pytest.raises(PermissionDenied):
         external.generate(
             owner_user_id="user_test",
             request=request,
             classification=DataClassification.SECRET,
+            reason=LLMCallReason.GENERAL_QUESTION,
         )
     assert client.calls == 0
