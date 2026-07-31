@@ -231,6 +231,7 @@ class AdminAPI:
                     return self._vault_create(
                         principal,
                         self._object_body(body),
+                        confirmed=context.confirmed,
                     )
             if path.startswith("/admin/vault/secrets/"):
                 parts = path.strip("/").split("/")
@@ -620,27 +621,58 @@ class AdminAPI:
         self,
         principal: Any,
         data: dict[str, object],
+        *,
+        confirmed: bool,
     ) -> AdminResponse:
         self._require_step_up(principal)
-        self._fields(data, required={"label", "kind", "value"})
+        self._fields(
+            data,
+            required={"label", "kind", "value"},
+            optional={"classification", "policy_override"},
+        )
         kind = self._string(data, "kind", maximum=20)
         if kind not in {"machine", "human"}:
             raise ValidationError("vault secret kind is invalid")
+        classification = (
+            self._string(data, "classification", maximum=40)
+            if "classification" in data
+            else None
+        )
+        policy_override = (
+            self._string(data, "policy_override", maximum=80)
+            if "policy_override" in data
+            else None
+        )
+        if classification == "l4_prohibited":
+            if not confirmed:
+                raise ConfirmationRequired("L4 storage override requires confirmation")
+            if (
+                kind != "human"
+                or policy_override != "owner_explicit_human_storage"
+            ):
+                raise ValidationError("L4 storage override is invalid")
+        elif policy_override is not None:
+            raise ValidationError("vault policy override is invalid")
         secret_id = f"secret_{secrets.token_urlsafe(18)}"
+        params: dict[str, object] = {
+            "grant": self._issue_vault_grant(
+                principal,
+                secret_id=secret_id,
+                action="create",
+            ),
+            "secret_id": secret_id,
+            "owner_user_id": principal.user_id,
+            "label": self._string(data, "label", maximum=200),
+            "kind": kind,
+            "value": self._string(data, "value", maximum=60_000),
+        }
+        if classification is not None:
+            params["classification"] = classification
+        if policy_override is not None:
+            params["policy_override"] = policy_override
         result = self._vault_call(
             "create",
-            {
-                "grant": self._issue_vault_grant(
-                    principal,
-                    secret_id=secret_id,
-                    action="create",
-                ),
-                "secret_id": secret_id,
-                "owner_user_id": principal.user_id,
-                "label": self._string(data, "label", maximum=200),
-                "kind": kind,
-                "value": self._string(data, "value", maximum=60_000),
-            },
+            params,
         )
         item = result.get("item")
         if not isinstance(item, dict):

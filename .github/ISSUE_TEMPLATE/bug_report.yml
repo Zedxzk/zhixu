@@ -1,0 +1,43 @@
+name: Bug report
+description: Report a reproducible problem using synthetic, redacted data only.
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include tokens, passwords, raw logs, databases, or backups.
+        Do not include server addresses, private hostnames, external user
+        identifiers, or personal data.
+        Replace every identity and message with clearly synthetic values.
+
+        Security vulnerabilities must be reported privately through
+        **Security → Report a vulnerability**, not through a public issue.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Problem
+      description: Describe the problem without private data.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Synthetic reproduction
+      description: Provide the smallest reproduction using invalid credentials and synthetic identities.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy confirmation
+      options:
+        - label: I removed credentials, private infrastructure details, raw logs, databases, and personal data.
+          required: true

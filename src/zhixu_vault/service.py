@@ -11,6 +11,7 @@ from typing import Any, Protocol
 from .crypto import Argon2Parameters, seal
 from .grants import CapabilityGrantVerifier, VerifiedGrant
 from .policy import (
+    L4_HUMAN_STORAGE_OVERRIDE,
     SecretKind,
     VaultAction,
     VaultClassification,
@@ -59,6 +60,7 @@ class VaultService:
         value: SecretValue,
         authentication: str,
         classification: VaultClassification | None = None,
+        policy_override: str | None = None,
     ) -> SecretMetadata:
         if (
             not secret_id.strip()
@@ -72,21 +74,36 @@ class VaultService:
             value.clear()
             raise ValueError("secret metadata or value is invalid")
         if authentication != "step_up":
+            value.clear()
             raise PermissionError("secret creation requires step-up authentication")
         selected = classification or (
             VaultClassification.MACHINE_SECRET
             if kind is SecretKind.MACHINE
             else VaultClassification.HUMAN_SECRET
         )
+        stored_classification = selected
+        stored_override: str | None = None
         if selected is VaultClassification.PROHIBITED:
+            if (
+                kind is not SecretKind.HUMAN
+                or policy_override != L4_HUMAN_STORAGE_OVERRIDE
+            ):
+                value.clear()
+                raise PermissionError("L4 secrets require an explicit owner override")
+            stored_classification = VaultClassification.HUMAN_SECRET
+            stored_override = policy_override
+        elif (
+            selected is VaultClassification.L4_HUMAN_OVERRIDE
+            or policy_override is not None
+        ):
             value.clear()
-            raise PermissionError("L4 secrets are prohibited")
+            raise ValueError("L4 policy override is invalid")
         if (
             kind is SecretKind.MACHINE
-            and selected is not VaultClassification.MACHINE_SECRET
+            and stored_classification is not VaultClassification.MACHINE_SECRET
         ) or (
             kind is SecretKind.HUMAN
-            and selected is not VaultClassification.HUMAN_SECRET
+            and stored_classification is not VaultClassification.HUMAN_SECRET
         ):
             value.clear()
             raise ValueError("secret kind and classification do not match")
@@ -96,7 +113,8 @@ class VaultService:
                 owner_user_id=owner_user_id,
                 label=label,
                 kind=kind,
-                classification=selected,
+                classification=stored_classification,
+                policy_override=stored_override,
                 value=value,
                 actor=owner_user_id,
             )
@@ -113,6 +131,7 @@ class VaultService:
         kind: SecretKind,
         value: SecretValue,
         classification: VaultClassification | None = None,
+        policy_override: str | None = None,
     ) -> SecretMetadata:
         grant: VerifiedGrant | None = None
         try:
@@ -131,6 +150,7 @@ class VaultService:
                 value=value,
                 authentication=grant.authentication,
                 classification=classification,
+                policy_override=policy_override,
             )
         except Exception:
             value.clear()
@@ -315,6 +335,8 @@ class VaultService:
             self.policy.require(
                 grant,
                 kind=metadata.kind,
+                classification=metadata.classification,
+                owner_user_id=metadata.owner_user_id,
                 acl_allowed=self.repository.has_acl(
                     secret_id,
                     grant.subject,

@@ -389,12 +389,17 @@ def test_vault_admin_requires_step_up_and_never_returns_created_value(
         ) -> dict[str, object]:
             self.calls.append((method, params))
             if method == "create":
+                classification = (
+                    "l4_human_override"
+                    if params.get("classification") == "l4_prohibited"
+                    else "l3_human"
+                )
                 return {
                     "item": {
                         "id": params["secret_id"],
                         "label": params["label"],
                         "kind": params["kind"],
-                        "classification": "l3_human",
+                        "classification": classification,
                         "version": 1,
                     }
                 }
@@ -443,6 +448,43 @@ def test_vault_admin_requires_step_up_and_never_returns_created_value(
     )
     assert revealed.body["value"] == "synthetic-secret-value"
     assert all("grant" in params for _method, params in fake.calls)
+
+    l4_body = _json(
+        {
+            "label": "Synthetic L4 owner override",
+            "kind": "human",
+            "classification": "l4_prohibited",
+            "policy_override": "owner_explicit_human_storage",
+            "value": "synthetic-l4-value",
+        }
+    )
+    calls_before = len(fake.calls)
+    unconfirmed = admin.api.dispatch(
+        "POST",
+        "/admin/vault/secrets",
+        headers=admin.headers,
+        body=l4_body,
+    )
+    assert unconfirmed.status == 428
+    assert len(fake.calls) == calls_before
+
+    confirmed_headers = {**admin.headers, "X-Zhixu-Confirm": "true"}
+    overridden = admin.api.dispatch(
+        "POST",
+        "/admin/vault/secrets",
+        headers=confirmed_headers,
+        body=l4_body,
+    )
+    assert overridden.status == 201
+    assert overridden.body["classification"] == "l4_human_override"
+    assert "synthetic-l4-value" not in json.dumps(overridden.body)
+    override_call = fake.calls[-1]
+    assert override_call[0] == "create"
+    assert override_call[1]["classification"] == "l4_prohibited"
+    assert (
+        override_call[1]["policy_override"]
+        == "owner_explicit_human_storage"
+    )
 
 
 def test_identity_otp_is_one_time_encrypted_and_unbind_revokes_session(

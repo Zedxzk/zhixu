@@ -27,7 +27,11 @@ class SecretKind(StrEnum):
 class VaultClassification(StrEnum):
     MACHINE_SECRET = "l3_machine"  # pragma: allowlist secret
     HUMAN_SECRET = "l3_human"  # pragma: allowlist secret
+    L4_HUMAN_OVERRIDE = "l4_human_override"
     PROHIBITED = "l4_prohibited"
+
+
+L4_HUMAN_STORAGE_OVERRIDE = "owner_explicit_human_storage"
 
 
 class VaultPolicy:
@@ -36,6 +40,8 @@ class VaultPolicy:
         grant: VerifiedGrant,
         *,
         kind: SecretKind,
+        classification: VaultClassification,
+        owner_user_id: str,
         acl_allowed: bool,
     ) -> None:
         try:
@@ -44,6 +50,11 @@ class VaultPolicy:
             raise PermissionError("unknown vault action") from exc
         if not acl_allowed:
             raise PermissionError("vault ACL denied the action")
+        if classification is VaultClassification.L4_HUMAN_OVERRIDE:
+            if kind is not SecretKind.HUMAN or grant.subject != owner_user_id:
+                raise PermissionError("L4 override is restricted to its owner")
+            if action in {VaultAction.USE, VaultAction.GRANT}:
+                raise PermissionError("L4 override cannot be automated or shared")
         if action is VaultAction.REVEAL:
             if kind is not SecretKind.HUMAN:
                 raise PermissionError("machine secrets cannot be revealed")

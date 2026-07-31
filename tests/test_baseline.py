@@ -50,6 +50,22 @@ def test_public_version_is_development_version() -> None:
     assert __version__ == "0.1.0.dev0"
 
 
+def test_public_issue_template_blocks_private_diagnostics_and_no_actions_exist() -> None:
+    root = Path(__file__).resolve().parents[1]
+    template = (
+        root / ".github" / "ISSUE_TEMPLATE" / "bug_report.yml"
+    ).read_text(encoding="utf-8")
+    for warning in (
+        "tokens",
+        "raw logs",
+        "databases",
+        "server addresses",
+        "personal data",
+    ):
+        assert warning in template
+    assert not (root / ".github" / "workflows").exists()
+
+
 def test_classifications_are_ordered_fail_closed() -> None:
     assert DataClassification.PROHIBITED > DataClassification.SECRET
     assert DataClassification.SECRET > DataClassification.CONFIDENTIAL

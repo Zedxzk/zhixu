@@ -101,6 +101,11 @@ class VaultRPCDispatcher:
                     kind=kind,
                     value=value,
                     classification=classification,
+                    policy_override=(
+                        str(params["policy_override"])
+                        if params.get("policy_override") is not None
+                        else None
+                    ),
                 )
             finally:
                 value.clear()

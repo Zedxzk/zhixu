@@ -24,7 +24,12 @@ from zhixu_vault.crypto import Argon2Parameters, VaultKeyring
 from zhixu_vault.database import VaultDatabase
 from zhixu_vault.executors import PATIntegrationExecutor, UnixSocketMachineExecutor
 from zhixu_vault.grants import CapabilityGrantVerifier
-from zhixu_vault.policy import SecretKind, VaultAction, VaultClassification
+from zhixu_vault.policy import (
+    L4_HUMAN_STORAGE_OVERRIDE,
+    SecretKind,
+    VaultAction,
+    VaultClassification,
+)
 from zhixu_vault.service import ExecutionResult, VaultService
 from zhixu_vault.storage import VaultRepository
 from zhixu_vault.types import SecretValue
@@ -641,6 +646,150 @@ def test_export_rotation_backup_restore_and_l4_rejection(
     restored_repository = VaultRepository(restored, restored_keyring, clock.now)
     with restored_repository.decrypt("secret_human") as value:
         assert value.text() == "export-secret-canary"
+
+
+def test_l4_owner_override_is_explicit_human_only_and_not_shareable(
+    vault: tuple[
+        VaultDatabase,
+        VaultKeyring,
+        VaultRepository,
+        VaultService,
+        CapabilityGrantIssuer,
+        MutableClock,
+        FingerprintExecutor,
+    ],
+    tmp_path: Path,
+) -> None:
+    database, _keyring, repository, service, issuer, clock, executor = vault
+    secret_text = "l4-owner-override-canary"  # pragma: allowlist secret
+    secret = SecretValue.from_text(secret_text)
+    metadata = service.create_secret(
+        secret_id="secret_l4_override",
+        owner_user_id="user_test",
+        label="Synthetic owner-only secret",
+        kind=SecretKind.HUMAN,
+        classification=VaultClassification.PROHIBITED,
+        policy_override=L4_HUMAN_STORAGE_OVERRIDE,
+        value=secret,
+        authentication="step_up",
+    )
+
+    assert secret.bytes() == b"\0" * len(secret_text)
+    assert metadata.kind is SecretKind.HUMAN
+    assert metadata.classification is VaultClassification.L4_HUMAN_OVERRIDE
+    assert not repository.has_acl(
+        metadata.id,
+        metadata.owner_user_id,
+        VaultAction.GRANT.value,
+    )
+    with database.connect() as connection:
+        audit = connection.execute(
+            """
+            SELECT reason_code FROM vault_audit
+            WHERE action='create' AND secret_id=?
+            """,
+            (metadata.id,),
+        ).fetchone()
+    assert audit is not None and audit["reason_code"] == "l4_policy_override"
+    assert secret_text.encode() not in database_bytes(database)
+
+    reveal_grant = issue(
+        issuer,
+        clock,
+        secret_id=metadata.id,
+        action=VaultAction.REVEAL,
+    )
+    with service.reveal(reveal_grant, metadata.id) as revealed:
+        assert revealed.text() == secret_text
+
+    other_user = issue(
+        issuer,
+        clock,
+        secret_id=metadata.id,
+        action=VaultAction.REVEAL,
+        subject="user_other",
+    )
+    with pytest.raises(PermissionError):
+        service.reveal(other_user, metadata.id)
+
+    use_grant = issue(
+        issuer,
+        clock,
+        secret_id=metadata.id,
+        action=VaultAction.USE,
+    )
+    with pytest.raises(PermissionError):
+        service.use(
+            use_grant,
+            metadata.id,
+            executor_name="fingerprint",
+            request={},
+        )
+    assert executor.calls == 0
+
+    grant_grant = issue(
+        issuer,
+        clock,
+        secret_id=metadata.id,
+        action=VaultAction.GRANT,
+    )
+    with pytest.raises(PermissionError):
+        service.grant_acl(
+            grant_grant,
+            metadata.id,
+            subject="user_other",
+            action=VaultAction.REVEAL,
+        )
+
+    invalid = SecretValue.from_text("invalid-override-canary")
+    with pytest.raises(PermissionError):
+        service.create_secret(
+            secret_id="secret_l4_invalid",
+            owner_user_id="user_test",
+            label="Invalid override",
+            kind=SecretKind.HUMAN,
+            classification=VaultClassification.PROHIBITED,
+            policy_override="wrong_override",
+            value=invalid,
+            authentication="step_up",
+        )
+    assert invalid.bytes() == b"\0" * len("invalid-override-canary")
+
+    weakly_authenticated = SecretValue.from_text("weak-auth-canary")
+    with pytest.raises(PermissionError):
+        service.create_secret(
+            secret_id="secret_l4_weak_auth",
+            owner_user_id="user_test",
+            label="Weak authentication",
+            kind=SecretKind.HUMAN,
+            classification=VaultClassification.PROHIBITED,
+            policy_override=L4_HUMAN_STORAGE_OVERRIDE,
+            value=weakly_authenticated,
+            authentication="password",
+        )
+    assert weakly_authenticated.bytes() == b"\0" * len("weak-auth-canary")
+
+    manager = VaultBackupManager(
+        database,
+        parameters=Argon2Parameters(2, 32_768, 1),
+    )
+    backup = manager.create(
+        tmp_path / "l4-override.backup",
+        backup_passphrase="synthetic L4 backup phrase",
+    )
+    assert secret_text.encode() not in backup.read_bytes()
+    restored = manager.restore(
+        backup,
+        tmp_path / "l4-override-restored.sqlite3",
+        backup_passphrase="synthetic L4 backup phrase",
+    )
+    restored_keyring = VaultKeyring(restored, clock.now)
+    restored_keyring.unlock(PASSPHRASE)
+    restored_repository = VaultRepository(restored, restored_keyring, clock.now)
+    assert (
+        restored_repository.get_metadata(metadata.id).classification
+        is VaultClassification.L4_HUMAN_OVERRIDE
+    )
 
 
 def test_unix_socket_api_uses_peer_credentials_and_bounded_json(

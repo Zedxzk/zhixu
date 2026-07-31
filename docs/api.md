@@ -105,8 +105,12 @@ POST                 /admin/vault/secrets/{id}/export
 POST                 /admin/vault/secrets/{id}/grant
 ```
 
-Creation accepts `kind` equal to `human` or `machine`; L4 values are not accepted. Human
-secrets can be revealed only with current Passkey step-up. Machine secrets use an
+Creation accepts `kind` equal to `human` or `machine`. L4 values are rejected by default.
+An owner may explicitly override that default only by using a current Passkey step-up,
+the confirmation header, `kind=human`, `classification=l4_prohibited`, and
+`policy_override=owner_explicit_human_storage`. The vault records that decision as
+`l4_human_override`; it cannot be shared, granted to an executor, or used by automation.
+Human secrets can be revealed only with current Passkey step-up. Machine secrets use an
 allowlisted executor. The vault passes the value only to the fixed local
 `/run/zhixu/integration/pat-executor.sock` boundary; it never accepts an executor address from an API
 request. The executor response is rejected if it contains the credential.

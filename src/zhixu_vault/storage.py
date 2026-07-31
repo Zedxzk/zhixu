@@ -11,7 +11,12 @@ from datetime import UTC, datetime
 from .audit import AuditEvent, VaultAuditLog
 from .crypto import VaultKeyring, open_sealed, seal
 from .database import VaultDatabase
-from .policy import SecretKind, VaultAction, VaultClassification
+from .policy import (
+    L4_HUMAN_STORAGE_OVERRIDE,
+    SecretKind,
+    VaultAction,
+    VaultClassification,
+)
 from .types import SecretValue
 
 
@@ -67,12 +72,15 @@ class VaultRepository:
 
     @staticmethod
     def _metadata(row: sqlite3.Row) -> SecretMetadata:
+        classification = VaultClassification(str(row["classification"]))
+        if row["policy_override"] == L4_HUMAN_STORAGE_OVERRIDE:
+            classification = VaultClassification.L4_HUMAN_OVERRIDE
         return SecretMetadata(
             id=str(row["id"]),
             owner_user_id=str(row["owner_user_id"]),
             label=str(row["label"]),
             kind=SecretKind(str(row["secret_kind"])),
-            classification=VaultClassification(str(row["classification"])),
+            classification=classification,
             version=int(row["version"]),
             created_at=datetime.fromisoformat(str(row["created_at"])),
             updated_at=datetime.fromisoformat(str(row["updated_at"])),
@@ -86,6 +94,7 @@ class VaultRepository:
         label: str,
         kind: SecretKind,
         classification: VaultClassification,
+        policy_override: str | None,
         value: SecretValue,
         actor: str,
     ) -> SecretMetadata:
@@ -124,15 +133,24 @@ class VaultRepository:
                     now.isoformat(),
                 ),
             )
+            if policy_override is not None:
+                connection.execute(
+                    """
+                    INSERT INTO secret_policy_overrides(secret_id,policy,created_at)
+                    VALUES(?,?,?)
+                    """,
+                    (secret_id, policy_override, now.isoformat()),
+                )
             owner_actions = [
                 VaultAction.LIST_METADATA,
                 VaultAction.UPDATE,
                 VaultAction.DELETE,
                 VaultAction.EXPORT,
-                VaultAction.GRANT,
                 VaultAction.ROTATE,
                 VaultAction.USE if kind is SecretKind.MACHINE else VaultAction.REVEAL,
             ]
+            if policy_override is None:
+                owner_actions.append(VaultAction.GRANT)
             for action in owner_actions:
                 connection.execute(
                     """
@@ -143,7 +161,14 @@ class VaultRepository:
                 )
             self.audit.append(
                 connection,
-                AuditEvent(now, actor, "create", secret_id, "completed"),
+                AuditEvent(
+                    now,
+                    actor,
+                    "create",
+                    secret_id,
+                    "completed",
+                    "l4_policy_override" if policy_override is not None else "",
+                ),
                 audit_key=self.keyring.audit_key(),
             )
         return self.get_metadata(secret_id)
@@ -151,7 +176,13 @@ class VaultRepository:
     def get_metadata(self, secret_id: str) -> SecretMetadata:
         with self.database.connect() as connection:
             row = connection.execute(
-                "SELECT * FROM secret_records WHERE id=?",
+                """
+                SELECT records.*,overrides.policy AS policy_override
+                FROM secret_records AS records
+                LEFT JOIN secret_policy_overrides AS overrides
+                    ON overrides.secret_id=records.id
+                WHERE records.id=?
+                """,
                 (secret_id,),
             ).fetchone()
         if row is None:
@@ -162,8 +193,12 @@ class VaultRepository:
         with self.database.connect() as connection:
             rows = connection.execute(
                 """
-                SELECT * FROM secret_records WHERE owner_user_id=?
-                ORDER BY label,id
+                SELECT records.*,overrides.policy AS policy_override
+                FROM secret_records AS records
+                LEFT JOIN secret_policy_overrides AS overrides
+                    ON overrides.secret_id=records.id
+                WHERE records.owner_user_id=?
+                ORDER BY records.label,records.id
                 """,
                 (owner_user_id,),
             ).fetchall()
