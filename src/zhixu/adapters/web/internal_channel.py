@@ -335,6 +335,18 @@ class InternalChannelAPI:
             roles = {"internal_group_member", "shared_workspace_member"}
             if identity.user_id == route.owner_user_id:
                 roles.add("group_owner")
+            private_link = re.fullmatch(
+                r"/绑定私聊\s+(\d{8})",
+                (event.text or "").strip(),
+            )
+            if private_link is not None:
+                return self._bind_private_identity(
+                    event,
+                    identity,
+                    route,
+                    private_link.group(1),
+                    frozenset(roles),
+                )
             return ChannelAdmissionDecision(
                 True,
                 identity.user_id,
@@ -349,10 +361,23 @@ class InternalChannelAPI:
             event.external_actor_ref,
         )
         if identity is None:
+            if event.conversation_kind is ConversationKind.PRIVATE:
+                return self._unbound_private(event)
             return ChannelAdmissionDecision(False, None, "identity_unbound")
         user = self.users.get(identity.user_id)
         if user is None or user.status is not UserStatus.ACTIVE:
             return ChannelAdmissionDecision(False, identity.user_id, "user_disabled")
+        if (event.text or "").strip() == "/申请绑定":
+            return ChannelAdmissionDecision(
+                True,
+                identity.user_id,
+                "accepted",
+                reply=AssistantReply(
+                    "当前私聊身份已经完成绑定，无需重复申请。",
+                    "identity_already_bound",
+                    "deterministic",
+                ),
+            )
         if (event.text or "").strip() == "/登记内部群":
             if not self.users.has_role(identity.user_id, "project_admin"):
                 return ChannelAdmissionDecision(
@@ -398,6 +423,162 @@ class InternalChannelAPI:
             frozenset(roles),
             None,
             shared_owners,
+        )
+
+    def _unbound_private(self, event: InboundEvent) -> ChannelAdmissionDecision:
+        registration = self.users.get("service:registration")
+        if registration is None or registration.status is not UserStatus.ACTIVE:
+            return ChannelAdmissionDecision(False, None, "registration_unavailable")
+        if (event.text or "").strip() != "/申请绑定":
+            return ChannelAdmissionDecision(
+                True,
+                registration.id,
+                "accepted",
+                frozenset({"pending_identity"}),
+                reply=AssistantReply(
+                    "当前私聊尚未绑定。请发送 /申请绑定 获取一次性码，"
+                    "再到已启用的内部群发送 /绑定私聊 绑定码。",
+                    "identity_link_required",
+                    "deterministic",
+                ),
+            )
+        code = f"{secrets.randbelow(100_000_000):08d}"
+        self.routes.issue_private_link(
+            code_hash=self.references.create(
+                "private_link",
+                event.channel,
+                event.channel_account,
+                code,
+            ),
+            channel=event.channel,
+            channel_account=event.channel_account,
+            private_actor_ref=event.external_actor_ref,
+            expires_at=event.received_at + timedelta(minutes=10),
+            now=event.received_at,
+        )
+        return ChannelAdmissionDecision(
+            True,
+            registration.id,
+            "accepted",
+            frozenset({"pending_identity"}),
+            reply=AssistantReply(
+                f"私聊绑定码：{code}\n"
+                f"10分钟内由本人在已启用的内部群发送：/绑定私聊 {code}",
+                "identity_link_issued",
+                "deterministic",
+            ),
+        )
+
+    def _bind_private_identity(
+        self,
+        event: InboundEvent,
+        group_identity: ExternalIdentity,
+        route: ChannelRoute,
+        code: str,
+        roles: frozenset[str],
+    ) -> ChannelAdmissionDecision:
+        if self.field_cipher is None or route.shared_owner_user_id is None:
+            return ChannelAdmissionDecision(
+                False,
+                group_identity.user_id,
+                "registration_unavailable",
+            )
+        private_actor_ref = self.routes.consume_private_link(
+            code_hash=self.references.create(
+                "private_link",
+                event.channel,
+                event.channel_account,
+                code,
+            ),
+            channel=event.channel,
+            channel_account=event.channel_account,
+            consumed_by_user_id=group_identity.user_id,
+            now=event.received_at,
+        )
+        if private_actor_ref is None:
+            return ChannelAdmissionDecision(
+                True,
+                group_identity.user_id,
+                "accepted",
+                roles,
+                route.shared_owner_user_id,
+                (route.shared_owner_user_id,),
+                AssistantReply(
+                    "私聊绑定码无效或已过期，请在私聊中重新发送 /申请绑定。",
+                    "identity_link_invalid",
+                    "deterministic",
+                ),
+            )
+        existing = self.users.identity_by_opaque_ref(
+            event.channel,
+            event.channel_account,
+            private_actor_ref,
+        )
+        if existing is not None and existing.user_id != group_identity.user_id:
+            return ChannelAdmissionDecision(
+                True,
+                group_identity.user_id,
+                "accepted",
+                roles,
+                route.shared_owner_user_id,
+                (route.shared_owner_user_id,),
+                AssistantReply(
+                    "该私聊身份已绑定到其他用户，操作已拒绝。",
+                    "identity_link_conflict",
+                    "deterministic",
+                ),
+            )
+        if existing is None:
+            identity_id = self.references.create(
+                "identity",
+                event.channel,
+                event.channel_account,
+                private_actor_ref,
+            )
+            context = CommandContext(
+                actor_user_id=group_identity.user_id,
+                now=event.received_at,
+            )
+            self.users.bind_identity(
+                ExternalIdentity(
+                    identity_id,
+                    group_identity.user_id,
+                    event.channel,
+                    event.channel_account,
+                    EncryptedIdentifier(
+                        self.field_cipher.encrypt(
+                            private_actor_ref,
+                            context=(
+                                f"external-identity:{event.channel}:"
+                                f"{event.channel_account}:{private_actor_ref}"
+                            ),
+                        )
+                    ),
+                    private_actor_ref,
+                    event.received_at,
+                ),
+                self.assistant.services.policy.require(
+                    context,
+                    Action.CREATE,
+                    ResourceRef(
+                        "external_identity",
+                        identity_id,
+                        group_identity.user_id,
+                    ),
+                ),
+            )
+        return ChannelAdmissionDecision(
+            True,
+            group_identity.user_id,
+            "accepted",
+            roles,
+            route.shared_owner_user_id,
+            (route.shared_owner_user_id,),
+            AssistantReply(
+                "私聊身份绑定成功。现在可在私聊中使用个人接口和本人已加入群的共享库。",
+                "identity_linked",
+                "deterministic",
+            ),
         )
 
     def _activate_group(

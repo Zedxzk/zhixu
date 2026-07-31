@@ -234,7 +234,11 @@ def _bootstrap_qq_owner(args: argparse.Namespace) -> int:
     now = datetime.now(UTC)
     cutoff = now - timedelta(seconds=args.max_route_age_seconds)
     with database.connect() as connection:
-        user_count = int(connection.execute("SELECT COUNT(*) FROM users").fetchone()[0])
+        user_count = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM users WHERE id NOT LIKE 'service:%'"
+            ).fetchone()[0]
+        )
         identity_count = int(
             connection.execute("SELECT COUNT(*) FROM external_identities").fetchone()[0]
         )

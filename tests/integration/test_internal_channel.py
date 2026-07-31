@@ -65,8 +65,8 @@ def test_qq_network_database_is_separate_and_duplicate_events_are_idempotent(
 ) -> None:
     application_database = Database(tmp_path / "application.sqlite3")
     qq_database = Database(tmp_path / "qq.sqlite3")
-    assert application_database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
-    assert qq_database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    assert application_database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+    assert qq_database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
     references = OpaqueReferenceFactory(b"R" * 32)
     cipher = FieldCipher(b"E" * 32)
     raw_actor = "synthetic-qq-actor"
@@ -874,6 +874,73 @@ def test_project_admin_activates_group_and_members_enrol_on_first_use(
         "group_synthetic",
         member_identity.user_id,
     )
+
+    unbound = dispatch(
+        "event_private_unbound",
+        actor="private_new_member",
+        conversation="private_new_member",
+        kind="private",
+        text="/帮助",
+    )
+    assert unbound.status == 202
+    assert "当前私聊尚未绑定" in str(claim_and_complete()["text"])
+    assert (
+        users.identity_by_opaque_ref(
+            "qq",
+            "qq_synthetic",
+            "private_new_member",
+        )
+        is None
+    )
+
+    requested = dispatch(
+        "event_private_request",
+        actor="private_new_member",
+        conversation="private_new_member",
+        kind="private",
+        text="/申请绑定",
+    )
+    assert requested.status == 202
+    link_delivery = claim_and_complete()
+    link_code = str(link_delivery["text"]).split("私聊绑定码：", 1)[1][:8]
+    assert link_code.isdigit() and len(link_code) == 8
+
+    linked = dispatch(
+        "event_private_link",
+        actor="actor_new_member",
+        conversation="group_synthetic",
+        kind="group",
+        text=f"/绑定私聊 {link_code}",
+    )
+    assert linked.status == 202
+    assert "私聊身份绑定成功" in str(claim_and_complete()["text"])
+    private_identity = users.identity_by_opaque_ref(
+        "qq",
+        "qq_synthetic",
+        "private_new_member",
+    )
+    assert private_identity is not None
+    assert private_identity.user_id == member_identity.user_id
+
+    private_create = dispatch(
+        "event_private_create",
+        actor="private_new_member",
+        conversation="private_new_member",
+        kind="private",
+        text="/记 linked private note",
+    )
+    assert private_create.status == 202
+    assert "已保存私人备忘" in str(claim_and_complete()["text"])
+    private_search = dispatch(
+        "event_private_search",
+        actor="private_new_member",
+        conversation="private_new_member",
+        kind="private",
+        text="/搜索 first-use",
+    )
+    assert private_search.status == 202
+    assert "first-use shared note" in str(claim_and_complete()["text"])
+
     with database.connect() as connection:
         note = connection.execute(
             """
@@ -887,8 +954,21 @@ def test_project_admin_activates_group_and_members_enrol_on_first_use(
         challenge = connection.execute(
             "SELECT code_hash,consumed_at FROM group_activation_challenges"
         ).fetchone()
+        private_note = connection.execute(
+            """
+            SELECT owner_user_id,creator_user_id FROM notes
+            WHERE title='linked private note'
+            """
+        ).fetchone()
+        private_challenge = connection.execute(
+            "SELECT code_hash,consumed_at FROM private_link_challenges"
+        ).fetchone()
     assert note["owner_user_id"] == route.shared_owner_user_id
     assert note["creator_user_id"] == member_identity.user_id
     assert [str(row["user_id"]) for row in admins] == ["user_admin"]
     assert challenge["code_hash"] != code
     assert challenge["consumed_at"] is not None
+    assert private_note["owner_user_id"] == member_identity.user_id
+    assert private_note["creator_user_id"] == member_identity.user_id
+    assert private_challenge["code_hash"] != link_code
+    assert private_challenge["consumed_at"] is not None

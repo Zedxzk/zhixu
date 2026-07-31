@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 
 from zhixu.domain.agenda import require_aware
@@ -278,6 +278,131 @@ class ChannelRouteStore:
                     now.astimezone(UTC).isoformat(),
                 ),
             )
+
+    def issue_private_link(
+        self,
+        *,
+        code_hash: str,
+        channel: str,
+        channel_account: str,
+        private_actor_ref: str,
+        expires_at: datetime,
+        now: datetime,
+    ) -> None:
+        require_aware(expires_at, "expires_at")
+        require_aware(now, "now")
+        with self.database.transaction() as connection:
+            connection.execute(
+                """
+                DELETE FROM private_link_challenges
+                WHERE expires_at<? OR (
+                    channel=? AND channel_account=? AND private_actor_ref=?
+                    AND consumed_at IS NULL
+                )
+                """,
+                (
+                    (now - timedelta(days=1)).astimezone(UTC).isoformat(),
+                    channel,
+                    channel_account,
+                    private_actor_ref,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO private_link_challenges(
+                    code_hash,channel,channel_account,private_actor_ref,
+                    expires_at,consumed_at,created_at
+                ) VALUES(?,?,?,?,?,NULL,?)
+                """,
+                (
+                    code_hash,
+                    channel,
+                    channel_account,
+                    private_actor_ref,
+                    expires_at.astimezone(UTC).isoformat(),
+                    now.astimezone(UTC).isoformat(),
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO audit_events(
+                    occurred_at,actor_user_id,action,resource_kind,resource_id,
+                    outcome,reason_code
+                ) VALUES(?,'service:registration','create',
+                         'private_link_challenge',?,'completed','self_service')
+                """,
+                (now.astimezone(UTC).isoformat(), code_hash),
+            )
+
+    def consume_private_link(
+        self,
+        *,
+        code_hash: str,
+        channel: str,
+        channel_account: str,
+        consumed_by_user_id: str,
+        now: datetime,
+    ) -> str | None:
+        require_aware(now, "now")
+        now_text = now.astimezone(UTC).isoformat()
+        with self.database.transaction() as connection:
+            failed_attempts = int(
+                connection.execute(
+                    """
+                    SELECT COUNT(*) FROM audit_events
+                    WHERE actor_user_id=?
+                      AND resource_kind='private_link_challenge'
+                      AND outcome='denied'
+                      AND occurred_at>=?
+                    """,
+                    (
+                        consumed_by_user_id,
+                        (now - timedelta(minutes=10)).astimezone(UTC).isoformat(),
+                    ),
+                ).fetchone()[0]
+            )
+            if failed_attempts >= 5:
+                return None
+            row = connection.execute(
+                """
+                SELECT private_actor_ref FROM private_link_challenges
+                WHERE code_hash=? AND channel=? AND channel_account=?
+                  AND consumed_at IS NULL AND expires_at>?
+                """,
+                (code_hash, channel, channel_account, now_text),
+            ).fetchone()
+            if row is None:
+                connection.execute(
+                    """
+                    INSERT INTO audit_events(
+                        occurred_at,actor_user_id,action,resource_kind,resource_id,
+                        outcome,reason_code
+                    ) VALUES(?,?,'use','private_link_challenge',?,
+                             'denied','invalid_or_expired')
+                    """,
+                    (now_text, consumed_by_user_id, code_hash),
+                )
+                return None
+            changed = connection.execute(
+                """
+                UPDATE private_link_challenges SET consumed_at=?
+                WHERE code_hash=? AND consumed_at IS NULL
+                """,
+                (now_text, code_hash),
+            ).rowcount
+            if changed != 1:
+                return None
+            connection.execute(
+                """
+                INSERT INTO audit_events(
+                    occurred_at,actor_user_id,action,resource_kind,resource_id,
+                    outcome,reason_code
+                ) VALUES(?,?,'update','private_link_challenge',?,
+                         'completed','identity_bound')
+                """,
+                (now_text, consumed_by_user_id, code_hash),
+            )
+        return str(row["private_actor_ref"])
 
     def set_commands_enabled(
         self,

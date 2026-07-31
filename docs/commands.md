@@ -54,6 +54,22 @@ The group sender used for activation is linked to the project administrator. Oth
 senders are enrolled into that group automatically on first use; those principals can use
 only the current group's shared database and are not granted access to any private database.
 
+Anyone may request a private identity link, but no assistant or database command is available
+until they prove control of an identity inside an enabled internal group:
+
+```text
+# In the applicant's private conversation:
+/申请绑定
+
+# Within 10 minutes, from the same person in an enabled internal group:
+/绑定私聊 12345678
+```
+
+Before linking, every private message receives only the binding instructions. After linking,
+the private conversation can use its own private database plus shared databases for internal
+groups joined by that same group identity. It never inherits project-administrator status or
+access to another person's private database.
+
 - A public group accepts only `/帮助` and `/问`. This remains true even when the sender has
   a bound account; public-group execution cannot read or write private or shared records.
 - An internal group requires both a bound identity and membership in that group's ACL.

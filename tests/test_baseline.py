@@ -103,7 +103,15 @@ def test_headless_qq_bootstrap_binds_one_recent_opaque_route_once(
     assert main(arguments) == 0
     assert "opaque-synthetic" not in capsys.readouterr().out
     with database.connect() as connection:
-        assert connection.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM users WHERE id NOT LIKE 'service:%'"
+            ).fetchone()[0]
+            == 1
+        )
+        assert connection.execute(
+            "SELECT COUNT(*) FROM users WHERE id='service:registration'"
+        ).fetchone()[0] == 1
         identity = connection.execute(
             "SELECT opaque_ref,external_subject_enc FROM external_identities"
         ).fetchone()

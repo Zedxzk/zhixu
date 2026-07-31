@@ -59,7 +59,7 @@ class SequentialIds:
 @pytest.fixture
 def database(tmp_path: Path) -> Database:
     database = Database(tmp_path / "zhixu.sqlite3")
-    assert database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    assert database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
     assert database.migrate() == []
     return database
 
@@ -122,6 +122,7 @@ def test_migration_creates_required_phase_one_tables(database: Database) -> None
         "schema_migrations",
         "group_activation_challenges",
         "qq_reply_contexts",
+        "private_link_challenges",
     } <= names
 
 
@@ -143,6 +144,60 @@ def test_project_admin_bootstrap_role_is_singleton(
     )
     assert not users.assign_project_admin_if_vacant("user_second", now=NOW)
     assert not users.has_role("user_second", "project_admin")
+
+
+def test_private_link_challenge_locks_after_five_invalid_attempts(
+    app: tuple[ZhixuServices, FrozenClock, UserRepository],
+    database: Database,
+) -> None:
+    _services, _clock, _users = app
+    routes = ChannelRouteStore(database)
+    routes.issue_private_link(
+        code_hash="private_link_valid_synthetic",
+        channel="qq",
+        channel_account="qq_synthetic",
+        private_actor_ref="private_actor_synthetic",
+        expires_at=NOW + timedelta(minutes=20),
+        now=NOW,
+    )
+    for index in range(5):
+        assert (
+            routes.consume_private_link(
+                code_hash=f"private_link_invalid_{index}",
+                channel="qq",
+                channel_account="qq_synthetic",
+                consumed_by_user_id="user_test",
+                now=NOW,
+            )
+            is None
+        )
+    assert (
+        routes.consume_private_link(
+            code_hash="private_link_valid_synthetic",
+            channel="qq",
+            channel_account="qq_synthetic",
+            consumed_by_user_id="user_test",
+            now=NOW,
+        )
+        is None
+    )
+    with database.connect() as connection:
+        denied = connection.execute(
+            """
+            SELECT COUNT(*) FROM audit_events
+            WHERE actor_user_id='user_test'
+              AND resource_kind='private_link_challenge'
+              AND outcome='denied'
+            """
+        ).fetchone()[0]
+        consumed_at = connection.execute(
+            """
+            SELECT consumed_at FROM private_link_challenges
+            WHERE code_hash='private_link_valid_synthetic'
+            """
+        ).fetchone()[0]
+    assert denied == 5
+    assert consumed_at is None
 
 
 def test_command_and_query_buses_execute_without_model_dependency(
