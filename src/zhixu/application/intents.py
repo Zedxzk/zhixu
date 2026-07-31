@@ -15,6 +15,7 @@ from zhixu.channels import MessageButton
 class IntentAction(StrEnum):
     HELP = "help"
     LIST_AGENDA = "list_agenda"
+    VIEW_CALENDAR = "view_calendar"
     LIST_TASKS = "list_tasks"
     LIST_REMINDERS = "list_reminders"
     SEARCH_NOTES = "search_notes"

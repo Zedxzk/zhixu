@@ -242,15 +242,20 @@ def test_fixed_commands_stay_deterministic_but_reminders_use_model(
         context,
     )
     today = engine.handle("/今天", context)
+    calendar_reply = engine.handle("/日历 2026-06", context)
+    invalid_calendar = engine.handle("/日历 2026-13", context)
 
     assert help_reply.code == "ok"
     assert help_reply.source == "deterministic"
     assert help_reply.text.startswith("# 知序 · 帮助")
     assert [button.action for button in help_reply.buttons] == [
         "/今天",
+        "/日历",
         "/待办",
         "/提醒",
     ]
+    assert "/申请绑定" in help_reply.text
+    assert "/日历 2026-08" in help_reply.text
     assert created_task.code == "created"
     assert "Synthetic deterministic task" in listed.text
     assert created_note.code == "created"
@@ -265,6 +270,20 @@ def test_fixed_commands_stay_deterministic_but_reminders_use_model(
     assert postponed.code == "updated"
     assert today.code == "ok"
     assert "Synthetic deterministic agenda" in today.text
+    assert "Synthetic follow" in today.text
+    assert today.rich_text is True
+    assert calendar_reply.code == "ok"
+    assert calendar_reply.rich_text is True
+    assert "# 2026 年 6 月" in calendar_reply.text
+    assert "Synthetic deterministic agenda" in calendar_reply.text
+    assert "Synthetic follow" in calendar_reply.text
+    assert [button.action for button in calendar_reply.buttons] == [
+        "/日历 2026-05",
+        "/日历 2026-06",
+        "/日历 2026-07",
+        "/今天",
+    ]
+    assert invalid_calendar.code == "invalid_intent"
     assert client.calls == 2
     assert all(
         "Reference time: 2026-06-01T16:00:00+08:00" in request.system_prompt

@@ -45,6 +45,18 @@ class RuleIntentRouter:
             "今日安排",
         }:
             return ParsedIntent(IntentAction.LIST_AGENDA)
+        calendar_view = re.fullmatch(
+            r"/(?:日历|月历)(?:\s+(\d{4})-(\d{1,2}))?",
+            value,
+        )
+        if calendar_view:
+            arguments = {}
+            if calendar_view.group(1) is not None:
+                arguments = {
+                    "year": int(calendar_view.group(1)),
+                    "month": int(calendar_view.group(2)),
+                }
+            return ParsedIntent(IntentAction.VIEW_CALENDAR, arguments)
         if value in {"/待办", "/任务"} or compact in {
             "有哪些待办",
             "我的待办",

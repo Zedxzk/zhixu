@@ -21,6 +21,8 @@ without adding a dummy button. It never calls an LLM.
 ```text
 /今天
 /日程
+/日历
+/日历 2026-08
 
 /待办
 /任务 Buy replacement filter
@@ -32,7 +34,13 @@ without adding a dummy button. It never calls an LLM.
 /总结 project keyword
 ```
 
-`/今天`, task listing and updates, note creation, and full-text search never call an LLM.
+`/今天` and `/日程` are one combined chronological view: ordinary agenda occurrences and
+active reminders appear together. `/日历` renders the same two resource types in a monthly
+preview with previous/current/next-month buttons; `/提醒` remains the management view that
+shows reminder identifiers needed for complete, cancel, and snooze actions. This is a
+user-facing merge only: reminder delivery state remains separate from calendar recurrence.
+
+`/今天`, `/日历`, task listing and updates, note creation, and full-text search never call an LLM.
 `/总结` uses deterministic search first; without a configured model it returns the matching
 notes instead of failing.
 

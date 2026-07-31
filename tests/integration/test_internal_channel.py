@@ -255,6 +255,7 @@ def test_qq_network_database_is_separate_and_duplicate_events_are_idempotent(
     assert help_delivery["text"].startswith("# 知序 · 帮助")
     assert [button["action"] for button in help_delivery["buttons"]] == [
         "/今天",
+        "/日历",
         "/待办",
         "/提醒",
     ]

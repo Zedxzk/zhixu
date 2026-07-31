@@ -180,3 +180,17 @@ def test_explicit_question_is_the_only_rule_routed_to_web_search() -> None:
     assert explicit.action is IntentAction.ANSWER
     assert explicit.arguments["web_search"] is True
     assert implicit is None
+
+
+def test_calendar_commands_route_without_an_llm() -> None:
+    router = RuleIntentRouter(FrozenClock(datetime(2026, 6, 1, 8, tzinfo=UTC)))
+
+    current = router.route("/日历")
+    selected = router.route("/月历 2026-8")
+
+    assert current is not None
+    assert current.action is IntentAction.VIEW_CALENDAR
+    assert current.arguments == {}
+    assert selected is not None
+    assert selected.action is IntentAction.VIEW_CALENDAR
+    assert selected.arguments == {"year": 2026, "month": 8}
