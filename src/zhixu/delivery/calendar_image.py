@@ -1,0 +1,186 @@
+"""Dependency-free, deterministic PNG rendering for monthly calendars."""
+
+from __future__ import annotations
+
+import binascii
+import struct
+import zlib
+from calendar import Calendar
+
+from zhixu.channels import CalendarPreview
+
+_FONT = {
+    "0": ("01110", "10001", "10011", "10101", "11001", "10001", "01110"),
+    "1": ("00100", "01100", "00100", "00100", "00100", "00100", "01110"),
+    "2": ("01110", "10001", "00001", "00010", "00100", "01000", "11111"),
+    "3": ("11110", "00001", "00001", "01110", "00001", "00001", "11110"),
+    "4": ("00010", "00110", "01010", "10010", "11111", "00010", "00010"),
+    "5": ("11111", "10000", "10000", "11110", "00001", "00001", "11110"),
+    "6": ("01110", "10000", "10000", "11110", "10001", "10001", "01110"),
+    "7": ("11111", "00001", "00010", "00100", "01000", "01000", "01000"),
+    "8": ("01110", "10001", "10001", "01110", "10001", "10001", "01110"),
+    "9": ("01110", "10001", "10001", "01111", "00001", "00001", "01110"),
+    "A": ("01110", "10001", "10001", "11111", "10001", "10001", "10001"),
+    "B": ("11110", "10001", "10001", "11110", "10001", "10001", "11110"),
+    "D": ("11110", "10001", "10001", "10001", "10001", "10001", "11110"),
+    "E": ("11111", "10000", "10000", "11110", "10000", "10000", "11111"),
+    "F": ("11111", "10000", "10000", "11110", "10000", "10000", "10000"),
+    "H": ("10001", "10001", "10001", "11111", "10001", "10001", "10001"),
+    "I": ("11111", "00100", "00100", "00100", "00100", "00100", "11111"),
+    "M": ("10001", "11011", "10101", "10101", "10001", "10001", "10001"),
+    "N": ("10001", "11001", "10101", "10011", "10001", "10001", "10001"),
+    "O": ("01110", "10001", "10001", "10001", "10001", "10001", "01110"),
+    "R": ("11110", "10001", "10001", "11110", "10100", "10010", "10001"),
+    "S": ("01111", "10000", "10000", "01110", "00001", "00001", "11110"),
+    "T": ("11111", "00100", "00100", "00100", "00100", "00100", "00100"),
+    "U": ("10001", "10001", "10001", "10001", "10001", "10001", "01110"),
+    "W": ("10001", "10001", "10001", "10101", "10101", "11011", "10001"),
+    "Y": ("10001", "10001", "01010", "00100", "00100", "00100", "00100"),
+    "-": ("00000", "00000", "00000", "11111", "00000", "00000", "00000"),
+}
+
+
+class _Canvas:
+    def __init__(self, width: int, height: int, color: tuple[int, int, int]) -> None:
+        self.width = width
+        self.height = height
+        self.pixels = bytearray(color * (width * height))
+
+    def rect(
+        self,
+        x: int,
+        y: int,
+        width: int,
+        height: int,
+        color: tuple[int, int, int],
+    ) -> None:
+        x0, y0 = max(0, x), max(0, y)
+        x1, y1 = min(self.width, x + width), min(self.height, y + height)
+        row = bytes(color) * max(0, x1 - x0)
+        for current_y in range(y0, y1):
+            start = (current_y * self.width + x0) * 3
+            self.pixels[start : start + len(row)] = row
+
+    def circle(
+        self,
+        center_x: int,
+        center_y: int,
+        radius: int,
+        color: tuple[int, int, int],
+    ) -> None:
+        radius_squared = radius * radius
+        for y in range(center_y - radius, center_y + radius + 1):
+            distance = radius_squared - (y - center_y) ** 2
+            if distance < 0:
+                continue
+            half_width = int(distance**0.5)
+            self.rect(center_x - half_width, y, half_width * 2 + 1, 1, color)
+
+    def text_width(self, value: str, scale: int) -> int:
+        return max(0, len(value) * 6 * scale - scale)
+
+    def text(
+        self,
+        x: int,
+        y: int,
+        value: str,
+        scale: int,
+        color: tuple[int, int, int],
+    ) -> None:
+        cursor = x
+        for character in value.upper():
+            glyph = _FONT.get(character)
+            if glyph is not None:
+                for row_index, row in enumerate(glyph):
+                    for column_index, pixel in enumerate(row):
+                        if pixel == "1":
+                            self.rect(
+                                cursor + column_index * scale,
+                                y + row_index * scale,
+                                scale,
+                                scale,
+                                color,
+                            )
+            cursor += 6 * scale
+
+    def png(self) -> bytes:
+        scanlines = bytearray()
+        row_size = self.width * 3
+        for y in range(self.height):
+            scanlines.append(0)
+            start = y * row_size
+            scanlines.extend(self.pixels[start : start + row_size])
+        signature = b"\x89PNG\r\n\x1a\n"
+        header = struct.pack(">IIBBBBB", self.width, self.height, 8, 2, 0, 0, 0)
+        return signature + _chunk(b"IHDR", header) + _chunk(
+            b"IDAT", zlib.compress(bytes(scanlines), level=9)
+        ) + _chunk(b"IEND", b"")
+
+
+def _chunk(kind: bytes, data: bytes) -> bytes:
+    checksum = binascii.crc32(kind + data) & 0xFFFFFFFF
+    return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", checksum)
+
+
+def render_calendar_png(preview: CalendarPreview) -> bytes:
+    """Render a fixed-grid PNG; only dates and aggregate counts enter the image."""
+
+    width, height = 1120, 820
+    background = (15, 23, 42)
+    panel = (30, 41, 59)
+    empty = (23, 32, 48)
+    border = (51, 65, 85)
+    primary = (241, 245, 249)
+    muted = (148, 163, 184)
+    today = (37, 99, 235)
+    busy = (244, 114, 86)
+    canvas = _Canvas(width, height, background)
+
+    title = f"{preview.year:04d}-{preview.month:02d}"
+    canvas.text(62, 48, title, 8, primary)
+    canvas.rect(62, 120, 996, 2, border)
+
+    weekdays = ("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
+    cell_width, cell_height, gap = 136, 88, 7
+    grid_x, grid_y = 61, 205
+    for index, label in enumerate(weekdays):
+        x = grid_x + index * (cell_width + gap)
+        label_width = canvas.text_width(label, 3)
+        canvas.text(x + (cell_width - label_width) // 2, 151, label, 3, muted)
+
+    busy_counts = dict(preview.busy_day_counts)
+    weeks = Calendar(firstweekday=0).monthdayscalendar(preview.year, preview.month)
+    while len(weeks) < 6:
+        weeks.append([0] * 7)
+    for row_index, week in enumerate(weeks):
+        for column_index, day in enumerate(week):
+            x = grid_x + column_index * (cell_width + gap)
+            y = grid_y + row_index * (cell_height + gap)
+            fill = empty if day == 0 else panel
+            if day != 0 and day == preview.today_day:
+                fill = today
+            canvas.rect(x, y, cell_width, cell_height, border)
+            canvas.rect(x + 2, y + 2, cell_width - 4, cell_height - 4, fill)
+            if day == 0:
+                continue
+            day_value = str(day)
+            canvas.text(x + 15, y + 15, day_value, 5, primary)
+            count = busy_counts.get(day)
+            if count is not None:
+                canvas.circle(x + cell_width - 25, y + cell_height - 24, 14, busy)
+                count_value = str(min(count, 99))
+                count_width = canvas.text_width(count_value, 2)
+                canvas.text(
+                    x + cell_width - 25 - count_width // 2,
+                    y + cell_height - 31,
+                    count_value,
+                    2,
+                    primary,
+                )
+
+    canvas.circle(72, 786, 9, busy)
+    canvas.text(93, 772, "BUSY", 3, muted)
+    if preview.today_day is not None:
+        canvas.rect(265, 776, 20, 20, today)
+        canvas.text(300, 772, "TODAY", 3, muted)
+    return canvas.png()

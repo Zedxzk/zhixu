@@ -20,6 +20,7 @@ from zhixu.adapters.channels.webhook import (
 from zhixu.adapters.channels.wecom import WeComCredentials, WeComOutboundAdapter
 from zhixu.adapters.storage.sqlite import Database
 from zhixu.channels import (
+    CalendarPreview,
     ChannelCapabilities,
     MessageButton,
     MessageKind,
@@ -31,6 +32,13 @@ from zhixu.domain.errors import PermissionDenied, ValidationError
 from zhixu.security import FieldCipher, OpaqueReferenceFactory
 
 NOW = datetime(2026, 7, 30, 12, tzinfo=UTC)
+
+
+def test_calendar_preview_rejects_impossible_or_duplicate_days() -> None:
+    with pytest.raises(ValidationError):
+        CalendarPreview(2026, 2, ((30, 1),))
+    with pytest.raises(ValidationError):
+        CalendarPreview(2026, 7, ((1, 1), (1, 2)))
 
 
 @pytest.fixture

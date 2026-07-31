@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 
 from zhixu.adapters.storage.sqlite.database import Database
 from zhixu.channels import (
+    CalendarPreview,
     ChannelDeliveryResult,
     MessageButton,
     MessageKind,
@@ -39,6 +40,16 @@ def _message_json(message: OutboundMessage) -> str:
                 for button in message.buttons
             ],
             "attachment_url": message.attachment_url,
+            "calendar_preview": (
+                {
+                    "year": message.calendar_preview.year,
+                    "month": message.calendar_preview.month,
+                    "busy_day_counts": message.calendar_preview.busy_day_counts,
+                    "today_day": message.calendar_preview.today_day,
+                }
+                if message.calendar_preview is not None
+                else None
+            ),
             "reply_context_ref": message.reply_context_ref,
         },
         ensure_ascii=False,
@@ -48,6 +59,7 @@ def _message_json(message: OutboundMessage) -> str:
 
 def _message_from_row(row: object) -> OutboundMessage:
     payload = json.loads(str(row["payload_json"]))  # type: ignore[index]
+    calendar_value = payload.get("calendar_preview")
     return OutboundMessage(
         channel=str(row["channel"]),  # type: ignore[index]
         channel_account=str(row["channel_account"]),  # type: ignore[index]
@@ -59,6 +71,23 @@ def _message_from_row(row: object) -> OutboundMessage:
             for item in payload.get("buttons", [])
         ),
         attachment_url=payload.get("attachment_url"),
+        calendar_preview=(
+            CalendarPreview(
+                year=int(calendar_value["year"]),
+                month=int(calendar_value["month"]),
+                busy_day_counts=tuple(
+                    (int(item[0]), int(item[1]))
+                    for item in calendar_value.get("busy_day_counts", [])
+                ),
+                today_day=(
+                    int(calendar_value["today_day"])
+                    if calendar_value.get("today_day") is not None
+                    else None
+                ),
+            )
+            if isinstance(calendar_value, dict)
+            else None
+        ),
         reply_context_ref=str(payload.get("reply_context_ref") or ""),
         classification=DataClassification(int(row["classification"])),  # type: ignore[index]
     )

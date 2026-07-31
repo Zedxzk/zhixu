@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import json
+import struct
 import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -24,6 +26,7 @@ from zhixu.adapters.channels.qq.gateway import (
 )
 from zhixu.adapters.storage.sqlite import Database, UserRepository
 from zhixu.channels import (
+    CalendarPreview,
     ChannelCapabilities,
     ChannelDeliveryResult,
     ConversationKind,
@@ -537,6 +540,156 @@ def test_qq_http_supports_image_upload(
     final_payload = transport.requests[-1][2]
     assert final_payload is not None
     assert final_payload["media"]["file_info"] == "synthetic-file"
+
+
+def test_qq_http_renders_calendar_as_private_base64_image_with_buttons(
+    database: Database,
+    privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
+) -> None:
+    contacts = register_account(database, privacy_primitives)
+    target_ref = contacts.record(
+        channel_account="bot_test_a",
+        kind="private",
+        external_identifier="private-openid-calendar-image-test",
+        now=NOW,
+    )
+    transport = FakeTransport()
+    adapter = QQHttpAdapter(
+        QQBotCredentials("bot_test_a", "synthetic-app", "synthetic-secret"),
+        contacts,
+        transport=transport,
+    )
+
+    result = adapter.send(
+        OutboundMessage(
+            channel="qq",
+            channel_account="bot_test_a",
+            target_ref=target_ref,
+            kind=MessageKind.BUTTON,
+            text="# 2026 年 6 月\n\n- `06-01 09:00` Synthetic",
+            buttons=(MessageButton("下个月", "/日历 2026-07"),),
+            calendar_preview=CalendarPreview(
+                2026,
+                6,
+                busy_day_counts=((1, 2), (18, 1)),
+                today_day=1,
+            ),
+        )
+    )
+
+    assert result.ok
+    upload_payload = next(
+        request[2] for request in transport.requests if request[0].endswith("/files")
+    )
+    assert upload_payload is not None
+    assert "url" not in upload_payload
+    png = base64.b64decode(upload_payload["file_data"], validate=True)
+    assert png.startswith(b"\x89PNG\r\n\x1a\n")
+    assert struct.unpack(">II", png[16:24]) == (1120, 820)
+    final_payload = transport.requests[-1][2]
+    assert final_payload is not None
+    assert final_payload["msg_type"] == 7
+    assert final_payload["media"]["file_info"] == "synthetic-file"
+    assert final_payload["keyboard"]["content"]["rows"][0]["buttons"][0][
+        "action"
+    ]["data"] == "/日历 2026-07"
+
+
+def test_qq_calendar_falls_back_to_text_when_media_message_is_rejected(
+    database: Database,
+    privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
+) -> None:
+    contacts = register_account(database, privacy_primitives)
+    target_ref = contacts.record(
+        channel_account="bot_test_a",
+        kind="private",
+        external_identifier="private-openid-calendar-fallback-test",
+        now=NOW,
+    )
+
+    class RejectMediaTransport(FakeTransport):
+        def request(
+            self,
+            url: str,
+            *,
+            method: str = "GET",
+            payload: dict[str, Any] | None = None,
+            headers: dict[str, str] | None = None,
+            timeout: float = 10,
+        ) -> tuple[int, dict[str, Any]]:
+            if payload is not None and payload.get("msg_type") == 7:
+                self.requests.append((url, method, payload, headers))
+                return 400, {}
+            return super().request(
+                url,
+                method=method,
+                payload=payload,
+                headers=headers,
+                timeout=timeout,
+            )
+
+    transport = RejectMediaTransport()
+    adapter = QQHttpAdapter(
+        QQBotCredentials("bot_test_a", "synthetic-app", "synthetic-secret"),
+        contacts,
+        transport=transport,
+    )
+    result = adapter.send(
+        OutboundMessage(
+            "qq",
+            "bot_test_a",
+            target_ref,
+            MessageKind.BUTTON,
+            "# Synthetic calendar",
+            buttons=(MessageButton("今天", "/今天"),),
+            calendar_preview=CalendarPreview(2026, 6, ((1, 1),), 1),
+        )
+    )
+
+    assert result.ok
+    assert any(
+        request[2] is not None and request[2].get("msg_type") == 7
+        for request in transport.requests
+    )
+    fallback = transport.requests[-1][2]
+    assert fallback is not None
+    assert fallback["msg_type"] == 0
+    assert "/今天" in fallback["content"]
+
+
+def test_calendar_preview_survives_outbox_without_storing_png(
+    database: Database,
+) -> None:
+    create_user(database)
+    preview = CalendarPreview(2026, 6, ((1, 2),), 1)
+    outbox = OutboxStore(database)
+    assert outbox.enqueue(
+        delivery_id="delivery_calendar_test",
+        idempotency_key="idempotency_calendar_test",
+        owner_user_id="user_test",
+        message=OutboundMessage(
+            "qq",
+            "bot_test_a",
+            "qqc_calendar_test",
+            MessageKind.BUTTON,
+            "Synthetic calendar",
+            calendar_preview=preview,
+        ),
+        now=NOW,
+    )
+
+    claimed = outbox.claim(worker_id="worker_calendar", now=NOW)
+    assert claimed is not None
+    assert claimed.message.calendar_preview == preview
+    with database.connect() as connection:
+        payload = str(
+            connection.execute(
+                "SELECT payload_json FROM outbox_deliveries WHERE id = ?",
+                ("delivery_calendar_test",),
+            ).fetchone()["payload_json"]
+        )
+    assert "file_data" not in payload
+    assert "PNG" not in payload
 
 
 def test_qq_group_reply_uses_encrypted_message_context(

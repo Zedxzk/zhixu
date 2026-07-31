@@ -782,6 +782,7 @@ class InternalChannelAPI:
             ),
             reply.text,
             buttons=reply.buttons,
+            calendar_preview=reply.calendar_preview,
             reply_context_ref=str(event.metadata.get("reply_context_ref") or ""),
         )
 
@@ -832,6 +833,19 @@ class InternalChannelAPI:
                         for button in rendered.buttons
                     ],
                     "attachment_url": rendered.attachment_url,
+                    "calendar_preview": (
+                        {
+                            "year": rendered.calendar_preview.year,
+                            "month": rendered.calendar_preview.month,
+                            "busy_day_counts": [
+                                [day, count]
+                                for day, count in rendered.calendar_preview.busy_day_counts
+                            ],
+                            "today_day": rendered.calendar_preview.today_day,
+                        }
+                        if rendered.calendar_preview is not None
+                        else None
+                    ),
                     "reply_context_ref": rendered.reply_context_ref,
                     "classification": int(rendered.classification),
                 }

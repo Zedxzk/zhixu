@@ -275,6 +275,11 @@ def test_fixed_commands_stay_deterministic_but_reminders_use_model(
     assert calendar_reply.code == "ok"
     assert calendar_reply.rich_text is True
     assert "# 2026 年 6 月" in calendar_reply.text
+    assert "```text" not in calendar_reply.text
+    assert calendar_reply.calendar_preview is not None
+    assert calendar_reply.calendar_preview.year == 2026
+    assert calendar_reply.calendar_preview.month == 6
+    assert calendar_reply.calendar_preview.busy_day_counts == ((1, 2),)
     assert "Synthetic deterministic agenda" in calendar_reply.text
     assert "Synthetic follow" in calendar_reply.text
     assert [button.action for button in calendar_reply.buttons] == [

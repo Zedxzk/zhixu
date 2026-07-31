@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from calendar import monthrange
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -77,6 +78,33 @@ class MessageButton:
 
 
 @dataclass(frozen=True, slots=True)
+class CalendarPreview:
+    """Privacy-minimized data needed to render a monthly calendar image."""
+
+    year: int
+    month: int
+    busy_day_counts: tuple[tuple[int, int], ...] = field(default_factory=tuple)
+    today_day: int | None = None
+
+    def __post_init__(self) -> None:
+        if not 1970 <= self.year <= 2100 or not 1 <= self.month <= 12:
+            raise ValidationError("calendar preview month is invalid")
+        maximum_day = monthrange(self.year, self.month)[1]
+        if self.today_day is not None and not 1 <= self.today_day <= maximum_day:
+            raise ValidationError("calendar preview today is invalid")
+        days = [day for day, _count in self.busy_day_counts]
+        if (
+            len(days) != len(set(days))
+            or days != sorted(days)
+            or any(
+                not 1 <= day <= maximum_day or not 1 <= count <= 999
+                for day, count in self.busy_day_counts
+            )
+        ):
+            raise ValidationError("calendar preview busy-day counts are invalid")
+
+
+@dataclass(frozen=True, slots=True)
 class OutboundMessage:
     channel: str
     channel_account: str
@@ -87,13 +115,18 @@ class OutboundMessage:
     attachment_url: str | None = field(default=None, repr=False)
     reply_context_ref: str = field(default="", repr=False)
     classification: DataClassification = DataClassification.PERSONAL
+    calendar_preview: CalendarPreview | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if not self.channel.strip() or not self.channel_account.strip():
             raise ValidationError("outbound channel and account are required")
         if not self.target_ref.strip():
             raise ValidationError("outbound target_ref is required")
-        if not self.text.strip() and self.attachment_url is None:
+        if (
+            not self.text.strip()
+            and self.attachment_url is None
+            and self.calendar_preview is None
+        ):
             raise ValidationError("outbound message content is required")
         if len(self.reply_context_ref) > 160:
             raise ValidationError("reply context reference is too long")

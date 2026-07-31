@@ -9,7 +9,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from zhixu.channels import MessageButton
+from zhixu.channels import CalendarPreview, MessageButton
 
 
 class IntentAction(StrEnum):
@@ -69,3 +69,4 @@ class AssistantReply:
     source: str
     buttons: tuple[MessageButton, ...] = field(default_factory=tuple, repr=False)
     rich_text: bool = False
+    calendar_preview: CalendarPreview | None = field(default=None, repr=False)

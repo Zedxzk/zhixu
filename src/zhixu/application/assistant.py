@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import json
 import re
-from calendar import Calendar
+from collections import Counter
 from datetime import datetime, timedelta
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from zhixu.channels import MessageButton
+from zhixu.channels import CalendarPreview, MessageButton
 from zhixu.domain import CommandContext, DataClassification, TaskStatus
 from zhixu.domain.errors import (
     InvalidModelOutput,
@@ -69,7 +69,7 @@ _HELP_TEXT = """# 知序 · 帮助
 
 ## 日程与提醒
 - `/今天` 或 `/日程` — 按时间查看今日日程与提醒
-- `/日历` — 本月日历预览
+- `/日历` — 本月图片日历预览
 - `/日历 2026-08` — 查看指定月份
 - `/提醒` — 查看待处理提醒及其 ID
 - `明天上午9点提醒我提交报告` — 创建日程提醒
@@ -127,7 +127,7 @@ _INTERNAL_GROUP_HELP_TEXT = """# 知序 · 内部群帮助
 
 ## 群共享
 - `/今天` 或 `/日程` — 查看本群日程与提醒
-- `/日历`、`/日历 2026-08` — 预览本群月历
+- `/日历`、`/日历 2026-08` — 预览本群图片月历
 - `/提醒` — 查看本群待处理提醒及 ID
 - `/待办` — 查看本群待办
 - `/任务 内容`、`/记 内容` — 写入本群共享库并记录创建人
@@ -734,39 +734,14 @@ class AssistantEngine:
             for reminder in reminders
         )
         entries.sort(key=lambda entry: entry[0])
-        busy_days = {
+        busy_day_counts = Counter(
             when.astimezone(self.router.timezone).day for when, _line in entries
-        }
+        )
         today = local_now.date()
-        weeks = Calendar(firstweekday=0).monthdayscalendar(year, month)
-        grid_lines = ["一  二  三  四  五  六  日"]
-        for week in weeks:
-            cells = []
-            for day in week:
-                if day == 0:
-                    cells.append("   ")
-                    continue
-                is_today = (
-                    today.year == year and today.month == month and today.day == day
-                )
-                marker = (
-                    "+"
-                    if is_today and day in busy_days
-                    else "!"
-                    if is_today
-                    else "*"
-                    if day in busy_days
-                    else " "
-                )
-                cells.append(f"{day:2d}{marker}")
-            grid_lines.append("".join(cells).rstrip())
         body = [
             f"# {year} 年 {month} 月",
             "",
-            "```text",
-            *grid_lines,
-            "```",
-            "`*` 有安排　`!` 今天　`+` 今天有安排",
+            "> 月历已生成图片；蓝色为今天，圆点表示当天有安排。",
         ]
         if entries:
             body.extend(["", "## 本月安排"])
@@ -788,4 +763,14 @@ class AssistantEngine:
                 MessageButton("今天", "/今天"),
             ),
             rich_text=True,
+            calendar_preview=CalendarPreview(
+                year=year,
+                month=month,
+                busy_day_counts=tuple(sorted(busy_day_counts.items())),
+                today_day=(
+                    today.day
+                    if today.year == year and today.month == month
+                    else None
+                ),
+            ),
         )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import re
 import threading
 import urllib.parse
@@ -17,6 +18,7 @@ from zhixu.channels import (
     MessageKind,
     OutboundMessage,
 )
+from zhixu.delivery.calendar_image import render_calendar_png
 from zhixu.domain import DataClassification
 from zhixu.domain.errors import ValidationError
 
@@ -48,10 +50,14 @@ def _button_payload(button: MessageButton, index: int) -> dict[str, Any]:
     }
 
 
-def _plain_button_fallback(message: OutboundMessage) -> dict[str, Any]:
-    text = re.sub(r"(?m)^#{1,6}\s*", "", message.text)
+def _plain_markdown(text: str) -> str:
+    text = re.sub(r"(?m)^#{1,6}\s*", "", text)
     text = text.replace("**", "").replace("__", "")
-    text = re.sub(r"\\([\\`*_{}\[\]()#+\-.!>|])", r"\1", text)
+    return re.sub(r"\\([\\`*_{}\[\]()#+\-.!>|])", r"\1", text)
+
+
+def _plain_button_fallback(message: OutboundMessage) -> dict[str, Any]:
+    text = _plain_markdown(message.text)
     choices = "\n".join(
         f"{index}. {button.label} — {button.action}"
         for index, button in enumerate(message.buttons, start=1)
@@ -217,32 +223,52 @@ class QQHttpAdapter:
                         ]
                     }
                 }
-        if message.attachment_url:
+        if message.attachment_url or message.calendar_preview:
             try:
                 file_url = self._file_endpoint(target)
             except ValidationError:
-                payload["image"] = message.attachment_url
+                if message.attachment_url:
+                    payload["image"] = message.attachment_url
             else:
+                upload_payload: dict[str, Any] = {
+                    "file_type": 1,
+                    "srv_send_msg": False,
+                }
+                if message.calendar_preview is not None:
+                    upload_payload["file_data"] = base64.b64encode(
+                        render_calendar_png(message.calendar_preview)
+                    ).decode("ascii")
+                else:
+                    upload_payload["url"] = message.attachment_url
                 media_status, media_value = self.transport.request(
                     file_url,
                     method="POST",
-                    payload={
-                        "file_type": 1,
-                        "url": message.attachment_url,
-                        "srv_send_msg": False,
-                    },
+                    payload=upload_payload,
                     headers=self._headers(token),
                 )
                 file_info = str(media_value.get("file_info") or "")
                 if media_status != 200 or not file_info:
-                    return ChannelDeliveryResult(
-                        False,
-                        media_status >= 500 or media_status == 429,
-                        f"http_{media_status}",
-                    )
-                payload = {"msg_type": 7, "media": {"file_info": file_info}}
-            if message.kind is MessageKind.ATTACHMENT and message.text:
-                payload.setdefault("content", message.text)
+                    if message.calendar_preview is None:
+                        return ChannelDeliveryResult(
+                            False,
+                            media_status >= 500 or media_status == 429,
+                            f"http_{media_status}",
+                        )
+                    if media_status == 429 or media_status >= 500:
+                        return ChannelDeliveryResult(
+                            False,
+                            True,
+                            f"http_{media_status}",
+                        )
+                else:
+                    keyboard = payload.get("keyboard")
+                    payload = {"msg_type": 7, "media": {"file_info": file_info}}
+                    if keyboard is not None:
+                        payload["keyboard"] = keyboard
+            if (
+                message.kind is MessageKind.ATTACHMENT or message.calendar_preview
+            ) and message.text:
+                payload.setdefault("content", _plain_markdown(message.text))
         if reply_context is not None:
             payload[reply_context.field] = reply_context.identifier
             payload["msg_seq"] = 1
@@ -255,7 +281,7 @@ class QQHttpAdapter:
         if (
             status in {400, 403}
             and (message.kind is MessageKind.MARKDOWN or message.buttons)
-            and not message.attachment_url
+            and (not message.attachment_url or message.calendar_preview is not None)
         ):
             fallback = _plain_button_fallback(message)
             if reply_context is not None:

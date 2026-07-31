@@ -24,6 +24,7 @@ from zhixu.adapters.channels.webhook import (
 from zhixu.adapters.channels.wecom import WeComCredentials, WeComOutboundAdapter
 from zhixu.adapters.storage.sqlite import Database
 from zhixu.channels import (
+    CalendarPreview,
     ChannelDeliveryResult,
     MessageButton,
     MessageKind,
@@ -319,6 +320,7 @@ def _message(value: dict[str, object]) -> OutboundMessage:
         if isinstance(buttons_value, list)
         else ()
     )
+    calendar_value = value.get("calendar_preview")
     return OutboundMessage(
         channel=str(value["channel"]),
         channel_account=str(value["channel_account"]),
@@ -328,6 +330,23 @@ def _message(value: dict[str, object]) -> OutboundMessage:
         buttons=buttons,
         attachment_url=(
             str(value["attachment_url"]) if value.get("attachment_url") else None
+        ),
+        calendar_preview=(
+            CalendarPreview(
+                year=int(calendar_value["year"]),
+                month=int(calendar_value["month"]),
+                busy_day_counts=tuple(
+                    (int(item[0]), int(item[1]))
+                    for item in calendar_value.get("busy_day_counts", [])
+                ),
+                today_day=(
+                    int(calendar_value["today_day"])
+                    if calendar_value.get("today_day") is not None
+                    else None
+                ),
+            )
+            if isinstance(calendar_value, dict)
+            else None
         ),
         classification=DataClassification(int(value["classification"])),
     )
