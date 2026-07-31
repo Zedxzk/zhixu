@@ -1,7 +1,11 @@
 # Non-secret runtime configuration. Install as /etc/zhixu/runtime.conf (0640).
 ZHIXU_QQ_ACCOUNT=qq-primary
-ZHIXU_PASSKEY_RP_ID=assistant.example.invalid
-ZHIXU_PASSKEY_ORIGIN=https://assistant.example.invalid
+ZHIXU_ADMIN_WEB_ENABLED=false
+
+# Enabling the browser administration API requires a private HTTPS origin.
+# ZHIXU_ADMIN_WEB_ENABLED=true
+# ZHIXU_PASSKEY_RP_ID=assistant.example.invalid
+# ZHIXU_PASSKEY_ORIGIN=https://assistant.example.invalid
 
 # Optional loopback OpenAI-compatible model. Leave all values empty to disable it.
 # ZHIXU_LLM_BASE_URL=http://127.0.0.1:8841/v1

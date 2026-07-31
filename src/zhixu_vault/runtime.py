@@ -37,8 +37,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allowed-user", action="append", default=[])
     parser.add_argument("--issuer", default="zhixu-auth")
     parser.add_argument("--issuer-public-key-file", required=True)
-    parser.add_argument("--passkey-rp-id", required=True)
-    parser.add_argument("--passkey-origin", required=True)
+    parser.add_argument(
+        "--passkey-rp-id",
+        default=os.environ.get("ZHIXU_PASSKEY_RP_ID", ""),
+    )
+    parser.add_argument(
+        "--passkey-origin",
+        default=os.environ.get("ZHIXU_PASSKEY_ORIGIN", ""),
+    )
     parser.add_argument("--idle-timeout-seconds", type=int, default=600)
     parser.add_argument("--audit-checkpoint-directory", default="")
     parser.add_argument("--audit-checkpoint-seconds", type=int, default=300)
@@ -88,12 +94,16 @@ async def run(args: argparse.Namespace) -> None:
         verifier,
         executors=executors,
     )
-    passkeys = PasskeyManager(
-        database,
-        rp_id=args.passkey_rp_id,
-        rp_name="Zhixu",
-        expected_origin=args.passkey_origin,
-        now=now,
+    passkeys = (
+        PasskeyManager(
+            database,
+            rp_id=args.passkey_rp_id,
+            rp_name="Zhixu",
+            expected_origin=args.passkey_origin,
+            now=now,
+        )
+        if _environment_flag("ZHIXU_ADMIN_WEB_ENABLED", default=True)
+        else None
     )
     allowed_uids = {os.getuid()}
     allowed_uids.update(pwd.getpwnam(name).pw_uid for name in args.allowed_user)
@@ -131,6 +141,13 @@ async def run(args: argparse.Namespace) -> None:
             await checkpoint_task
         keyring.lock()
         await server.close()
+
+
+def _environment_flag(name: str, *, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 async def _checkpoint_loop(

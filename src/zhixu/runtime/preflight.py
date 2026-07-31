@@ -20,11 +20,12 @@ from .outbound import configured_outbound_account
 
 _ACCOUNT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,159}")
 _REQUIRED_RUNTIME = {
+    "ZHIXU_ADMIN_WEB_ENABLED",
     "ZHIXU_QQ_ACCOUNT",
-    "ZHIXU_PASSKEY_RP_ID",
-    "ZHIXU_PASSKEY_ORIGIN",
 }
 _OPTIONAL_RUNTIME = {
+    "ZHIXU_PASSKEY_RP_ID",
+    "ZHIXU_PASSKEY_ORIGIN",
     "ZHIXU_LLM_BASE_URL",
     "ZHIXU_LLM_MODEL",
     "ZHIXU_LLM_LOCAL",
@@ -274,6 +275,7 @@ def _runtime_configuration(path: Path) -> dict[str, str]:
     if _ACCOUNT.fullmatch(account) is None:
         raise PreflightFailure("runtime_qq_account_invalid")
     for key in {
+        "ZHIXU_ADMIN_WEB_ENABLED",
         "ZHIXU_LLM_LOCAL",
         "ZHIXU_ALLOW_PERSONAL_LLM_EGRESS",
         "ZHIXU_ALLOW_CONFIDENTIAL_LOCAL_LLM",
@@ -284,12 +286,25 @@ def _runtime_configuration(path: Path) -> dict[str, str]:
 
 
 def _validate_passkey(runtime: dict[str, str]) -> None:
-    rp_id = runtime["ZHIXU_PASSKEY_RP_ID"].strip().rstrip(".").lower()
+    enabled = runtime["ZHIXU_ADMIN_WEB_ENABLED"].lower() in {
+        "1",
+        "on",
+        "true",
+        "yes",
+    }
+    rp_id = runtime.get("ZHIXU_PASSKEY_RP_ID", "").strip().rstrip(".").lower()
+    configured_origin = runtime.get("ZHIXU_PASSKEY_ORIGIN", "").strip()
+    if not enabled:
+        if rp_id or configured_origin:
+            raise PreflightFailure("passkey_disabled_configuration")
+        return
+    if not rp_id or not configured_origin:
+        raise PreflightFailure("passkey_configuration_incomplete")
     try:
         ascii_rp_id = rp_id.encode("idna").decode("ascii")
     except UnicodeError as exc:
         raise PreflightFailure("passkey_origin_invalid") from exc
-    origin = urlsplit(runtime["ZHIXU_PASSKEY_ORIGIN"])
+    origin = urlsplit(configured_origin)
     hostname = (origin.hostname or "").rstrip(".").lower()
     if (
         not ascii_rp_id

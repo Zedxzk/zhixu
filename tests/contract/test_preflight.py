@@ -35,6 +35,7 @@ def _configuration(tmp_path: Path) -> PreflightPaths:
         "\n".join(
             (
                 "ZHIXU_QQ_ACCOUNT=qq-synthetic",
+                "ZHIXU_ADMIN_WEB_ENABLED=true",
                 "ZHIXU_PASSKEY_RP_ID=assistant.example.invalid",
                 "ZHIXU_PASSKEY_ORIGIN=https://assistant.example.invalid",
             )
@@ -92,6 +93,38 @@ def test_preflight_validates_fixed_files_without_returning_values(
     assert result.credential_files == 12
     assert result.outbound_accounts == 0
     assert "synthetic" not in repr(result)
+
+
+def test_preflight_allows_headless_mode_only_without_passkey_origin(
+    tmp_path: Path,
+) -> None:
+    paths = _configuration(tmp_path)
+    _write(
+        paths.runtime_config,
+        "\n".join(
+            (
+                "ZHIXU_QQ_ACCOUNT=qq-synthetic",
+                "ZHIXU_ADMIN_WEB_ENABLED=false",
+            )
+        ),
+        0o644,
+    )
+    result = verify_deployment_configuration(
+        paths,
+        expected_owner_uid=os.getuid(),
+        expected_owner_gid=os.getgid(),
+    )
+    assert result.credential_files == 12
+
+    with paths.runtime_config.open("a", encoding="utf-8") as output:
+        output.write("\nZHIXU_PASSKEY_ORIGIN=https://should-not-be-used.example\n")
+    with pytest.raises(PreflightFailure) as configured:
+        verify_deployment_configuration(
+            paths,
+            expected_owner_uid=os.getuid(),
+            expected_owner_gid=os.getgid(),
+        )
+    assert configured.value.code == "passkey_disabled_configuration"
 
 
 def test_preflight_rejects_loose_permissions_symlinks_and_unknown_config(

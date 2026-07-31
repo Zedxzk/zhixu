@@ -58,9 +58,16 @@ MAX_BODY_BYTES = 1_048_576
 
 
 class CompositePrivateAPI:
-    def __init__(self, admin: AdminAPI, internal: InternalChannelAPI) -> None:
+    def __init__(
+        self,
+        admin: AdminAPI,
+        internal: InternalChannelAPI,
+        *,
+        admin_enabled: bool = True,
+    ) -> None:
         self.admin = admin
         self.internal = internal
+        self.admin_enabled = admin_enabled
 
     def dispatch(
         self,
@@ -78,6 +85,18 @@ class CompositePrivateAPI:
                 path,
                 headers=normalized,
                 body=body,
+            )
+        if path in {"/health/live", "/health/ready"}:
+            return self.admin.dispatch(method, target, headers=headers, body=body)
+        if not self.admin_enabled:
+            return AdminResponse(
+                404,
+                {
+                    "error": {
+                        "code": "not_found",
+                        "message": "resource not found",
+                    }
+                },
             )
         return self.admin.dispatch(method, target, headers=headers, body=body)
 
@@ -398,11 +417,21 @@ def create_api(args: argparse.Namespace) -> CompositePrivateAPI:
             },
         },
     )
-    return CompositePrivateAPI(admin, internal)
+    return CompositePrivateAPI(
+        admin,
+        internal,
+        admin_enabled=_environment_flag(
+            "ZHIXU_ADMIN_WEB_ENABLED",
+            default=True,
+        ),
+    )
 
 
-def _environment_flag(name: str) -> bool:
-    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+def _environment_flag(name: str, *, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _outbound_accounts(

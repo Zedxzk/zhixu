@@ -26,7 +26,7 @@ from zhixu.adapters.storage.sqlite import (
     TaskRepository,
     UserRepository,
 )
-from zhixu.adapters.web import AdminAPI, HealthRegistry
+from zhixu.adapters.web import AdminAPI, AdminResponse, HealthRegistry
 from zhixu.application import ZhixuServices
 from zhixu.delivery import OutboxStore
 from zhixu.domain import (
@@ -39,6 +39,7 @@ from zhixu.domain import (
     UserStatus,
 )
 from zhixu.ports import FrozenClock
+from zhixu.runtime.api import CompositePrivateAPI
 from zhixu.security import FieldCipher, OpaqueReferenceFactory
 from zhixu.vault_client import CapabilityGrantIssuer
 
@@ -168,6 +169,40 @@ def admin(tmp_path: Path) -> AdminParts:
         grants,
         routes,
     )
+
+
+def test_headless_composite_exposes_health_and_internal_routes_only(
+    admin: AdminParts,
+) -> None:
+    class InternalStub:
+        def dispatch(
+            self,
+            method: str,
+            target: str,
+            *,
+            headers: dict[str, str],
+            body: bytes,
+        ) -> AdminResponse:
+            assert method == "POST"
+            assert target == "/internal/synthetic"
+            assert headers == {"authorization": "Bearer synthetic"}
+            assert body == b"{}"
+            return AdminResponse(202, {"accepted": True})
+
+    composite = CompositePrivateAPI(
+        admin.api,
+        InternalStub(),  # type: ignore[arg-type]
+        admin_enabled=False,
+    )
+    assert composite.dispatch("GET", "/health/live").status == 200
+    assert composite.dispatch("GET", "/admin/status").status == 404
+    internal = composite.dispatch(
+        "POST",
+        "/internal/synthetic",
+        headers={"Authorization": "Bearer synthetic"},
+        body=b"{}",
+    )
+    assert internal.status == 202
 
 
 def _json(data: dict[str, object]) -> bytes:

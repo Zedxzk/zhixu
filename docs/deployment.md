@@ -54,8 +54,13 @@ repository, a release archive, an issue, a log, or an online backup. Copy the en
 bundle to the target through an authenticated private path and keep it mode `0600`.
 
 Copy `deploy/runtime.conf.example` to `/etc/zhixu/runtime.conf`, replace only synthetic
-values, and set mode `0644`. This file is non-secret. The Passkey origin must exactly match
-the private HTTPS origin.
+values, and set mode `0644`. This file is non-secret. A QQ-first deployment without private
+HTTPS must set `ZHIXU_ADMIN_WEB_ENABLED=false` and omit the Passkey values. In that mode the
+loopback API exposes only health probes and authenticated `/internal/` channel routes; all
+browser administration routes are unavailable and the vault has no Passkey handler.
+
+To enable browser administration later, set `ZHIXU_ADMIN_WEB_ENABLED=true` and configure
+both Passkey values. The Passkey origin must exactly match the private HTTPS origin.
 
 ## 3. Build and install an offline release
 
@@ -180,6 +185,8 @@ The outbound worker receives the dedicated target key, but not the application f
 application reference key, QQ credentials, LLM credential, grant signer, or vault data.
 
 ## 6. Private HTTPS
+
+This section is required only when `ZHIXU_ADMIN_WEB_ENABLED=true`.
 
 Render `deploy/reverse-proxy/nginx-private.conf.template` with a private interface address
 and a private DNS name. Verify the rendered listener is not a wildcard address. TLS keys

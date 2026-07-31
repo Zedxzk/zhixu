@@ -159,6 +159,7 @@ def test_complete_bundle_is_encrypted_and_installs_preflight_ready_credentials(
         "\n".join(
             (
                 "ZHIXU_QQ_ACCOUNT=qq-synthetic",
+                "ZHIXU_ADMIN_WEB_ENABLED=true",
                 "ZHIXU_PASSKEY_RP_ID=assistant.example.invalid",
                 "ZHIXU_PASSKEY_ORIGIN=https://assistant.example.invalid",
             )
