@@ -117,6 +117,8 @@ class OpenAICompatibleLLM:
                     "schema": request.response_schema,
                 },
             }
+        if request.web_search:
+            payload["web_search"] = True
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
         status, value = self.transport.post(
             f"{self.base_url}/chat/completions",

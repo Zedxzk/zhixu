@@ -116,9 +116,16 @@ bound to the current internal user.
 /问 Why does the sky appear blue?
 ```
 
+An explicit `/问` may use the configured model provider's web-search tool. Only the literal
+question is sent: note bodies, private records, shared-group records, platform identifiers,
+and conversation history are never added to the search prompt. The reply lists up to five
+provider-returned public sources. Likely credentials, account numbers, email addresses,
+network addresses, and other token-shaped values are rejected before egress. Operators can
+disable this path with `ZHIXU_LLM_WEB_SEARCH=false`.
+
 Before consulting a model, unrecognized text is searched against the notes eligible in the
-current scope. Public-group questions skip note search entirely. General questions and
-summaries require an explicitly configured model.
+current scope. Public-group questions skip note search entirely. Unprefixed text does not
+trigger web search. General questions and summaries require an explicitly configured model.
 Model output is accepted only through a strict action schema, and every proposed mutation
 requires code-side confirmation and authorization. L3/L4 data never enters a model prompt.
 

@@ -13,6 +13,7 @@ class LLMRequest:
     system_prompt: str = field(repr=False)
     user_prompt: str = field(repr=False)
     response_schema: dict[str, Any] | None = field(default=None, repr=False)
+    web_search: bool = False
 
 
 @dataclass(frozen=True, slots=True)

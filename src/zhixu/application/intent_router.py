@@ -162,7 +162,10 @@ class RuleIntentRouter:
         if value.startswith("/问 ") and value.removeprefix("/问 ").strip():
             return ParsedIntent(
                 IntentAction.ANSWER,
-                {"query": value.removeprefix("/问 ").strip()},
+                {
+                    "query": value.removeprefix("/问 ").strip(),
+                    "web_search": True,
+                },
             )
         return None
 

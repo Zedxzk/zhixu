@@ -85,6 +85,30 @@ def test_openai_compatible_timeout_is_reported_without_response_body() -> None:
         client.generate(LLMRequest("model", "system", "user"), timeout_seconds=1)
 
 
+def test_openai_compatible_adapter_marks_explicit_web_search() -> None:
+    transport = FakeTransport()
+    client = OpenAICompatibleLLM(
+        provider_ref="synthetic",
+        base_url="http://localhost:9999/v1",
+        api_key="",
+        is_local=True,
+        transport=transport,
+    )
+
+    client.generate(
+        LLMRequest(
+            "model",
+            "system",
+            "public question",
+            {"type": "object"},
+            web_search=True,
+        ),
+        timeout_seconds=1,
+    )
+
+    assert transport.calls[0]["payload"]["web_search"] is True
+
+
 def test_llm_transport_disables_proxies_and_redirects(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -144,3 +168,15 @@ def test_chinese_absolute_reminder_parser_rejects_past_or_invalid_time() -> None
     assert future.arguments["fire_at"].minute == 30
     assert past is None
     assert invalid is None
+
+
+def test_explicit_question_is_the_only_rule_routed_to_web_search() -> None:
+    router = RuleIntentRouter(FrozenClock(datetime(2026, 6, 1, 8, tzinfo=UTC)))
+
+    explicit = router.route("/问 current synthetic fact")
+    implicit = router.route("current synthetic fact")
+
+    assert explicit is not None
+    assert explicit.action is IntentAction.ANSWER
+    assert explicit.arguments["web_search"] is True
+    assert implicit is None

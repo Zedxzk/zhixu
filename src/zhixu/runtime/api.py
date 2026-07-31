@@ -217,6 +217,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=_environment_flag("ZHIXU_ALLOW_PERSONAL_LLM_EGRESS"),
     )
     parser.add_argument(
+        "--llm-web-search",
+        action="store_true",
+        default=_environment_flag("ZHIXU_LLM_WEB_SEARCH"),
+    )
+    parser.add_argument(
         "--allow-confidential-local-llm",
         action="store_true",
         default=_environment_flag("ZHIXU_ALLOW_CONFIDENTIAL_LOCAL_LLM"),
@@ -394,6 +399,7 @@ def create_api(args: argparse.Namespace) -> CompositePrivateAPI:
             classifier=classifier,
             llm_gateway=llm_gateway,
             llm_model=args.llm_model,
+            web_search_enabled=args.llm_web_search,
         ),
         outbox=OutboxStore(database),
         quota=QuotaManager(

@@ -30,6 +30,7 @@ _OPTIONAL_RUNTIME = {
     "ZHIXU_LLM_MODEL",
     "ZHIXU_LLM_LOCAL",
     "ZHIXU_LLM_HEALTH_URL",
+    "ZHIXU_LLM_WEB_SEARCH",
     "ZHIXU_ALLOW_PERSONAL_LLM_EGRESS",
     "ZHIXU_ALLOW_CONFIDENTIAL_LOCAL_LLM",
 }
@@ -277,6 +278,7 @@ def _runtime_configuration(path: Path) -> dict[str, str]:
     for key in {
         "ZHIXU_ADMIN_WEB_ENABLED",
         "ZHIXU_LLM_LOCAL",
+        "ZHIXU_LLM_WEB_SEARCH",
         "ZHIXU_ALLOW_PERSONAL_LLM_EGRESS",
         "ZHIXU_ALLOW_CONFIDENTIAL_LOCAL_LLM",
     } & result.keys():
@@ -324,6 +326,14 @@ def _validate_llm(runtime: dict[str, str]) -> None:
     model = runtime.get("ZHIXU_LLM_MODEL", "")
     if bool(base_url) != bool(model):
         raise PreflightFailure("llm_configuration_incomplete")
+    web_search = runtime.get("ZHIXU_LLM_WEB_SEARCH", "").lower() in {
+        "1",
+        "on",
+        "true",
+        "yes",
+    }
+    if web_search and not base_url:
+        raise PreflightFailure("llm_web_search_without_llm")
     if not base_url:
         return
     local = runtime.get("ZHIXU_LLM_LOCAL", "").lower() in {"1", "on", "true", "yes"}

@@ -8,7 +8,7 @@ from datetime import timedelta
 from pydantic import BaseModel, ConfigDict, Field
 
 from zhixu.channels import MessageButton
-from zhixu.domain import CommandContext, TaskStatus
+from zhixu.domain import CommandContext, DataClassification, TaskStatus
 from zhixu.domain.errors import (
     InvalidModelOutput,
     LLMUnavailable,
@@ -16,6 +16,7 @@ from zhixu.domain.errors import (
     ValidationError,
 )
 from zhixu.ports import LLMCallReason, LLMRequest
+from zhixu.security import web_query_is_safe
 
 from .commands import (
     AcknowledgeReminder,
@@ -40,6 +41,20 @@ class _SummaryEnvelope(BaseModel):
     summary: str = Field(min_length=1, max_length=4000)
 
 
+class _WebSourceEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    title: str = Field(min_length=1, max_length=160)
+    url: str = Field(min_length=1, max_length=2048)
+
+
+class _WebAnswerEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    answer: str = Field(min_length=1, max_length=3200)
+    sources: list[_WebSourceEnvelope] = Field(max_length=5)
+
+
 _HELP_TEXT = """# 知序 · 帮助
 
 > 日程、待办、备忘、提醒与快速问答
@@ -57,7 +72,7 @@ _HELP_TEXT = """# 知序 · 帮助
 ## 查找与问答
 - `/搜索 关键词` — 搜索备忘
 - `/总结 关键词` — 总结相关备忘
-- `/问 问题` — 快速问答
+- `/问 问题` — 联网快速问答（只外发该问题，不读取备忘正文）
 
 ## 管理
 - `/完成 task_ID`
@@ -84,9 +99,10 @@ _HELP_BUTTONS = (
 _PUBLIC_GROUP_HELP_TEXT = """# 知序 · 公开群帮助
 
 - `/帮助` — 查看公开群能力
-- `/问 问题` — 快速问答
+- `/问 问题` — 联网快速问答
 
-> 公开群不能读取或写入任何个人数据库、内部群共享库或高敏感数据。"""
+> 公开群不能读取或写入任何个人数据库、内部群共享库或高敏感数据。
+> 请勿在联网问题中填写口令、密钥、银行卡号等敏感信息。"""
 
 _INTERNAL_GROUP_HELP_TEXT = """# 知序 · 内部群帮助
 
@@ -115,12 +131,14 @@ class AssistantEngine:
         classifier: ModelIntentClassifier | None = None,
         llm_gateway: LLMGateway | None = None,
         llm_model: str = "",
+        web_search_enabled: bool = False,
     ) -> None:
         self.services = services
         self.router = router
         self.classifier = classifier
         self.llm_gateway = llm_gateway
         self.llm_model = llm_model
+        self.web_search_enabled = web_search_enabled
 
     def handle(
         self,
@@ -498,6 +516,42 @@ class AssistantEngine:
                 )
                 if notes:
                     return self._notes_reply(notes, source="fts")
+                if (
+                    bool(arguments.get("web_search"))
+                    and self.web_search_enabled
+                    and self.llm_gateway is not None
+                    and self.llm_model
+                ):
+                    if not web_query_is_safe(query):
+                        return AssistantReply(
+                            "联网问题疑似包含隐私或密钥，已阻止外发。请删除具体值后重新提问。",
+                            "sensitive_egress_blocked",
+                            "deterministic",
+                        )
+                    try:
+                        response = self.llm_gateway.generate(
+                            owner_user_id=context.actor_user_id,
+                            request=LLMRequest(
+                                model=self.llm_model,
+                                system_prompt=(
+                                    "必须先使用 web_search 搜索公开网页，再用中文简洁回答。"
+                                    "区分事实与不确定信息，不得声称访问过未搜索的来源。"
+                                    "不要在正文末尾自行编造来源列表。"
+                                ),
+                                user_prompt=query,
+                                response_schema=_WebAnswerEnvelope.model_json_schema(),
+                                web_search=True,
+                            ),
+                            classification=DataClassification.PUBLIC,
+                            reason=LLMCallReason.GENERAL_QUESTION,
+                        )
+                        web_answer = _WebAnswerEnvelope.model_validate_json(
+                            response.content
+                        )
+                    except (LLMUnavailable, PermissionDenied, ValueError):
+                        web_answer = None
+                    if web_answer is not None:
+                        return self._web_answer_reply(web_answer)
                 if self.classifier is not None:
                     try:
                         proposed = self.classifier.classify(
@@ -526,3 +580,21 @@ class AssistantEngine:
             return AssistantReply("没有找到相关备忘。", "not_found", source)
         lines = [f"{note.title}：{note.body}" for note in notes]
         return AssistantReply("\n".join(lines), "ok", source)
+
+    @staticmethod
+    def _web_answer_reply(answer: _WebAnswerEnvelope) -> AssistantReply:
+        if not answer.sources:
+            return AssistantReply(
+                answer.answer + "\n\n（本次搜索未返回可验证来源）",
+                "ok",
+                "web",
+            )
+        source_lines = [
+            f"{index}. {source.title}\n{source.url}"
+            for index, source in enumerate(answer.sources, start=1)
+        ]
+        return AssistantReply(
+            answer.answer + "\n\n参考来源：\n" + "\n".join(source_lines),
+            "ok",
+            "web",
+        )

@@ -459,6 +459,63 @@ def test_general_answer_and_summary_use_strict_json(
     assert b"Synthetic concise answer." not in raw_database
 
 
+def test_explicit_question_uses_controlled_web_search_with_sources(
+    assistant_parts: tuple[ZhixuServices, FrozenClock, Database, CommandContext],
+) -> None:
+    services, clock, database, context = assistant_parts
+    client = FakeLLM(
+        [
+            json.dumps(
+                {
+                    "answer": "Synthetic current answer.",
+                    "sources": [
+                        {
+                            "title": "Synthetic official source",
+                            "url": "https://example.com/current",
+                        }
+                    ],
+                }
+            )
+        ]
+    )
+    llm = gateway(client, database, clock)
+    engine = AssistantEngine(
+        services=services,
+        router=RuleIntentRouter(clock),
+        llm_gateway=llm,
+        llm_model="fake-model",
+        web_search_enabled=True,
+    )
+
+    reply = engine.handle("/问 current synthetic fact", context)
+
+    assert reply.source == "web"
+    assert "Synthetic current answer." in reply.text
+    assert "https://example.com/current" in reply.text
+    assert client.requests[0].web_search is True
+    assert client.requests[0].user_prompt == "current synthetic fact"
+    assert "备忘" not in client.requests[0].user_prompt
+
+
+def test_explicit_web_search_blocks_likely_secret_before_llm_egress(
+    assistant_parts: tuple[ZhixuServices, FrozenClock, Database, CommandContext],
+) -> None:
+    services, clock, database, context = assistant_parts
+    client = FakeLLM([])
+    engine = AssistantEngine(
+        services=services,
+        router=RuleIntentRouter(clock),
+        llm_gateway=gateway(client, database, clock),
+        llm_model="fake-model",
+        web_search_enabled=True,
+    )
+
+    reply = engine.handle("/问 我的 API key 是 sk-synthetic1234567890", context)
+
+    assert reply.code == "sensitive_egress_blocked"
+    assert client.calls == 0
+
+
 def test_budget_timeout_and_circuit_breaker_fail_without_affecting_core(
     assistant_parts: tuple[ZhixuServices, FrozenClock, Database, CommandContext],
 ) -> None:
