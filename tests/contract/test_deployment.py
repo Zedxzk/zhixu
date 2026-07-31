@@ -89,6 +89,22 @@ def test_runtime_socket_directories_cannot_be_replaced_by_clients() -> None:
     assert "0770 /run/zhixu" not in bootstrap
 
 
+def test_release_sync_applies_the_catch_all_exclusion_last() -> None:
+    sync = (
+        ROOT / "scripts" / "deploy" / "05_sync.sh"
+    ).read_text(encoding="utf-8")
+    catch_all = sync.index("--exclude='*'")
+    assert sync.index("--include='/pyproject.toml'") < catch_all
+    for directory, descendant_pattern in (
+        ("src", "src/***"),
+        ("scripts", "scripts/deploy/***"),
+        ("deploy", "deploy/***"),
+    ):
+        parent = sync.index(f"--include='/{directory}/'")
+        descendants = sync.index(f"--include='/{descendant_pattern}'")
+        assert parent < descendants < catch_all
+
+
 def test_every_systemd_entrypoint_exists_in_the_package_manifest() -> None:
     manifest = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     scripts = set(manifest["project"]["scripts"])

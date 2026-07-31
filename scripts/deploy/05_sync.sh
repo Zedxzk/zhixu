@@ -32,14 +32,16 @@ rsync \
   --archive \
   --delete \
   --prune-empty-dirs \
-  --exclude='*' \
   --include='/pyproject.toml' \
   --include='/requirements.lock' \
   --include='/README.md' \
   --include='/LICENSE' \
   --include='/.env.example' \
+  --include='/src/' \
   --include='/src/***' \
+  --include='/scripts/' \
   --include='/scripts/deploy/***' \
+  --include='/deploy/' \
   --include='/deploy/***' \
   --include='/docs/' \
   --include='/docs/api.md' \
@@ -47,6 +49,7 @@ rsync \
   --include='/docs/deployment.md' \
   --include='/docs/operations/***' \
   --include='/docs/security/***' \
+  --exclude='*' \
   "${source_dir}/" "${destination}/"
 
 if find "${destination}" -type f \
