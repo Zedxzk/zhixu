@@ -11,6 +11,7 @@ from zhixu.adapters.storage.sqlite import (
     ChannelRouteStore,
     Database,
     GrantRepository,
+    GroupMode,
     NoteRepository,
     ReminderRepository,
     TaskRepository,
@@ -25,6 +26,7 @@ from zhixu.application import (
     RuleIntentRouter,
     ZhixuServices,
 )
+from zhixu.application.commands import CreateNote
 from zhixu.channels import ChannelCapabilities
 from zhixu.delivery import OutboxStore, QuotaManager, QuotaRule
 from zhixu.delivery.quota import QuotaWindow
@@ -63,8 +65,8 @@ def test_qq_network_database_is_separate_and_duplicate_events_are_idempotent(
 ) -> None:
     application_database = Database(tmp_path / "application.sqlite3")
     qq_database = Database(tmp_path / "qq.sqlite3")
-    assert application_database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9]
-    assert qq_database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    assert application_database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    assert qq_database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     references = OpaqueReferenceFactory(b"R" * 32)
     cipher = FieldCipher(b"E" * 32)
     raw_actor = "synthetic-qq-actor"
@@ -414,3 +416,260 @@ def test_internal_channel_api_rejects_wrong_service_identity(tmp_path: Path) -> 
         body=b"{}",
     )
     assert response.status == 403
+
+
+def test_group_modes_enforce_public_isolation_and_internal_member_acl(
+    tmp_path: Path,
+) -> None:
+    database = Database(tmp_path / "application.sqlite3")
+    database.migrate()
+    references = OpaqueReferenceFactory(b"R" * 32)
+    policy = PolicyEngine()
+    users = UserRepository(database)
+    for user_id in ("user_owner", "user_outsider"):
+        users.create(
+            User(user_id, f"Synthetic {user_id}", UserStatus.ACTIVE, NOW),
+            policy.require(
+                CommandContext(actor_user_id=user_id, now=NOW),
+                Action.CREATE,
+                ResourceRef("user", user_id, user_id),
+            ),
+        )
+        users.bind_identity(
+            ExternalIdentity(
+                f"identity_{user_id}",
+                user_id,
+                "qq",
+                "qq_synthetic",
+                EncryptedIdentifier(f"enc:{user_id}"),
+                f"actor_{user_id}",
+                NOW,
+            ),
+            policy.require(
+                CommandContext(actor_user_id=user_id, now=NOW),
+                Action.CREATE,
+                ResourceRef("external_identity", f"identity_{user_id}", user_id),
+            ),
+        )
+    clock = FrozenClock(NOW)
+    services = ZhixuServices(
+        agenda=AgendaRepository(database),
+        tasks=TaskRepository(database),
+        notes=NoteRepository(database),
+        reminders=ReminderRepository(database),
+        policy=policy,
+        clock=clock,
+    )
+    services.create_note(
+        CreateNote("Private needle", "private needle content"),
+        CommandContext(actor_user_id="user_owner"),
+    )
+    routes = ChannelRouteStore(database)
+    internal = InternalChannelAPI(
+        service_token=SERVICE_TOKEN,
+        users=users,
+        routes=routes,
+        receipts=InboundReceiptStore(database, references),
+        assistant=AssistantEngine(
+            services=services,
+            router=RuleIntentRouter(clock),
+            classifier=ReminderClassifierStub(),  # type: ignore[arg-type]
+        ),
+        outbox=OutboxStore(database),
+        quota=QuotaManager(
+            database,
+            (QuotaRule("provider", QuotaWindow.SECOND, 100),),
+        ),
+        references=references,
+        capabilities={"qq": ChannelCapabilities(outbound_text=True, groups=True)},
+    )
+    headers = {"authorization": f"Bearer {SERVICE_TOKEN}"}
+
+    def event(event_id: str, actor: str, text: str) -> dict[str, object]:
+        return {
+            "event_id": event_id,
+            "channel": "qq",
+            "channel_account": "qq_synthetic",
+            "actor_ref": actor,
+            "conversation_ref": "group_synthetic",
+            "conversation_kind": "group",
+            "message_kind": "text",
+            "text": text,
+            "received_at": NOW.isoformat(),
+            "mentioned": False,
+        }
+
+    disabled = internal.dispatch(
+        "POST",
+        "/internal/channel/event",
+        headers=headers,
+        body=json.dumps(event("event_disabled", "actor_user_owner", "/帮助")).encode(),
+    )
+    assert disabled.body == {
+        "accepted": False,
+        "reason_code": "conversation_disabled",
+    }
+    assert routes.set_commands_enabled(
+        channel="qq",
+        channel_account="qq_synthetic",
+        opaque_ref="group_synthetic",
+        enabled=True,
+        actor_user_id="user_owner",
+        now=NOW,
+        group_mode=GroupMode.PUBLIC,
+    )
+    public_private_command = internal.dispatch(
+        "POST",
+        "/internal/channel/event",
+        headers=headers,
+        body=json.dumps(
+            event("event_public_private", "actor_user_owner", "/搜索 needle")
+        ).encode(),
+    )
+    assert public_private_command.body == {
+        "accepted": False,
+        "reason_code": "group_permission_denied",
+    }
+    public_help = internal.dispatch(
+        "POST",
+        "/internal/channel/event",
+        headers=headers,
+        body=json.dumps(event("event_public_help", "actor_user_owner", "/帮助")).encode(),
+    )
+    assert public_help.status == 202
+    public_delivery = internal.dispatch(
+        "POST",
+        "/internal/channel/delivery/claim",
+        headers=headers,
+        body=json.dumps(
+            {
+                "channel": "qq",
+                "channel_account": "qq_synthetic",
+                "worker_id": "worker_synthetic",
+            }
+        ).encode(),
+    ).body["delivery"]
+    assert "公开群不能读取或写入任何个人数据库" in public_delivery["text"]
+    internal.dispatch(
+        "POST",
+        "/internal/channel/delivery/complete",
+        headers=headers,
+        body=json.dumps(
+            {
+                "delivery_id": public_delivery["id"],
+                "lease_token": public_delivery["lease_token"],
+                "ok": True,
+            }
+        ).encode(),
+    )
+
+    assert routes.set_commands_enabled(
+        channel="qq",
+        channel_account="qq_synthetic",
+        opaque_ref="group_synthetic",
+        enabled=True,
+        actor_user_id="user_owner",
+        now=NOW,
+        group_mode=GroupMode.INTERNAL,
+        member_user_ids=("user_owner",),
+    )
+    outsider = internal.dispatch(
+        "POST",
+        "/internal/channel/event",
+        headers=headers,
+        body=json.dumps(event("event_outsider", "actor_user_outsider", "/帮助")).encode(),
+    )
+    assert outsider.body == {
+        "accepted": False,
+        "reason_code": "group_permission_denied",
+    }
+    created = internal.dispatch(
+        "POST",
+        "/internal/channel/event",
+        headers=headers,
+        body=json.dumps(
+            event("event_shared_create", "actor_user_owner", "/记 shared needle")
+        ).encode(),
+    )
+    assert created.status == 202
+    route = routes.get("qq", "qq_synthetic", "group_synthetic")
+    assert route is not None and route.shared_owner_user_id is not None
+    with database.connect() as connection:
+        row = connection.execute(
+            "SELECT owner_user_id,creator_user_id FROM notes WHERE title='shared needle'"
+        ).fetchone()
+    assert row["owner_user_id"] == route.shared_owner_user_id
+    assert row["creator_user_id"] == "user_owner"
+    created_delivery = internal.dispatch(
+        "POST",
+        "/internal/channel/delivery/claim",
+        headers=headers,
+        body=json.dumps(
+            {
+                "channel": "qq",
+                "channel_account": "qq_synthetic",
+                "worker_id": "worker_synthetic",
+            }
+        ).encode(),
+    ).body["delivery"]
+    assert "已保存群共享备忘" in created_delivery["text"]
+    internal.dispatch(
+        "POST",
+        "/internal/channel/delivery/complete",
+        headers=headers,
+        body=json.dumps(
+            {
+                "delivery_id": created_delivery["id"],
+                "lease_token": created_delivery["lease_token"],
+                "ok": True,
+            }
+        ).encode(),
+    )
+
+    group_search = internal.dispatch(
+        "POST",
+        "/internal/channel/event",
+        headers=headers,
+        body=json.dumps(
+            event("event_shared_search", "actor_user_owner", "/搜索 needle")
+        ).encode(),
+    )
+    assert group_search.status == 202
+    search_delivery = internal.dispatch(
+        "POST",
+        "/internal/channel/delivery/claim",
+        headers=headers,
+        body=json.dumps(
+            {
+                "channel": "qq",
+                "channel_account": "qq_synthetic",
+                "worker_id": "worker_synthetic",
+            }
+        ).encode(),
+    ).body["delivery"]
+    assert "shared needle：shared needle" in search_delivery["text"]
+    assert "private needle content" not in search_delivery["text"]
+
+    reminder_event = event(
+        "event_shared_reminder",
+        "actor_user_owner",
+        "创建明天提醒Synthetic member处理事项",
+    )
+    reminder_event["mentioned"] = True
+    reminder_response = internal.dispatch(
+        "POST",
+        "/internal/channel/event",
+        headers=headers,
+        body=json.dumps(reminder_event).encode(),
+    )
+    assert reminder_response.status == 202
+    with database.connect() as connection:
+        reminder_row = connection.execute(
+            """
+            SELECT owner_user_id,creator_user_id,target_ref
+            FROM reminders WHERE title='提交合成报告'
+            """
+        ).fetchone()
+    assert reminder_row["owner_user_id"] == route.shared_owner_user_id
+    assert reminder_row["creator_user_id"] == "user_owner"
+    assert reminder_row["target_ref"] == "group_synthetic"

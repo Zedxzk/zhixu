@@ -41,6 +41,7 @@ class Task:
     id: str
     owner_user_id: str
     title: str
+    creator_user_id: str | None = None
     status: TaskStatus = TaskStatus.PENDING
     priority: int = 0
     due_at: datetime | None = None
@@ -53,6 +54,8 @@ class Task:
     def __post_init__(self) -> None:
         if not self.id.strip() or not self.owner_user_id.strip() or not self.title.strip():
             raise ValidationError("task id, owner, and title are required")
+        if self.creator_user_id is not None and not self.creator_user_id.strip():
+            raise ValidationError("task creator must not be empty")
         if not 0 <= self.priority <= 4:
             raise ValidationError("priority must be between 0 and 4")
         if self.due_at is not None:

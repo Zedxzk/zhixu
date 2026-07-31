@@ -71,6 +71,7 @@ class AgendaItem:
     start_at: datetime
     end_at: datetime
     timezone: str
+    creator_user_id: str | None = None
     all_day: bool = False
     description: str = ""
     classification: DataClassification = DataClassification.PERSONAL
@@ -82,6 +83,8 @@ class AgendaItem:
     def __post_init__(self) -> None:
         if not self.id.strip() or not self.owner_user_id.strip() or not self.title.strip():
             raise ValidationError("agenda id, owner, and title are required")
+        if self.creator_user_id is not None and not self.creator_user_id.strip():
+            raise ValidationError("agenda creator must not be empty")
         require_aware(self.start_at, "start_at")
         require_aware(self.end_at, "end_at")
         require_timezone(self.timezone)

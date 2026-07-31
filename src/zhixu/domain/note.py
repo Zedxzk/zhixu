@@ -42,6 +42,7 @@ class Note:
     owner_user_id: str
     title: str
     body: str
+    creator_user_id: str | None = None
     tags: tuple[str, ...] = ()
     attachments: tuple[NoteAttachment, ...] = ()
     classification: DataClassification = DataClassification.PERSONAL
@@ -52,6 +53,8 @@ class Note:
     def __post_init__(self) -> None:
         if not self.id.strip() or not self.owner_user_id.strip():
             raise ValidationError("note id and owner are required")
+        if self.creator_user_id is not None and not self.creator_user_id.strip():
+            raise ValidationError("note creator must not be empty")
         if not self.title.strip() and not self.body.strip():
             raise ValidationError("note title or body is required")
         if self.version < 1:

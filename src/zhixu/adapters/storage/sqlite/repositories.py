@@ -433,6 +433,11 @@ class AgendaRepository:
         return AgendaItem(
             id=str(row["id"]),
             owner_user_id=str(row["owner_user_id"]),
+            creator_user_id=(
+                str(row["creator_user_id"])
+                if row["creator_user_id"] is not None
+                else str(row["owner_user_id"])
+            ),
             title=str(row["title"]),
             description=str(row["description"]),
             start_at=start_at,
@@ -488,13 +493,14 @@ class AgendaRepository:
                 connection.execute(
                     """
                     INSERT INTO agenda_items(
-                        id,owner_user_id,title,description,start_at,end_at,timezone,
+                        id,owner_user_id,creator_user_id,title,description,start_at,end_at,timezone,
                         all_day,classification,version,created_at,updated_at
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         stored.id,
                         stored.owner_user_id,
+                        stored.creator_user_id,
                         stored.title,
                         stored.description,
                         _dump_datetime(stored.start_at),
@@ -728,6 +734,11 @@ class TaskRepository:
         return Task(
             id=str(row["id"]),
             owner_user_id=str(row["owner_user_id"]),
+            creator_user_id=(
+                str(row["creator_user_id"])
+                if row["creator_user_id"] is not None
+                else str(row["owner_user_id"])
+            ),
             title=str(row["title"]),
             description=str(row["description"]),
             status=TaskStatus(str(row["status"])),
@@ -759,13 +770,14 @@ class TaskRepository:
                 connection.execute(
                     """
                     INSERT INTO tasks(
-                        id,owner_user_id,title,description,status,priority,due_at,
+                        id,owner_user_id,creator_user_id,title,description,status,priority,due_at,
                         classification,version,created_at,updated_at
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         stored.id,
                         stored.owner_user_id,
+                        stored.creator_user_id,
                         stored.title,
                         stored.description,
                         stored.status.value,
@@ -914,6 +926,11 @@ class NoteRepository:
         return Note(
             id=str(row["id"]),
             owner_user_id=str(row["owner_user_id"]),
+            creator_user_id=(
+                str(row["creator_user_id"])
+                if row["creator_user_id"] is not None
+                else str(row["owner_user_id"])
+            ),
             title=str(row["title"]),
             body=str(row["body"]),
             tags=cls._tags(connection, str(row["id"])),
@@ -1008,12 +1025,14 @@ class NoteRepository:
                 connection.execute(
                     """
                     INSERT INTO notes(
-                        id,owner_user_id,title,body,classification,version,created_at,updated_at
-                    ) VALUES(?,?,?,?,?,?,?,?)
+                        id,owner_user_id,creator_user_id,title,body,classification,
+                        version,created_at,updated_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         stored.id,
                         stored.owner_user_id,
+                        stored.creator_user_id,
                         stored.title,
                         stored.body,
                         int(stored.classification),
@@ -1156,6 +1175,11 @@ class ReminderRepository:
         return Reminder(
             id=str(row["id"]),
             owner_user_id=str(row["owner_user_id"]),
+            creator_user_id=(
+                str(row["creator_user_id"])
+                if row["creator_user_id"] is not None
+                else str(row["owner_user_id"])
+            ),
             title=str(row["title"]),
             fire_at=fire_at,
             target_ref=str(row["target_ref"]),
@@ -1193,13 +1217,14 @@ class ReminderRepository:
                 connection.execute(
                     """
                     INSERT INTO reminders(
-                        id,owner_user_id,title,fire_at,target_ref,status,missed_policy,
+                        id,owner_user_id,creator_user_id,title,fire_at,target_ref,status,missed_policy,
                         classification,related_kind,related_id,version,created_at,updated_at
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         stored.id,
                         stored.owner_user_id,
+                        stored.creator_user_id,
                         stored.title,
                         _dump_datetime(stored.fire_at),
                         stored.target_ref,

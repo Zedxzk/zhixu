@@ -22,7 +22,7 @@ from zhixu.application import (
     RuleIntentRouter,
     ZhixuServices,
 )
-from zhixu.application.commands import CreateAgenda
+from zhixu.application.commands import CreateAgenda, CreateNote
 from zhixu.domain import (
     Action,
     AuthenticationStrength,
@@ -85,7 +85,7 @@ def assistant_parts(
     tmp_path: Path,
 ) -> tuple[ZhixuServices, FrozenClock, Database, CommandContext]:
     database = Database(tmp_path / "zhixu.sqlite3")
-    assert database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    assert database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     clock = FrozenClock(NOW)
     users = UserRepository(database)
     policy = PolicyEngine()
@@ -149,6 +149,33 @@ def engine_with(
         llm_gateway=llm,
         llm_model="fake-model",
     )
+
+
+def test_public_group_answer_and_help_never_search_private_notes(
+    assistant_parts: tuple[ZhixuServices, FrozenClock, Database, CommandContext],
+) -> None:
+    services, clock, _database, private_context = assistant_parts
+    services.create_note(
+        CreateNote("Private needle", "private needle must never reach a public group"),
+        private_context,
+    )
+    engine = AssistantEngine(
+        services=services,
+        router=RuleIntentRouter(clock),
+    )
+    public_context = CommandContext(
+        actor_user_id="user_test",
+        roles=frozenset({"public_group_guest"}),
+        request_channel=RequestChannel.GROUP_CHAT,
+    )
+
+    answer = engine.handle("/问 private needle", public_context)
+    help_reply = engine.handle("/帮助", public_context)
+
+    assert answer.text == "没有找到确定性答案。"
+    assert "private needle must never" not in answer.text
+    assert "公开群不能读取或写入任何个人数据库" in help_reply.text
+    assert help_reply.buttons == ()
 
 
 def test_fixed_commands_stay_deterministic_but_reminders_use_model(

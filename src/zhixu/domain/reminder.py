@@ -29,6 +29,7 @@ class Reminder:
     title: str
     fire_at: datetime
     target_ref: str
+    creator_user_id: str | None = None
     status: ReminderStatus = ReminderStatus.PENDING
     missed_policy: MissedReminderPolicy = MissedReminderPolicy.FIRE
     classification: DataClassification = DataClassification.PERSONAL
@@ -42,6 +43,8 @@ class Reminder:
         required = (self.id, self.owner_user_id, self.title, self.target_ref)
         if any(not value.strip() for value in required):
             raise ValidationError("reminder id, owner, title, and target are required")
+        if self.creator_user_id is not None and not self.creator_user_id.strip():
+            raise ValidationError("reminder creator must not be empty")
         require_aware(self.fire_at, "fire_at")
         if (self.related_kind is None) != (self.related_id is None):
             raise ValidationError("related kind and id must be supplied together")

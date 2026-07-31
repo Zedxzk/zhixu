@@ -28,6 +28,7 @@ class CreateAgenda:
     all_day: bool = False
     recurrence_rule: str | None = None
     classification: DataClassification = DataClassification.PERSONAL
+    private: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +66,7 @@ class CreateTask:
     priority: int = 0
     due_at: datetime | None = None
     classification: DataClassification = DataClassification.PERSONAL
+    private: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +106,7 @@ class CreateNote:
     tags: tuple[str, ...] = ()
     attachments: tuple[NoteAttachment, ...] = ()
     classification: DataClassification = DataClassification.PERSONAL
+    private: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,6 +134,7 @@ class CreateReminder:
     classification: DataClassification = DataClassification.PERSONAL
     related_kind: str | None = None
     related_id: str | None = None
+    private: bool = False
 
 
 @dataclass(frozen=True, slots=True)

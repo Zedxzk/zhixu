@@ -42,6 +42,8 @@ class RequestChannel(StrEnum):
 class CommandContext:
     actor_user_id: str
     roles: frozenset[str] = field(default_factory=frozenset)
+    shared_owner_user_id: str | None = None
+    readable_shared_owner_user_ids: tuple[str, ...] = ()
     authentication: AuthenticationStrength = AuthenticationStrength.CHANNEL
     request_channel: RequestChannel = RequestChannel.PRIVATE_CHAT
     confirmed: bool = False
@@ -50,6 +52,14 @@ class CommandContext:
     def __post_init__(self) -> None:
         if not self.actor_user_id.strip():
             raise ValidationError("actor_user_id is required")
+        if self.shared_owner_user_id is not None and not self.shared_owner_user_id.strip():
+            raise ValidationError("shared owner user id must not be empty")
+        if any(not value.strip() for value in self.readable_shared_owner_user_ids):
+            raise ValidationError("readable shared owner ids must not be empty")
+        if len(self.readable_shared_owner_user_ids) != len(
+            set(self.readable_shared_owner_user_ids)
+        ):
+            raise ValidationError("readable shared owner ids must not contain duplicates")
         if self.now is not None and self.now.tzinfo is None:
             raise ValidationError("context time must be timezone-aware")
 
@@ -97,8 +107,12 @@ class PolicyEngine:
             raise PermissionDenied(f"{action.value} is unavailable for ordinary storage")
 
         is_owner = context.actor_user_id == resource.owner_user_id
+        is_internal_group_resource = (
+            "shared_workspace_member" in context.roles
+            and resource.owner_user_id in context.readable_shared_owner_user_ids
+        )
         has_explicit_grant = self._grant_lookup(context.actor_user_id, action, resource)
-        if not is_owner and not has_explicit_grant:
+        if not is_owner and not is_internal_group_resource and not has_explicit_grant:
             raise PermissionDenied("the actor has no grant for this resource")
 
         if (

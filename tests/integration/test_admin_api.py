@@ -68,7 +68,7 @@ class AdminParts:
 @pytest.fixture
 def admin(tmp_path: Path) -> AdminParts:
     database = Database(tmp_path / "zhixu.sqlite3")
-    assert database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    assert database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     clock = FrozenClock(NOW)
     grants = GrantRepository(database)
     policy = PolicyEngine(grants.has_grant)
@@ -97,7 +97,7 @@ def admin(tmp_path: Path) -> AdminParts:
     )
     reads = AdminReadStore(database)
     outbound_database = Database(tmp_path / "outbound-targets.sqlite3")
-    assert outbound_database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    assert outbound_database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     outbound_targets = OutboundTargetStore(
         outbound_database,
         FieldCipher(b"o" * 32),
@@ -255,6 +255,62 @@ def _bind_private_qq_target(admin: AdminParts, opaque_ref: str) -> str:
     )
     assert linked.status == 201
     return str(linked.body["id"])
+
+
+def test_group_route_configuration_sets_mode_members_and_owner(admin: AdminParts) -> None:
+    opaque_ref = "qqc_synthetic_internal_group"
+    admin.routes.observe(
+        channel="qq",
+        channel_account="account_synthetic",
+        opaque_ref=opaque_ref,
+        kind="group",
+        now=NOW,
+    )
+    configured = admin.api.dispatch(
+        "PATCH",
+        "/admin/channel-routes",
+        headers=admin.headers,
+        body=_json(
+            {
+                "channel": "qq",
+                "channel_account": "account_synthetic",
+                "opaque_ref": opaque_ref,
+                "commands_enabled": True,
+                "group_mode": "internal",
+                "member_user_ids": ["user_owner", "user_other"],
+            }
+        ),
+    )
+    assert configured.status == 200
+    listed = admin.api.dispatch(
+        "GET",
+        "/admin/channel-routes",
+        headers=admin.headers,
+    )
+    route = next(item for item in listed.body if item["opaque_ref"] == opaque_ref)
+    assert route["group_mode"] == "internal"
+    assert route["member_user_ids"] == ["user_other", "user_owner"]
+
+    other_token = admin.sessions.create(
+        user_id="user_other",
+        authentication=AuthenticationStrength.STEP_UP,
+        now=NOW,
+    )
+    denied = admin.api.dispatch(
+        "PATCH",
+        "/admin/channel-routes",
+        headers={"Authorization": f"Bearer {other_token}"},
+        body=_json(
+            {
+                "channel": "qq",
+                "channel_account": "account_synthetic",
+                "opaque_ref": opaque_ref,
+                "commands_enabled": True,
+                "group_mode": "public",
+            }
+        ),
+    )
+    assert denied.status == 403
 
 
 def test_health_and_admin_status_are_minimal_and_redacted(admin: AdminParts) -> None:

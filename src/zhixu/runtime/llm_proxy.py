@@ -27,8 +27,14 @@ class DeepSeekProxyServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address: tuple[str, int], *, api_key: str, model: str) -> None:
-        self.api_key = api_key
+    def __init__(
+        self,
+        address: tuple[str, int],
+        *,
+        provider_credential: str,
+        model: str,
+    ) -> None:
+        self.provider_credential = provider_credential
         self.model = model
         self.opener = urllib.request.build_opener(
             urllib.request.ProxyHandler({}),
@@ -109,7 +115,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
             "https://api.deepseek.com/chat/completions",
             data=payload,
             headers={
-                "Authorization": f"Bearer {server.api_key}",
+                "Authorization": f"Bearer {server.provider_credential}",
                 "Content-Type": "application/json",
             },
             method="POST",
@@ -158,7 +164,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("LLM proxy model is not allowed")
     server = DeepSeekProxyServer(
         (str(address), args.port),
-        api_key=read_text_credential(args.api_key_file),
+        provider_credential=read_text_credential(args.api_key_file),
         model=args.model,
     )
 

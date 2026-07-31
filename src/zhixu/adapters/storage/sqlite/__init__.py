@@ -10,7 +10,7 @@ from .admin_store import (
 )
 from .admin_views import AdminReadStore, acl_action, acl_resource
 from .backup import ApplicationBackupManager
-from .channel_routes import ChannelRoute, ChannelRouteStore
+from .channel_routes import ChannelRoute, ChannelRouteStore, GroupMode
 from .database import Database, MigrationDriftError
 from .llm_usage import SQLiteLLMUsage
 from .repositories import (
@@ -36,6 +36,7 @@ __all__ = [
     "ChannelRouteStore",
     "Database",
     "GrantRepository",
+    "GroupMode",
     "IdentityLinkStore",
     "LinkChallenge",
     "MigrationDriftError",

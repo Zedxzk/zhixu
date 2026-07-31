@@ -16,6 +16,7 @@ from zhixu.domain import (
     RecurrenceException,
     RecurrenceRule,
     Reminder,
+    RequestChannel,
     ResourceRef,
     Task,
 )
@@ -80,6 +81,18 @@ class ZhixuServices:
         return replace(context, now=self.clock.now())
 
     @staticmethod
+    def _create_owner(context: CommandContext, *, private: bool) -> str:
+        if not private and context.shared_owner_user_id is not None:
+            return context.shared_owner_user_id
+        return context.actor_user_id
+
+    @staticmethod
+    def _read_owners(context: CommandContext) -> tuple[str, ...]:
+        if context.request_channel is RequestChannel.GROUP_CHAT:
+            return context.readable_shared_owner_user_ids
+        return (context.actor_user_id, *context.readable_shared_owner_user_ids)
+
+    @staticmethod
     def _ref(
         kind: str,
         resource_id: str,
@@ -98,7 +111,8 @@ class ZhixuServices:
         )
         item = AgendaItem(
             id=item_id,
-            owner_user_id=current.actor_user_id,
+            owner_user_id=self._create_owner(current, private=command.private),
+            creator_user_id=current.actor_user_id,
             title=command.title,
             description=command.description,
             start_at=command.start_at,
@@ -205,7 +219,8 @@ class ZhixuServices:
         current = self._context(context)
         task = Task(
             id=self.id_factory("task"),
-            owner_user_id=current.actor_user_id,
+            owner_user_id=self._create_owner(current, private=command.private),
+            creator_user_id=current.actor_user_id,
             title=command.title,
             description=command.description,
             priority=command.priority,
@@ -300,7 +315,8 @@ class ZhixuServices:
         current = self._context(context)
         note = Note(
             id=self.id_factory("note"),
-            owner_user_id=current.actor_user_id,
+            owner_user_id=self._create_owner(current, private=command.private),
+            creator_user_id=current.actor_user_id,
             title=command.title,
             body=command.body,
             tags=command.tags,
@@ -361,7 +377,8 @@ class ZhixuServices:
         current = self._context(context)
         reminder = Reminder(
             id=self.id_factory("reminder"),
-            owner_user_id=current.actor_user_id,
+            owner_user_id=self._create_owner(current, private=command.private),
+            creator_user_id=current.actor_user_id,
             title=command.title,
             fire_at=command.fire_at,
             target_ref=command.target_ref,
@@ -464,21 +481,26 @@ class ZhixuServices:
         context: CommandContext,
     ) -> list:
         current = self._context(context)
-        self.policy.require(
-            current,
-            Action.READ,
-            self._ref(
-                "agenda_collection",
-                current.actor_user_id,
-                current.actor_user_id,
-                DataClassification.PERSONAL,
-            ),
-        )
-        occurrences = self.agenda.occurrences(
-            current.actor_user_id,
-            query.window_start,
-            query.window_end,
-        )
+        occurrences = []
+        for owner_user_id in self._read_owners(current):
+            self.policy.require(
+                current,
+                Action.READ,
+                self._ref(
+                    "agenda_collection",
+                    owner_user_id,
+                    owner_user_id,
+                    DataClassification.PERSONAL,
+                ),
+            )
+            occurrences.extend(
+                self.agenda.occurrences(
+                    owner_user_id,
+                    query.window_start,
+                    query.window_end,
+                )
+            )
+        occurrences.sort(key=lambda item: (item.start_at, item.agenda_item_id))
         checked: set[str] = set()
         for occurrence in occurrences:
             if occurrence.agenda_item_id in checked:
@@ -496,17 +518,19 @@ class ZhixuServices:
 
     def list_tasks(self, query: ListTasks, context: CommandContext) -> list[Task]:
         current = self._context(context)
-        self.policy.require(
-            current,
-            Action.READ,
-            self._ref(
-                "task_collection",
-                current.actor_user_id,
-                current.actor_user_id,
-                DataClassification.PERSONAL,
-            ),
-        )
-        tasks = self.tasks.list_for_owner(current.actor_user_id)
+        tasks: list[Task] = []
+        for owner_user_id in self._read_owners(current):
+            self.policy.require(
+                current,
+                Action.READ,
+                self._ref(
+                    "task_collection",
+                    owner_user_id,
+                    owner_user_id,
+                    DataClassification.PERSONAL,
+                ),
+            )
+            tasks.extend(self.tasks.list_for_owner(owner_user_id))
         for task in tasks:
             self.policy.require(
                 current,
@@ -523,7 +547,9 @@ class ZhixuServices:
         context: CommandContext,
     ) -> list[Reminder]:
         current = self._context(context)
-        reminders = self.reminders.list_for_owner(current.actor_user_id)
+        reminders: list[Reminder] = []
+        for owner_user_id in self._read_owners(current):
+            reminders.extend(self.reminders.list_for_owner(owner_user_id))
         for reminder in reminders:
             self.policy.require(
                 current,
@@ -545,17 +571,20 @@ class ZhixuServices:
 
     def search_notes(self, query: SearchNotes, context: CommandContext) -> list[Note]:
         current = self._context(context)
-        self.policy.require(
-            current,
-            Action.READ,
-            self._ref(
-                "note_collection",
-                current.actor_user_id,
-                current.actor_user_id,
-                DataClassification.PERSONAL,
-            ),
-        )
-        notes = self.notes.search(current.actor_user_id, query.text, limit=query.limit)
+        notes: list[Note] = []
+        for owner_user_id in self._read_owners(current):
+            self.policy.require(
+                current,
+                Action.READ,
+                self._ref(
+                    "note_collection",
+                    owner_user_id,
+                    owner_user_id,
+                    DataClassification.PERSONAL,
+                ),
+            )
+            notes.extend(self.notes.search(owner_user_id, query.text, limit=query.limit))
+        notes = notes[: query.limit]
         visible: list[Note] = []
         for note in notes:
             self.policy.require(

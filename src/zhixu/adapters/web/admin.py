@@ -20,6 +20,7 @@ from zhixu.adapters.storage.sqlite import (
     AdminSessionStore,
     ChannelRouteStore,
     GrantRepository,
+    GroupMode,
     IdentityLinkStore,
     UserRepository,
     acl_action,
@@ -283,6 +284,8 @@ class AdminAPI:
                                 "opaque_ref": route.opaque_ref,
                                 "kind": route.kind,
                                 "commands_enabled": route.commands_enabled,
+                                "group_mode": route.group_mode.value,
+                                "member_user_ids": list(route.member_user_ids),
                                 "last_seen_at": route.last_seen_at.isoformat(),
                             }
                             for route in self.channel_routes.list()
@@ -968,6 +971,7 @@ class AdminAPI:
                 "opaque_ref",
                 "commands_enabled",
             },
+            optional={"group_mode", "member_user_ids"},
         )
         opaque_ref = self._string(data, "opaque_ref", maximum=160)
         self.policy.require(
@@ -986,6 +990,14 @@ class AdminAPI:
             enabled=self._boolean(data, "commands_enabled", default=False),
             actor_user_id=context.actor_user_id,
             now=self.clock.now(),
+            group_mode=(
+                GroupMode(
+                    self._string(data, "group_mode", maximum=40)
+                )
+                if "group_mode" in data
+                else None
+            ),
+            member_user_ids=self._string_tuple(data, "member_user_ids", maximum=160),
         )
         if not changed:
             raise NotFoundError("channel route was not found")
@@ -1544,6 +1556,27 @@ class AdminAPI:
             raise ValidationError(f"missing field: {sorted(missing)[0]}")
         if extra:
             raise ValidationError(f"unknown field: {sorted(extra)[0]}")
+
+    @staticmethod
+    def _string_tuple(
+        data: Mapping[str, object],
+        key: str,
+        *,
+        maximum: int,
+    ) -> tuple[str, ...] | None:
+        if key not in data:
+            return None
+        value = data[key]
+        if not isinstance(value, list):
+            raise ValidationError(f"{key} must be a list")
+        result: list[str] = []
+        for item in value:
+            if not isinstance(item, str) or not item.strip() or len(item) > maximum:
+                raise ValidationError(f"{key} contains an invalid value")
+            result.append(item)
+        if len(result) != len(set(result)):
+            raise ValidationError(f"{key} must not contain duplicates")
+        return tuple(result)
 
     @staticmethod
     def _string(

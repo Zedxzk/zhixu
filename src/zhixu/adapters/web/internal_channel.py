@@ -11,8 +11,13 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from zhixu.adapters.channels import InboundReceiptStore
-from zhixu.adapters.storage.sqlite import ChannelRouteStore, UserRepository
+from zhixu.adapters.storage.sqlite import (
+    ChannelRouteStore,
+    GroupMode,
+    UserRepository,
+)
 from zhixu.application import AssistantEngine, AssistantReply
+from zhixu.application.intents import IntentAction
 from zhixu.channels import (
     ChannelCapabilities,
     ChannelDeliveryResult,
@@ -26,6 +31,7 @@ from zhixu.domain import (
     AuthenticationStrength,
     CommandContext,
     RequestChannel,
+    UserStatus,
 )
 from zhixu.domain.errors import ConflictError, PermissionDenied, ValidationError
 from zhixu.security import OpaqueReferenceFactory
@@ -77,6 +83,9 @@ class ChannelAdmissionDecision:
     accepted: bool
     user_id: str | None
     reason_code: str
+    roles: frozenset[str] = frozenset()
+    shared_owner_user_id: str | None = None
+    readable_shared_owner_user_ids: tuple[str, ...] = ()
 
 
 class InternalChannelAPI:
@@ -180,6 +189,11 @@ class InternalChannelAPI:
                 )
             context = CommandContext(
                 actor_user_id=decision.user_id,
+                roles=decision.roles,
+                shared_owner_user_id=decision.shared_owner_user_id,
+                readable_shared_owner_user_ids=(
+                    decision.readable_shared_owner_user_ids
+                ),
                 authentication=AuthenticationStrength.CHANNEL,
                 request_channel=(
                     RequestChannel.GROUP_CHAT
@@ -211,13 +225,6 @@ class InternalChannelAPI:
             self.receipts.complete(event, decision, intent_kind=intent_kind)
 
     def _admit(self, event: InboundEvent) -> ChannelAdmissionDecision:
-        identity = self.users.identity_by_opaque_ref(
-            event.channel,
-            event.channel_account,
-            event.external_actor_ref,
-        )
-        if identity is None:
-            return ChannelAdmissionDecision(False, None, "identity_unbound")
         if event.conversation_kind is ConversationKind.GROUP:
             explicitly_addressed = bool(event.metadata.get("mentioned")) or (
                 event.text or ""
@@ -225,20 +232,108 @@ class InternalChannelAPI:
             if not explicitly_addressed:
                 return ChannelAdmissionDecision(
                     False,
-                    identity.user_id,
+                    None,
                     "group_trigger_required",
                 )
-            if not self.routes.commands_enabled(
+            route = self.routes.get(
                 event.channel,
                 event.channel_account,
                 event.external_conversation_ref,
+            )
+            if (
+                route is None
+                or not route.commands_enabled
+                or route.group_mode is GroupMode.DISABLED
+            ):
+                return ChannelAdmissionDecision(
+                    False,
+                    None,
+                    "conversation_disabled",
+                )
+            if route.group_mode is GroupMode.PUBLIC:
+                if route.owner_user_id is None:
+                    return ChannelAdmissionDecision(False, None, "route_owner_unavailable")
+                owner = self.users.get(route.owner_user_id)
+                if owner is None or owner.status is not UserStatus.ACTIVE:
+                    return ChannelAdmissionDecision(False, None, "route_owner_unavailable")
+                intent = self.assistant.router.route(event.text or "")
+                if intent is None or intent.action not in {
+                    IntentAction.HELP,
+                    IntentAction.ANSWER,
+                }:
+                    return ChannelAdmissionDecision(
+                        False,
+                        route.owner_user_id,
+                        "group_permission_denied",
+                        frozenset({"public_group_guest"}),
+                    )
+                return ChannelAdmissionDecision(
+                    True,
+                    route.owner_user_id,
+                    "accepted",
+                    frozenset({"public_group_guest"}),
+                )
+            identity = self.users.identity_by_opaque_ref(
+                event.channel,
+                event.channel_account,
+                event.external_actor_ref,
+            )
+            if identity is None:
+                return ChannelAdmissionDecision(False, None, "identity_unbound")
+            user = self.users.get(identity.user_id)
+            if user is None or user.status is not UserStatus.ACTIVE:
+                return ChannelAdmissionDecision(False, identity.user_id, "user_disabled")
+            if not self.routes.is_member(
+                event.channel,
+                event.channel_account,
+                event.external_conversation_ref,
+                identity.user_id,
             ):
                 return ChannelAdmissionDecision(
                     False,
                     identity.user_id,
-                    "conversation_disabled",
+                    "group_permission_denied",
                 )
-        return ChannelAdmissionDecision(True, identity.user_id, "accepted")
+            if route.shared_owner_user_id is None:
+                return ChannelAdmissionDecision(
+                    False,
+                    identity.user_id,
+                    "group_workspace_unavailable",
+                )
+            roles = {"internal_group_member", "shared_workspace_member"}
+            if identity.user_id == route.owner_user_id:
+                roles.add("group_owner")
+            return ChannelAdmissionDecision(
+                True,
+                identity.user_id,
+                "accepted",
+                frozenset(roles),
+                route.shared_owner_user_id,
+                (route.shared_owner_user_id,),
+            )
+        identity = self.users.identity_by_opaque_ref(
+            event.channel,
+            event.channel_account,
+            event.external_actor_ref,
+        )
+        if identity is None:
+            return ChannelAdmissionDecision(False, None, "identity_unbound")
+        user = self.users.get(identity.user_id)
+        if user is None or user.status is not UserStatus.ACTIVE:
+            return ChannelAdmissionDecision(False, identity.user_id, "user_disabled")
+        shared_owners = self.routes.shared_owners_for_member(identity.user_id)
+        return ChannelAdmissionDecision(
+            True,
+            identity.user_id,
+            "accepted",
+            (
+                frozenset({"shared_workspace_member"})
+                if shared_owners
+                else frozenset()
+            ),
+            None,
+            shared_owners,
+        )
 
     @staticmethod
     def _reply_message(event: InboundEvent, reply: AssistantReply):

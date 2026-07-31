@@ -74,6 +74,28 @@ GET                  /admin/llm-usage
 GET                  /admin/status
 ```
 
+`GET /admin/channel-routes` returns opaque observed routes, group mode, and internal member
+IDs. Group commands are disabled by default. Configure a synthetic observed group with a
+request shaped like:
+
+```json
+{
+  "channel": "qq",
+  "channel_account": "qq_example",
+  "opaque_ref": "opaque_group_reference",
+  "commands_enabled": true,
+  "group_mode": "internal",
+  "member_user_ids": ["user_example"]
+}
+```
+
+`group_mode` is `disabled`, `public`, or `internal`. Member IDs are accepted only for an
+internal group, must name active internal users, and are replaced atomically when supplied.
+The configuring user becomes the route owner and an internal member. Only that owner may
+subsequently alter the route. Public mode has no database membership; switching away from
+internal mode removes its active member ACL while retaining existing shared records for a
+future authorized re-enable.
+
 An agenda exception can cancel one occurrence or replace its start/end without changing
 the recurring series. Note attachments are metadata-only objects (`id`, `filename`,
 `media_type`, `size_bytes`, and opaque `content_ref`); this API never accepts attachment

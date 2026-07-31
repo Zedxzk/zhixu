@@ -46,7 +46,10 @@ def _patterns() -> tuple[tuple[str, re.Pattern[bytes]], ...]:
     )
     assigned_secret = (
         rb"(?i)\b(?:api[_-]?key|access[_-]?token|client[_-]?secret|password)\b"
-        rb"\s*[:=]\s*[\"']?[A-Za-z0-9_./+=-]{12,}"
+        rb"\s*[:=]\s*(?:"
+        rb"[\"'][A-Za-z0-9_./+=-]{12,}[\"']|"
+        rb"(?=[A-Za-z0-9_./+=-]{12,})(?=[A-Za-z0-9_./+=-]*[0-9./+=-])"
+        rb"[A-Za-z0-9_./+=-]{12,})"
     )
     return (
         ("absolute Unix home path", re.compile(re.escape(unix_home))),

@@ -9,7 +9,9 @@ import pytest
 
 from zhixu.adapters.storage.sqlite import (
     AgendaRepository,
+    ChannelRouteStore,
     Database,
+    GroupMode,
     NoteRepository,
     OutboxRepository,
     ReminderRepository,
@@ -32,6 +34,7 @@ from zhixu.domain import (
     DataClassification,
     MissedReminderPolicy,
     PolicyEngine,
+    RequestChannel,
     ResourceRef,
     ScheduledJob,
     TaskStatus,
@@ -56,7 +59,7 @@ class SequentialIds:
 @pytest.fixture
 def database(tmp_path: Path) -> Database:
     database = Database(tmp_path / "zhixu.sqlite3")
-    assert database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    assert database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     assert database.migrate() == []
     return database
 
@@ -241,6 +244,115 @@ def test_full_text_search_is_scoped_to_owner(
     results = notes.search("user_test", "router")
     assert results
     assert {note.owner_user_id for note in results} == {"user_test"}
+
+
+def test_internal_group_uses_only_shared_data_while_private_chat_aggregates_it(
+    app: tuple[ZhixuServices, FrozenClock, UserRepository],
+    database: Database,
+) -> None:
+    services, _clock, _users = app
+    routes = ChannelRouteStore(database)
+    routes.observe(
+        channel="qq",
+        channel_account="qq_synthetic",
+        opaque_ref="group_synthetic",
+        kind="group",
+        now=NOW,
+    )
+    assert routes.set_commands_enabled(
+        channel="qq",
+        channel_account="qq_synthetic",
+        opaque_ref="group_synthetic",
+        enabled=True,
+        actor_user_id="user_test",
+        now=NOW,
+        group_mode=GroupMode.INTERNAL,
+        member_user_ids=("user_test",),
+    )
+    route = routes.get("qq", "qq_synthetic", "group_synthetic")
+    assert route is not None
+    assert route.group_mode is GroupMode.INTERNAL
+    assert route.shared_owner_user_id is not None
+    assert route.member_user_ids == ("user_test",)
+
+    private_context = CommandContext(actor_user_id="user_test")
+    private_note = services.create_note(
+        CreateNote("Private router", "private-only router material"),
+        private_context,
+    )
+    internal_context = CommandContext(
+        actor_user_id="user_test",
+        roles=frozenset({"internal_group_member", "shared_workspace_member"}),
+        shared_owner_user_id=route.shared_owner_user_id,
+        readable_shared_owner_user_ids=(route.shared_owner_user_id,),
+        request_channel=RequestChannel.GROUP_CHAT,
+    )
+    shared_note = services.create_note(
+        CreateNote("Shared router", "group-shared router material"),
+        internal_context,
+    )
+    shared_reminder = services.create_reminder(
+        CreateReminder(
+            title="Shared synthetic reminder",
+            fire_at=NOW + timedelta(hours=2),
+            target_ref="group_synthetic",
+        ),
+        internal_context,
+    )
+
+    assert private_note.owner_user_id == "user_test"
+    assert shared_note.owner_user_id == route.shared_owner_user_id
+    assert shared_note.creator_user_id == "user_test"
+    assert shared_reminder.owner_user_id == route.shared_owner_user_id
+    assert shared_reminder.creator_user_id == "user_test"
+    assert shared_reminder.target_ref == "group_synthetic"
+    assert [
+        note.id
+        for note in services.search_notes(SearchNotes("router"), internal_context)
+    ] == [shared_note.id]
+
+    aggregate_private_context = CommandContext(
+        actor_user_id="user_test",
+        roles=frozenset({"shared_workspace_member"}),
+        readable_shared_owner_user_ids=routes.shared_owners_for_member("user_test"),
+        request_channel=RequestChannel.PRIVATE_CHAT,
+    )
+    assert {
+        note.id
+        for note in services.search_notes(
+            SearchNotes("router"),
+            aggregate_private_context,
+        )
+    } == {private_note.id, shared_note.id}
+
+
+def test_public_group_has_no_member_or_shared_database_access(
+    app: tuple[ZhixuServices, FrozenClock, UserRepository],
+    database: Database,
+) -> None:
+    _services, _clock, _users = app
+    routes = ChannelRouteStore(database)
+    routes.observe(
+        channel="qq",
+        channel_account="qq_synthetic",
+        opaque_ref="public_group_synthetic",
+        kind="group",
+        now=NOW,
+    )
+    assert routes.set_commands_enabled(
+        channel="qq",
+        channel_account="qq_synthetic",
+        opaque_ref="public_group_synthetic",
+        enabled=True,
+        actor_user_id="user_test",
+        now=NOW,
+        group_mode=GroupMode.PUBLIC,
+    )
+    route = routes.get("qq", "qq_synthetic", "public_group_synthetic")
+    assert route is not None
+    assert route.group_mode is GroupMode.PUBLIC
+    assert route.shared_owner_user_id is None
+    assert route.member_user_ids == ()
 
 
 def test_reminder_tick_is_atomic_and_idempotent(

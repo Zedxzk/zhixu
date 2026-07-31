@@ -57,6 +57,11 @@ class RuleIntentRouter:
             "查看提醒",
         }:
             return ParsedIntent(IntentAction.LIST_REMINDERS)
+        if value.startswith("/私人提醒 "):
+            return ParsedIntent(
+                IntentAction.CREATE_REMINDER,
+                {"private": True},
+            )
         for prefix in ("/搜索 ", "/查备忘 ", "搜索备忘 ", "查备忘 "):
             if value.startswith(prefix) and value.removeprefix(prefix).strip():
                 return ParsedIntent(
@@ -69,6 +74,14 @@ class RuleIntentRouter:
                     IntentAction.CREATE_TASK,
                     {"title": value.removeprefix(prefix).strip()},
                 )
+        if value.startswith("/私人任务 ") and value.removeprefix("/私人任务 ").strip():
+            return ParsedIntent(
+                IntentAction.CREATE_TASK,
+                {
+                    "title": value.removeprefix("/私人任务 ").strip(),
+                    "private": True,
+                },
+            )
         for prefix in ("/记 ", "/备忘 ", "记住 "):
             if value.startswith(prefix) and value.removeprefix(prefix).strip():
                 body = value.removeprefix(prefix).strip()
@@ -76,6 +89,12 @@ class RuleIntentRouter:
                     IntentAction.CREATE_NOTE,
                     {"title": body[:80], "body": body},
                 )
+        if value.startswith("/私人记 ") and value.removeprefix("/私人记 ").strip():
+            body = value.removeprefix("/私人记 ").strip()
+            return ParsedIntent(
+                IntentAction.CREATE_NOTE,
+                {"title": body[:80], "body": body, "private": True},
+            )
         completed = re.fullmatch(r"/完成\s+([A-Za-z0-9_-]{1,160})", value)
         if completed:
             return ParsedIntent(
