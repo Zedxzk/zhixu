@@ -85,7 +85,7 @@ def assistant_parts(
     tmp_path: Path,
 ) -> tuple[ZhixuServices, FrozenClock, Database, CommandContext]:
     database = Database(tmp_path / "zhixu.sqlite3")
-    assert database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9]
     clock = FrozenClock(NOW)
     users = UserRepository(database)
     policy = PolicyEngine()
@@ -151,11 +151,30 @@ def engine_with(
     )
 
 
-def test_fixed_commands_and_rule_parsing_never_call_model(
+def test_fixed_commands_stay_deterministic_but_reminders_use_model(
     assistant_parts: tuple[ZhixuServices, FrozenClock, Database, CommandContext],
 ) -> None:
     services, clock, database, context = assistant_parts
-    client = FakeLLM([])
+    client = FakeLLM(
+        [
+            json.dumps(
+                {
+                    "action": "create_reminder",
+                    "confidence": 0.99,
+                    "title": "Synthetic break",
+                    "fire_at": "2026-06-01T16:15:00+08:00",
+                }
+            ),
+            json.dumps(
+                {
+                    "action": "create_reminder",
+                    "confidence": 0.99,
+                    "title": "Synthetic follow-up",
+                    "fire_at": "2026-06-01T16:15:00+08:00",
+                }
+            ),
+        ]
+    )
     engine = engine_with(services, clock, database, client)
 
     created_task = engine.handle("/任务 Synthetic deterministic task", context)
@@ -209,7 +228,19 @@ def test_fixed_commands_and_rule_parsing_never_call_model(
     assert postponed.code == "updated"
     assert today.code == "ok"
     assert "Synthetic deterministic agenda" in today.text
-    assert client.calls == 0
+    assert client.calls == 2
+    assert all(
+        "Reference time: 2026-06-01T16:00:00+08:00" in request.system_prompt
+        for request in client.requests
+    )
+    with database.connect() as connection:
+        reasons = connection.execute(
+            "SELECT reason FROM llm_call_events ORDER BY id"
+        ).fetchall()
+    assert [str(row["reason"]) for row in reasons] == [
+        "schedule_parse",
+        "schedule_parse",
+    ]
 
 
 def test_fts_answer_wins_before_model(

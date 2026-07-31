@@ -19,6 +19,8 @@ from zhixu.adapters.storage.sqlite import (
 from zhixu.adapters.web.internal_channel import InternalChannelAPI
 from zhixu.application import (
     AssistantEngine,
+    IntentAction,
+    ParsedIntent,
     ReminderScheduler,
     RuleIntentRouter,
     ZhixuServices,
@@ -43,13 +45,26 @@ NOW = datetime(2026, 7, 30, 12, tzinfo=UTC)
 SERVICE_TOKEN = "synthetic-channel-service-token-value"
 
 
+class ReminderClassifierStub:
+    def classify(self, *_args: object, **_kwargs: object) -> ParsedIntent:
+        return ParsedIntent(
+            IntentAction.CREATE_REMINDER,
+            {
+                "title": "提交合成报告",
+                "fire_at": (NOW + timedelta(days=1)).replace(hour=9),
+            },
+            source="llm",
+            requires_confirmation=True,
+        )
+
+
 def test_qq_network_database_is_separate_and_duplicate_events_are_idempotent(
     tmp_path: Path,
 ) -> None:
     application_database = Database(tmp_path / "application.sqlite3")
     qq_database = Database(tmp_path / "qq.sqlite3")
-    assert application_database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8]
-    assert qq_database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert application_database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    assert qq_database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9]
     references = OpaqueReferenceFactory(b"R" * 32)
     cipher = FieldCipher(b"E" * 32)
     raw_actor = "synthetic-qq-actor"
@@ -121,10 +136,11 @@ def test_qq_network_database_is_separate_and_duplicate_events_are_idempotent(
         users=users,
         routes=ChannelRouteStore(application_database),
         receipts=InboundReceiptStore(application_database, references),
-        assistant=AssistantEngine(
-            services=services,
-            router=RuleIntentRouter(clock, timezone="UTC"),
-        ),
+            assistant=AssistantEngine(
+                services=services,
+                router=RuleIntentRouter(clock, timezone="UTC"),
+                classifier=ReminderClassifierStub(),  # type: ignore[arg-type]
+            ),
         outbox=outbox,
         quota=QuotaManager(
             application_database,

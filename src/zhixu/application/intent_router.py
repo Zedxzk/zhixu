@@ -225,12 +225,19 @@ class ModelIntentClassifier:
         text: str,
         *,
         reason: LLMCallReason,
+        reference_time: datetime | None = None,
     ) -> ParsedIntent:
+        temporal_context = (
+            f" Reference time: {reference_time.isoformat()}."
+            if reference_time is not None
+            else ""
+        )
         request = LLMRequest(
             model=self.model,
             system_prompt=(
                 "Classify the request into the provided schema. Never invent identifiers, "
-                "times, or actions. Return only JSON."
+                "times, or actions. Resolve relative time only from the supplied reference "
+                f"time. Return only JSON.{temporal_context}"
             ),
             user_prompt=text,
             response_schema=ModelIntentProposal.model_json_schema(),

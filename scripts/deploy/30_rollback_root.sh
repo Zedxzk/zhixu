@@ -33,5 +33,6 @@ ln -sfn "${previous}" /opt/zhixu/current.next
 mv -Tf /opt/zhixu/current.next /opt/zhixu/current
 ln -sfn "${current}" /opt/zhixu/previous
 systemctl restart zhixu-pat-executor.service zhixu-vault.service
+systemctl restart zhixu-llm-proxy.service
 systemctl restart zhixu-api.service zhixu-worker.service zhixu-qq.service
 echo "Rolled back code to $(basename "${previous}"); databases were not overwritten."

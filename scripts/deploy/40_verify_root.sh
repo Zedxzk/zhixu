@@ -19,6 +19,7 @@ services=(
   zhixu-api.service
   zhixu-worker.service
   zhixu-qq.service
+  zhixu-llm-proxy.service
   zhixu-pat-executor.service
   zhixu-vault.service
 )

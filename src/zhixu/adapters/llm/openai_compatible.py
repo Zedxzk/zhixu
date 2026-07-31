@@ -95,7 +95,7 @@ class OpenAICompatibleLLM:
             or parsed.query
             or parsed.fragment
             or (self.is_local and not loopback)
-            or (not self.is_local and parsed.scheme != "https")
+            or (not self.is_local and parsed.scheme != "https" and not loopback)
         ):
             raise ValueError("LLM base URL must be an absolute HTTP(S) URL")
         self.base_url = self.base_url.rstrip("/")

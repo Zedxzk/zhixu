@@ -1,0 +1,43 @@
+[Unit]
+Description=Zhixu isolated DeepSeek egress proxy
+After=network-online.target
+Wants=network-online.target
+Before=zhixu-api.service
+
+[Service]
+Type=simple
+User=zhixu-llm
+Group=zhixu-llm
+UMask=0077
+LoadCredentialEncrypted=llm_api_key:/etc/credstore.encrypted/zhixu-llm-api-key.cred
+ExecStart=/opt/zhixu/current/venv/bin/zhixu-llm-proxy --bind 127.0.0.1 --port 8841 --api-key-file %d/llm_api_key --model deepseek-v4-flash
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6
+InaccessiblePaths=/var/lib/zhixu /var/lib/zhixu-vault /etc/zhixu/credentials
+SystemCallArchitectures=native
+LogNamespace=zhixu
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=100
+
+[Install]
+WantedBy=multi-user.target

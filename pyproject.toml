@@ -32,6 +32,7 @@ dev = [
 zhixu = "zhixu.cli:main"
 zhixu-api = "zhixu.runtime.api:main"
 zhixu-backup = "zhixu.runtime.backup:main"
+zhixu-llm-proxy = "zhixu.runtime.llm_proxy:main"
 zhixu-outbound = "zhixu.runtime.outbound:main"
 zhixu-qq = "zhixu.runtime.channel_qq:main"
 zhixu-worker = "zhixu.runtime.worker:main"

@@ -34,11 +34,13 @@ ensure_group zhixu-vault
 ensure_group zhixu-vault-client
 ensure_group zhixu-deploy
 ensure_group zhixu-integration
+ensure_group zhixu-llm
 
 ensure_system_user zhixu zhixu /var/lib/zhixu
 ensure_system_user zhixu-vault zhixu-vault /var/lib/zhixu-vault
 ensure_system_user zhixu-deploy zhixu-deploy /var/lib/zhixu-deploy
 ensure_system_user zhixu-integration zhixu-integration /var/lib/zhixu-integration
+ensure_system_user zhixu-llm zhixu-llm /var/lib/zhixu-llm
 
 usermod --append --groups zhixu-vault-client zhixu
 usermod --append --groups zhixu-vault-client zhixu-vault
@@ -49,6 +51,7 @@ install -d -o zhixu-deploy -g zhixu-deploy -m 0755 /opt/zhixu/releases
 install -d -o root -g root -m 0755 /etc/zhixu
 install -d -o root -g root -m 0700 /etc/zhixu/credentials
 install -d -o root -g root -m 0700 /etc/zhixu/outbound
+install -d -o root -g root -m 0700 /etc/credstore.encrypted
 if [[ ! -e /etc/zhixu/outbound-accounts.json ]]; then
   install -o root -g root -m 0644 /dev/stdin /etc/zhixu/outbound-accounts.json <<'EOF'
 []

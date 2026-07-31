@@ -63,6 +63,40 @@ class AssistantEngine:
         target_ref: str = "",
     ) -> AssistantReply:
         intent = self.router.route(text)
+        if intent is not None and intent.action is IntentAction.CREATE_REMINDER:
+            if self.classifier is None:
+                return AssistantReply(
+                    "提醒的自然语言解析需要模型，但当前模型不可用。",
+                    "llm_unavailable",
+                    "deterministic",
+                )
+            try:
+                proposed = self.classifier.classify(
+                    context.actor_user_id,
+                    text,
+                    reason=LLMCallReason.SCHEDULE_PARSE,
+                    reference_time=self.services.clock.now().astimezone(
+                        self.router.timezone
+                    ),
+                )
+            except (InvalidModelOutput, LLMUnavailable, PermissionDenied):
+                return AssistantReply(
+                    "提醒解析失败，请补充明确的日期、时间和事项。",
+                    "llm_unavailable",
+                    "deterministic",
+                )
+            if proposed.action is not IntentAction.CREATE_REMINDER:
+                return AssistantReply(
+                    "没有识别到明确的提醒事项。",
+                    "invalid_intent",
+                    "llm",
+                )
+            intent = ParsedIntent(
+                proposed.action,
+                proposed.arguments,
+                source="llm",
+                requires_confirmation=False,
+            )
         if intent is None:
             matches = self.services.query_bus().execute(
                 SearchNotes(text, limit=3),
@@ -81,6 +115,9 @@ class AssistantEngine:
                     context.actor_user_id,
                     text,
                     reason=LLMCallReason.DETERMINISTIC_PARSER_MISS,
+                    reference_time=self.services.clock.now().astimezone(
+                        self.router.timezone
+                    ),
                 )
             except (LLMUnavailable, PermissionDenied):
                 return AssistantReply(

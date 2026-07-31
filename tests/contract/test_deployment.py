@@ -35,6 +35,7 @@ def test_runtime_units_preserve_network_and_database_boundaries() -> None:
     outbound = _unit("zhixu-outbound@.service")
     vault = _unit("zhixu-vault.service")
     executor = _unit("zhixu-pat-executor.service")
+    llm_proxy = _unit("zhixu-llm-proxy.service")
 
     assert "--bind 127.0.0.1" in api
     assert "IPAddressDeny=any" in api and "IPAddressAllow=localhost" in api
@@ -71,6 +72,14 @@ def test_runtime_units_preserve_network_and_database_boundaries() -> None:
         "InaccessiblePaths=/var/lib/zhixu /var/lib/zhixu-vault "
         "/etc/zhixu/credentials"
     ) in executor
+
+    assert "User=zhixu-llm" in llm_proxy
+    assert "LoadCredentialEncrypted=llm_api_key:" in llm_proxy
+    assert "--model deepseek-v4-flash" in llm_proxy
+    assert (
+        "InaccessiblePaths=/var/lib/zhixu /var/lib/zhixu-vault "
+        "/etc/zhixu/credentials"
+    ) in llm_proxy
 
 
 def test_runtime_socket_directories_cannot_be_replaced_by_clients() -> None:
@@ -130,6 +139,7 @@ def test_every_systemd_entrypoint_exists_in_the_package_manifest() -> None:
     expected = {
         "zhixu-api",
         "zhixu-backup",
+        "zhixu-llm-proxy",
         "zhixu-outbound",
         "zhixu-pat-executor",
         "zhixu-qq",
@@ -162,6 +172,7 @@ def test_activation_and_rollback_include_every_stateful_runtime() -> None:
         "zhixu-api.service",
         "zhixu-worker.service",
         "zhixu-qq.service",
+        "zhixu-llm-proxy.service",
         "zhixu-pat-executor.service",
         "zhixu-vault.service",
     ):
@@ -181,6 +192,7 @@ def test_root_verifier_checks_runtime_without_printing_private_state() -> None:
         "zhixu-api.service",
         "zhixu-worker.service",
         "zhixu-qq.service",
+        "zhixu-llm-proxy.service",
         "zhixu-pat-executor.service",
         "zhixu-vault.service",
         "zhixu-backup.timer",

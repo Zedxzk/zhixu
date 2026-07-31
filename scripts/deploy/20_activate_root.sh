@@ -45,12 +45,14 @@ systemctl enable \
   zhixu-api.service \
   zhixu-worker.service \
   zhixu-qq.service \
+  zhixu-llm-proxy.service \
   zhixu-pat-executor.service \
   zhixu-vault.service \
   zhixu-backup.timer \
   zhixu-vault-backup.timer
 systemctl restart zhixu-pat-executor.service
 systemctl restart zhixu-vault.service
+systemctl restart zhixu-llm-proxy.service
 systemctl restart zhixu-api.service zhixu-worker.service zhixu-qq.service
 systemctl start zhixu-backup.timer zhixu-vault-backup.timer
 echo "Activated release ${release_id}; vault remains sealed after restart."

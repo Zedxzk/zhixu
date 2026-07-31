@@ -1,7 +1,7 @@
 [Unit]
 Description=Zhixu private administration API
-After=local-fs.target zhixu-vault.service
-Wants=zhixu-vault.service
+After=local-fs.target zhixu-vault.service zhixu-llm-proxy.service
+Wants=zhixu-vault.service zhixu-llm-proxy.service
 
 [Service]
 Type=simple

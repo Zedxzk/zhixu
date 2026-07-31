@@ -23,6 +23,7 @@ class LLMResponse:
 
 
 class LLMCallReason(StrEnum):
+    SCHEDULE_PARSE = "schedule_parse"
     DETERMINISTIC_PARSER_MISS = "deterministic_parser_miss"
     NOTE_SUMMARY_REQUESTED = "note_summary_requested"
     GENERAL_QUESTION = "general_question"
