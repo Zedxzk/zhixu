@@ -53,5 +53,5 @@ python3 -m venv "${release_dir}/venv"
   "${project_wheels[0]}"
 "${release_dir}/venv/bin/python" -m compileall -q \
   "${release_dir}/venv/lib"
-chmod -R u=rwX,g=rX,o= "${release_dir}"
+chmod -R u=rwX,g=rX,o=rX "${release_dir}"
 echo "Offline release installation completed."

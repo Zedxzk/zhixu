@@ -105,6 +105,25 @@ def test_release_sync_applies_the_catch_all_exclusion_last() -> None:
         assert parent < descendants < catch_all
 
 
+def test_public_release_is_executable_but_not_writable_by_service_users() -> None:
+    bootstrap = (
+        ROOT / "scripts" / "deploy" / "00_bootstrap_root.sh"
+    ).read_text(encoding="utf-8")
+    sync = (
+        ROOT / "scripts" / "deploy" / "05_sync.sh"
+    ).read_text(encoding="utf-8")
+    install = (
+        ROOT / "scripts" / "deploy" / "10_install.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "-m 0755 /opt/zhixu" in bootstrap
+    assert "-m 0755 /opt/zhixu/releases" in bootstrap
+    assert "u=rwX,g=rX,o=rX" in sync
+    assert "u=rwX,g=rX,o=rX" in install
+    assert "o= " not in sync
+    assert "o= " not in install
+
+
 def test_every_systemd_entrypoint_exists_in_the_package_manifest() -> None:
     manifest = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     scripts = set(manifest["project"]["scripts"])
@@ -172,6 +191,7 @@ def test_root_verifier_checks_runtime_without_printing_private_state() -> None:
     assert "0\\.0\\.0\\.0" in verifier
     assert "zhixu-vault:zhixu-vault-client:750" in verifier
     assert "zhixu-integration:zhixu-vault-client:750" in verifier
+    assert 'runuser --user zhixu-vault -- "${release}/venv/bin/zhixu-vault"' in verifier
     assert "deployment=ready" in verifier
     assert "journalctl" not in verifier
 

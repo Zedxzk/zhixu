@@ -25,8 +25,8 @@ if [[ -e ${release_root}/${release_id} ]]; then
 fi
 
 destination=${release_root}/${release_id}/source
-install -d -m 0750 "${release_root}/${release_id}"
-install -d -m 0750 "${destination}"
+install -d -m 0755 "${release_root}/${release_id}"
+install -d -m 0755 "${destination}"
 
 rsync \
   --archive \
@@ -65,5 +65,5 @@ fi
     sort -z |
     xargs -0 sha256sum > ../SOURCE_SHA256SUMS
 )
-chmod -R u=rwX,g=rX,o= "${release_root:?}/${release_id}"
+chmod -R u=rwX,g=rX,o=rX "${release_root:?}/${release_id}"
 echo "Whitelisted source synchronized to release ${release_id}."

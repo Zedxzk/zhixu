@@ -72,7 +72,7 @@ curl --noproxy '*' --fail --silent --show-error \
 curl --noproxy '*' --fail --silent --show-error \
   http://127.0.0.1:8840/health/ready >/dev/null
 "${release}/venv/bin/zhixu" doctor >/dev/null
-"${release}/venv/bin/zhixu-vault" \
+runuser --user zhixu-vault -- "${release}/venv/bin/zhixu-vault" \
   status --socket /run/zhixu/vault/vault.sock >/dev/null
 
 echo "deployment=ready services=${#services[@]} timers=${#timers[@]}"

@@ -44,8 +44,8 @@ usermod --append --groups zhixu-vault-client zhixu
 usermod --append --groups zhixu-vault-client zhixu-vault
 usermod --append --groups zhixu-vault-client zhixu-integration
 
-install -d -o root -g zhixu-deploy -m 0750 /opt/zhixu
-install -d -o zhixu-deploy -g zhixu-deploy -m 0750 /opt/zhixu/releases
+install -d -o root -g zhixu-deploy -m 0755 /opt/zhixu
+install -d -o zhixu-deploy -g zhixu-deploy -m 0755 /opt/zhixu/releases
 install -d -o root -g root -m 0755 /etc/zhixu
 install -d -o root -g root -m 0700 /etc/zhixu/credentials
 install -d -o root -g root -m 0700 /etc/zhixu/outbound
