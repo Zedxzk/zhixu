@@ -239,8 +239,17 @@ def test_qq_network_database_is_separate_and_duplicate_events_are_idempotent(
         ).encode(),
     ).body["delivery"]
     assert proactive["target_ref"] == actor_ref
-    assert proactive["text"] == "提交合成报告"
-    assert [button["label"] for button in proactive["buttons"]] == ["完成", "稍后"]
+    assert proactive["text"].startswith("# ⏰ 日程提醒")
+    assert "**事项：** 提交合成报告" in proactive["text"]
+    assert "2026-07-31 17:00（北京时间）" in proactive["text"]
+    assert [button["label"] for button in proactive["buttons"]] == [
+        "5分钟",
+        "15分钟",
+        "30分钟",
+        "60分钟",
+        "完成",
+        "取消",
+    ]
     internal.dispatch(
         "POST",
         "/internal/channel/delivery/complete",
@@ -286,7 +295,8 @@ def test_qq_network_database_is_separate_and_duplicate_events_are_idempotent(
             }
         ).encode(),
     ).body["delivery"]
-    assert repeated["text"] == "提交合成报告"
+    assert repeated["text"].startswith("# ⏰ 日程提醒")
+    assert "**事项：** 提交合成报告" in repeated["text"]
     internal.dispatch(
         "POST",
         "/internal/channel/delivery/complete",
@@ -303,7 +313,7 @@ def test_qq_network_database_is_separate_and_duplicate_events_are_idempotent(
         **event,
         "event_id": "event_synthetic_acknowledge",
         "message_kind": "button",
-        "text": repeated["buttons"][0]["action"],
+        "text": repeated["buttons"][4]["action"],
         "received_at": clock.now().isoformat(),
         "mentioned": True,
     }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import threading
 import urllib.parse
 from dataclasses import dataclass, field
@@ -11,6 +12,7 @@ from typing import Any
 from zhixu.channels import (
     ChannelCapabilities,
     ChannelDeliveryResult,
+    MessageButton,
     MessageKind,
     OutboundMessage,
 )
@@ -22,6 +24,38 @@ from .contacts import QQContactStore, ResolvedQQTarget
 
 TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken"
 API_BASE = "https://api.sgroup.qq.com"
+_KEYBOARD_COLUMNS = 4
+_KEYBOARD_MAX_ROWS = 5
+
+
+def _button_payload(button: MessageButton, index: int) -> dict[str, Any]:
+    label = button.label
+    action = button.action
+    return {
+        "id": f"zhixu-{index}",
+        "render_data": {
+            "label": label,
+            "visited_label": label,
+            "style": 1 if action.startswith("/提醒完成 ") else 0,
+        },
+        "action": {
+            "type": 1,
+            "data": action,
+            "permission": {"type": 2},
+            "unsupport_tips": "请发送对应文字命令",
+        },
+    }
+
+
+def _plain_button_fallback(message: OutboundMessage) -> dict[str, Any]:
+    text = re.sub(r"(?m)^#{1,6}\s*", "", message.text)
+    text = text.replace("**", "").replace("__", "")
+    text = re.sub(r"\\([\\`*_{}\[\]()#+\-.!>|])", r"\1", text)
+    choices = "\n".join(
+        f"{index}. {button.label} — {button.action}"
+        for index, button in enumerate(message.buttons, start=1)
+    )
+    return {"content": f"{text}\n\n{choices}".strip(), "msg_type": 0}
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,31 +176,20 @@ class QQHttpAdapter:
         if target.kind in {"private", "group"}:
             payload["msg_type"] = 0
         if message.buttons:
+            if len(message.buttons) > _KEYBOARD_COLUMNS * _KEYBOARD_MAX_ROWS:
+                return ChannelDeliveryResult(False, False, "keyboard_too_large")
+            button_values = [
+                _button_payload(button, index)
+                for index, button in enumerate(message.buttons, start=1)
+            ]
             payload = {"markdown": {"content": message.text}}
             if target.kind in {"private", "group"}:
                 payload["msg_type"] = 2
             payload["keyboard"] = {
                 "content": {
                     "rows": [
-                        {
-                            "buttons": [
-                                {
-                                    "id": f"zhixu-{index}",
-                                    "render_data": {
-                                        "label": button.label,
-                                        "visited_label": button.label,
-                                        "style": 1 if index == 1 else 0,
-                                    },
-                                    "action": {
-                                        "type": 1,
-                                        "data": button.action,
-                                        "permission": {"type": 2},
-                                        "unsupport_tips": "请发送对应文字命令",
-                                    },
-                                }
-                            ]
-                        }
-                        for index, button in enumerate(message.buttons, start=1)
+                        {"buttons": button_values[start : start + _KEYBOARD_COLUMNS]}
+                        for start in range(0, len(button_values), _KEYBOARD_COLUMNS)
                     ]
                 }
             }
@@ -202,6 +225,13 @@ class QQHttpAdapter:
             payload=payload,
             headers=self._headers(token),
         )
+        if status in {400, 403} and message.buttons and not message.attachment_url:
+            status, value = self.transport.request(
+                self._message_endpoint(target),
+                method="POST",
+                payload=_plain_button_fallback(message),
+                headers=self._headers(token),
+            )
         if 200 <= status < 300:
             return ChannelDeliveryResult(
                 True,

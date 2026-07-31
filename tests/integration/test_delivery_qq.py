@@ -564,8 +564,12 @@ def test_qq_http_sends_official_callback_keyboard_and_acknowledges_interaction(
             kind=MessageKind.BUTTON,
             text="Synthetic reminder",
             buttons=(
+                MessageButton("5 minutes", "/提醒稍后 reminder_synthetic 5分钟"),
+                MessageButton("15 minutes", "/提醒稍后 reminder_synthetic 15分钟"),
+                MessageButton("30 minutes", "/提醒稍后 reminder_synthetic 30分钟"),
+                MessageButton("60 minutes", "/提醒稍后 reminder_synthetic 60分钟"),
                 MessageButton("Complete", "/提醒完成 reminder_synthetic"),
-                MessageButton("Later", "/提醒稍后 reminder_synthetic 15分钟"),
+                MessageButton("Cancel", "/取消提醒 reminder_synthetic"),
             ),
         )
     )
@@ -579,26 +583,105 @@ def test_qq_http_sends_official_callback_keyboard_and_acknowledges_interaction(
     assert payload["msg_type"] == 2
     assert "content" not in payload
     assert payload["markdown"] == {"content": "Synthetic reminder"}
-    buttons = payload["keyboard"]["content"]["rows"]
-    assert [row["buttons"][0]["id"] for row in buttons] == [
+    rows = payload["keyboard"]["content"]["rows"]
+    assert [len(row["buttons"]) for row in rows] == [4, 2]
+    buttons = [button for row in rows for button in row["buttons"]]
+    assert [button["id"] for button in buttons] == [
         "zhixu-1",
         "zhixu-2",
+        "zhixu-3",
+        "zhixu-4",
+        "zhixu-5",
+        "zhixu-6",
     ]
-    assert buttons[0]["buttons"][0]["render_data"] == {
-        "label": "Complete",
-        "visited_label": "Complete",
-        "style": 1,
+    assert buttons[0]["render_data"] == {
+        "label": "5 minutes",
+        "visited_label": "5 minutes",
+        "style": 0,
     }
-    assert buttons[0]["buttons"][0]["action"] == {
+    assert buttons[0]["action"] == {
         "type": 1,
-        "data": "/提醒完成 reminder_synthetic",
+        "data": "/提醒稍后 reminder_synthetic 5分钟",
         "permission": {"type": 2},
         "unsupport_tips": "请发送对应文字命令",
     }
+    assert buttons[4]["render_data"]["style"] == 1
     acknowledgement = transport.requests[-1]
     assert acknowledgement[0].endswith("/interactions/synthetic-interaction")
     assert acknowledgement[1] == "PUT"
     assert acknowledgement[2] == {"code": 0}
+
+
+def test_qq_http_falls_back_to_plain_text_when_markdown_is_rejected(
+    database: Database,
+    privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
+) -> None:
+    contacts = register_account(database, privacy_primitives)
+    target_ref = contacts.record(
+        channel_account="bot_test_a",
+        kind="private",
+        external_identifier="private-openid-markdown-fallback-test",
+        now=NOW,
+    )
+
+    class MarkdownRejectedTransport(FakeTransport):
+        def __init__(self) -> None:
+            super().__init__()
+            self.message_requests = 0
+
+        def request(
+            self,
+            url: str,
+            *,
+            method: str = "GET",
+            payload: dict[str, Any] | None = None,
+            headers: dict[str, str] | None = None,
+            timeout: float = 10,
+        ) -> tuple[int, dict[str, Any]]:
+            if url.endswith("getAppAccessToken"):
+                return super().request(
+                    url,
+                    method=method,
+                    payload=payload,
+                    headers=headers,
+                    timeout=timeout,
+                )
+            self.requests.append((url, method, payload, headers))
+            self.message_requests += 1
+            if self.message_requests == 1:
+                return 400, {}
+            return 200, {"id": "provider-fallback-message-test"}
+
+    transport = MarkdownRejectedTransport()
+    adapter = QQHttpAdapter(
+        QQBotCredentials("bot_test_a", "synthetic-app", "synthetic-secret"),
+        contacts,
+        transport=transport,
+    )
+    result = adapter.send(
+        OutboundMessage(
+            channel="qq",
+            channel_account="bot_test_a",
+            target_ref=target_ref,
+            kind=MessageKind.BUTTON,
+            text="# ⏰ Reminder\n\n**Item:** Synthetic",
+            buttons=(
+                MessageButton("Complete", "/提醒完成 reminder_synthetic"),
+                MessageButton("Cancel", "/取消提醒 reminder_synthetic"),
+            ),
+        )
+    )
+
+    assert result.ok
+    assert result.provider_message_id == "provider-fallback-message-test"
+    rich_payload = transport.requests[-2][2]
+    plain_payload = transport.requests[-1][2]
+    assert rich_payload is not None and rich_payload["msg_type"] == 2
+    assert plain_payload is not None and plain_payload["msg_type"] == 0
+    assert "markdown" not in plain_payload
+    assert plain_payload["content"].startswith("⏰ Reminder\n\nItem: Synthetic")
+    assert "/提醒完成 reminder_synthetic" in plain_payload["content"]
+    assert "/取消提醒 reminder_synthetic" in plain_payload["content"]
 
 
 def test_gateway_persists_resume_state_encrypted_and_emits_ephemeral_event(

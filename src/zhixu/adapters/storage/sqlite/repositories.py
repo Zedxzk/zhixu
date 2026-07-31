@@ -62,6 +62,25 @@ def _load_datetime(value: str | None, *, timezone: str | None = None) -> datetim
     return parsed
 
 
+_REMINDER_NOTIFICATION_TIMEZONE = ZoneInfo("Asia/Shanghai")
+
+
+def _escape_markdown_text(value: str) -> str:
+    """Keep user-owned reminder text from becoming active Markdown content."""
+    compact = re.sub(r"\s+", " ", value).strip()
+    return re.sub(r"([\\`*_{}\[\]()#+\-.!>|])", r"\\\1", compact)
+
+
+def _reminder_notification_text(reminder: Reminder) -> str:
+    local_fire_at = reminder.fire_at.astimezone(_REMINDER_NOTIFICATION_TIMEZONE)
+    title = _escape_markdown_text(reminder.title)
+    return (
+        "# ⏰ 日程提醒\n\n"
+        f"**事项：** {title}\n\n"
+        f"**时间：** {local_fire_at:%Y-%m-%d %H:%M}（北京时间）"
+    )
+
+
 def _resource(
     kind: str,
     resource_id: str,
@@ -1395,16 +1414,25 @@ class ReminderRepository:
                 ).hexdigest()[:24]
                 payload = json.dumps(
                     {
-                        "text": reminder.title,
+                        "text": _reminder_notification_text(reminder),
                         "reminder_id": reminder.id,
                         "buttons": [
+                            {
+                                "label": f"{minutes}分钟",
+                                "action": (
+                                    f"/提醒稍后 {reminder.id} {minutes}分钟"
+                                ),
+                            }
+                            for minutes in (5, 15, 30, 60)
+                        ]
+                        + [
                             {
                                 "label": "完成",
                                 "action": f"/提醒完成 {reminder.id}",
                             },
                             {
-                                "label": "稍后",
-                                "action": f"/提醒稍后 {reminder.id} 15分钟",
+                                "label": "取消",
+                                "action": f"/取消提醒 {reminder.id}",
                             },
                         ],
                         "attachment_url": None,

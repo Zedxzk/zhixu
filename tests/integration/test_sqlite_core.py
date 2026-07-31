@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -265,6 +266,24 @@ def test_reminder_tick_is_atomic_and_idempotent(
     assert scheduler.tick() == 0
     assert outbox.count() == 1
     assert ReminderRepository(database).get(reminder.id).status.value == "fired"
+    with database.connect() as connection:
+        payload = connection.execute(
+            "SELECT payload_json FROM outbox_deliveries"
+        ).fetchone()
+    value = json.loads(str(payload["payload_json"]))
+    assert value["text"] == (
+        "# ⏰ 日程提醒\n\n"
+        "**事项：** Synthetic reminder\n\n"
+        "**时间：** 2026-01-01 16:05（北京时间）"
+    )
+    assert [button["label"] for button in value["buttons"]] == [
+        "5分钟",
+        "15分钟",
+        "30分钟",
+        "60分钟",
+        "完成",
+        "取消",
+    ]
 
 
 def test_missed_reminder_policy_fires_or_skips_after_grace_window(
