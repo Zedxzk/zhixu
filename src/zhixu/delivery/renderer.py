@@ -25,6 +25,7 @@ def render_for_capabilities(
     buttons = message.buttons
     attachment_url = message.attachment_url
     calendar_preview = message.calendar_preview
+    daily_agenda_preview = message.daily_agenda_preview
     kind = message.kind
     if kind is MessageKind.MARKDOWN and not capabilities.markdown:
         text = _plain_markdown(text)
@@ -43,6 +44,8 @@ def render_for_capabilities(
         kind = MessageKind.TEXT
     if calendar_preview and not capabilities.attachments:
         calendar_preview = None
+    if daily_agenda_preview and not capabilities.attachments:
+        daily_agenda_preview = None
     return replace(
         message,
         kind=kind,
@@ -50,4 +53,5 @@ def render_for_capabilities(
         buttons=buttons,
         attachment_url=attachment_url,
         calendar_preview=calendar_preview,
+        daily_agenda_preview=daily_agenda_preview,
     )

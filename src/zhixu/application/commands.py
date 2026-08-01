@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime, time
 from typing import Any, TypeVar
 
 from zhixu.domain import (
@@ -27,6 +27,35 @@ class CreateAgenda:
     description: str = ""
     all_day: bool = False
     recurrence_rule: str | None = None
+    classification: DataClassification = DataClassification.PERSONAL
+    private: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class CreateAgendaNotification:
+    agenda_item_id: str
+    time_of_day: time
+    day_offset: int
+    text: str
+    timezone: str
+    target_ref: str
+    classification: DataClassification = DataClassification.PERSONAL
+
+
+@dataclass(frozen=True, slots=True)
+class CreateAnniversary:
+    title: str
+    anchor_date: date
+    timezone: str
+    classification: DataClassification = DataClassification.PERSONAL
+    private: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class CreateDailyBriefing:
+    time_of_day: time
+    timezone: str
+    target_ref: str
     classification: DataClassification = DataClassification.PERSONAL
     private: bool = False
 
@@ -155,6 +184,9 @@ class SnoozeReminder:
 
 Command = (
     CreateAgenda
+    | CreateAgendaNotification
+    | CreateAnniversary
+    | CreateDailyBriefing
     | UpdateAgenda
     | DeleteAgenda
     | SetAgendaException

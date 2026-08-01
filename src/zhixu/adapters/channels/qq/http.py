@@ -18,7 +18,10 @@ from zhixu.channels import (
     MessageKind,
     OutboundMessage,
 )
-from zhixu.delivery.calendar_image import render_calendar_png
+from zhixu.delivery.calendar_image import (
+    render_calendar_png,
+    render_daily_agenda_png,
+)
 from zhixu.domain import DataClassification
 from zhixu.domain.errors import ValidationError
 
@@ -223,7 +226,11 @@ class QQHttpAdapter:
                         ]
                     }
                 }
-        if message.attachment_url or message.calendar_preview:
+        if (
+            message.attachment_url
+            or message.calendar_preview
+            or message.daily_agenda_preview
+        ):
             try:
                 file_url = self._file_endpoint(target)
             except ValidationError:
@@ -238,6 +245,10 @@ class QQHttpAdapter:
                     upload_payload["file_data"] = base64.b64encode(
                         render_calendar_png(message.calendar_preview)
                     ).decode("ascii")
+                elif message.daily_agenda_preview is not None:
+                    upload_payload["file_data"] = base64.b64encode(
+                        render_daily_agenda_png(message.daily_agenda_preview)
+                    ).decode("ascii")
                 else:
                     upload_payload["url"] = message.attachment_url
                 media_status, media_value = self.transport.request(
@@ -248,7 +259,10 @@ class QQHttpAdapter:
                 )
                 file_info = str(media_value.get("file_info") or "")
                 if media_status != 200 or not file_info:
-                    if message.calendar_preview is None:
+                    if (
+                        message.calendar_preview is None
+                        and message.daily_agenda_preview is None
+                    ):
                         return ChannelDeliveryResult(
                             False,
                             media_status >= 500 or media_status == 429,
@@ -266,7 +280,9 @@ class QQHttpAdapter:
                     if keyboard is not None:
                         payload["keyboard"] = keyboard
             if (
-                message.kind is MessageKind.ATTACHMENT or message.calendar_preview
+                message.kind is MessageKind.ATTACHMENT
+                or message.calendar_preview
+                or message.daily_agenda_preview
             ) and message.text:
                 payload.setdefault("content", _plain_markdown(message.text))
         if reply_context is not None:
@@ -281,7 +297,11 @@ class QQHttpAdapter:
         if (
             status in {400, 403}
             and (message.kind is MessageKind.MARKDOWN or message.buttons)
-            and (not message.attachment_url or message.calendar_preview is not None)
+            and (
+                not message.attachment_url
+                or message.calendar_preview is not None
+                or message.daily_agenda_preview is not None
+            )
         ):
             fallback = _plain_button_fallback(message)
             if reply_context is not None:

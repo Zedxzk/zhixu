@@ -13,8 +13,12 @@ from .backup import ApplicationBackupManager
 from .channel_routes import ChannelRoute, ChannelRouteStore, GroupMode
 from .database import Database, MigrationDriftError
 from .llm_usage import SQLiteLLMUsage
+from .pending_plans import PendingPlanStore
 from .repositories import (
+    AgendaNotificationRepository,
     AgendaRepository,
+    AnniversaryRepository,
+    DailyBriefingRepository,
     GrantRepository,
     NoteRepository,
     OutboxRepository,
@@ -26,6 +30,8 @@ from .repositories import (
 
 __all__ = [
     "AgendaRepository",
+    "AgendaNotificationRepository",
+    "AnniversaryRepository",
     "AdminCredentialStore",
     "AdminPrincipal",
     "AdminReadStore",
@@ -35,12 +41,14 @@ __all__ = [
     "ChannelRoute",
     "ChannelRouteStore",
     "Database",
+    "DailyBriefingRepository",
     "GrantRepository",
     "GroupMode",
     "IdentityLinkStore",
     "LinkChallenge",
     "MigrationDriftError",
     "NoteRepository",
+    "PendingPlanStore",
     "OutboxRepository",
     "ReminderRepository",
     "ScheduledJobRepository",

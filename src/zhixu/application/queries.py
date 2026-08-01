@@ -33,7 +33,24 @@ class ListReminders:
     include_inactive: bool = False
 
 
-Query = AgendaBetween | ListTasks | SearchNotes | ListReminders
+@dataclass(frozen=True, slots=True)
+class ListAnniversaries:
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class ListDailyBriefings:
+    pass
+
+
+Query = (
+    AgendaBetween
+    | ListTasks
+    | SearchNotes
+    | ListReminders
+    | ListAnniversaries
+    | ListDailyBriefings
+)
 QueryT = TypeVar("QueryT", bound=Query)
 Handler = Callable[[Any, CommandContext], Any]
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -18,12 +18,16 @@ from zhixu.domain.errors import (
     PermissionDenied,
     ValidationError,
 )
-from zhixu.ports import LLMCallReason, LLMRequest
+from zhixu.ports import LLMCallReason, LLMRequest, PendingPlanStorePort
 from zhixu.security import web_query_is_safe
 
 from .commands import (
     AcknowledgeReminder,
     CancelReminder,
+    CreateAgenda,
+    CreateAgendaNotification,
+    CreateAnniversary,
+    CreateDailyBriefing,
     CreateNote,
     CreateReminder,
     CreateTask,
@@ -32,9 +36,21 @@ from .commands import (
     TransitionTask,
 )
 from .intent_router import ModelIntentClassifier, RuleIntentRouter
-from .intents import AssistantReply, IntentAction, ParsedIntent
+from .intents import (
+    AssistantReply,
+    IntentAction,
+    ModelNotificationProposal,
+    ParsedIntent,
+)
 from .llm import LLMGateway
-from .queries import AgendaBetween, ListReminders, ListTasks, SearchNotes
+from .queries import (
+    AgendaBetween,
+    ListAnniversaries,
+    ListDailyBriefings,
+    ListReminders,
+    ListTasks,
+    SearchNotes,
+)
 from .services import ZhixuServices
 
 
@@ -75,6 +91,45 @@ def _escape_markdown_text(value: str) -> str:
     return re.sub(r"([\\`*_{}\[\]()#+\-.!>|])", r"\\\1", value)
 
 
+def _encode_plan_value(value):
+    if isinstance(value, datetime):
+        return {"$type": "datetime", "value": value.isoformat()}
+    if isinstance(value, date):
+        return {"$type": "date", "value": value.isoformat()}
+    if isinstance(value, time):
+        return {"$type": "time", "value": value.isoformat()}
+    if isinstance(value, ModelNotificationProposal):
+        return {
+            "$type": "notification",
+            "value": value.model_dump(mode="json"),
+        }
+    if isinstance(value, dict):
+        return {str(key): _encode_plan_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_encode_plan_value(item) for item in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    raise ValidationError("pending plan contains an unsupported value")
+
+
+def _decode_plan_value(value):
+    if isinstance(value, list):
+        return [_decode_plan_value(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    value_type = value.get("$type")
+    encoded = value.get("value")
+    if value_type == "datetime" and isinstance(encoded, str):
+        return datetime.fromisoformat(encoded)
+    if value_type == "date" and isinstance(encoded, str):
+        return date.fromisoformat(encoded)
+    if value_type == "time" and isinstance(encoded, str):
+        return time.fromisoformat(encoded)
+    if value_type == "notification" and isinstance(encoded, dict):
+        return ModelNotificationProposal.model_validate_json(json.dumps(encoded))
+    return {str(key): _decode_plan_value(item) for key, item in value.items()}
+
+
 _HELP_TEXT = """# 知序 · 帮助
 
 > 日程、提醒、待办、备忘与联网问答
@@ -90,6 +145,14 @@ _HELP_TEXT = """# 知序 · 帮助
 - `15分钟后提醒我关烤箱`、`稍后提醒我检查下载`
 - `/提醒完成 reminder_ID`、`/取消提醒 reminder_ID`
 - `/提醒稍后 reminder_ID 15分钟`
+- `/循环 每周四创建疯狂星期四日程` — 创建循环事件
+- `每个月倒数第二个香港工作日发工资` — 创建香港工作日工资事件
+
+## 纪念日与每日简报
+- `/纪念日 名称 YYYY-MM-DD` — 创建纪念日
+- `/纪念日` — 查看纪念日及累计天数
+- `/每日简报 08:00` — 每天向当前会话推送纪念日、日程图和日程卡片
+- `/每日简报` — 查看已配置的简报
 
 ## 待办
 - `/待办` — 查看待办
@@ -153,6 +216,9 @@ _INTERNAL_GROUP_HELP_TEXT = """# 知序 · 内部群帮助
 - `/完成 task_ID`、`/延期 task_ID 30分钟`
 - `/提醒完成 reminder_ID`、`/取消提醒 reminder_ID`
 - `/提醒稍后 reminder_ID 15分钟`
+- `/循环 每周四创建疯狂星期四日程` — 创建本群循环事件
+- `/纪念日 名称 YYYY-MM-DD` — 创建本群共享纪念日
+- `/每日简报 08:00` — 每天向本群推送共享纪念日和共享日程
 
 ## 明确写入私人库
 - `/私人任务 内容`
@@ -175,6 +241,7 @@ class AssistantEngine:
         llm_gateway: LLMGateway | None = None,
         llm_model: str = "",
         web_search_enabled: bool = False,
+        pending_plans: PendingPlanStorePort | None = None,
     ) -> None:
         self.services = services
         self.router = router
@@ -182,6 +249,7 @@ class AssistantEngine:
         self.llm_gateway = llm_gateway
         self.llm_model = llm_model
         self.web_search_enabled = web_search_enabled
+        self.pending_plans = pending_plans
 
     def handle(
         self,
@@ -191,21 +259,66 @@ class AssistantEngine:
         target_ref: str = "",
     ) -> AssistantReply:
         intent = self.router.route(text)
-        if intent is not None and intent.action is IntentAction.CREATE_REMINDER:
+        if intent is None and self.pending_plans is not None and target_ref:
+            revising = self.pending_plans.revising(
+                actor_user_id=context.actor_user_id,
+                target_ref=target_ref,
+                now=self.services.clock.now(),
+            )
+            if revising is not None and self.classifier is not None:
+                try:
+                    revised = self.classifier.classify(
+                        context.actor_user_id,
+                        text,
+                        reason=LLMCallReason.SCHEDULE_PARSE,
+                        reference_time=self.services.clock.now().astimezone(
+                            self.router.timezone
+                        ),
+                        revision_context=revising.payload_json,
+                    )
+                except (InvalidModelOutput, LLMUnavailable, PermissionDenied):
+                    return AssistantReply(
+                        "没有理解修改内容。请说明要改的字段，例如：改成早上9点，文案改为……",
+                        "invalid_plan_revision",
+                        "deterministic",
+                    )
+                if revised.action not in {
+                    IntentAction.CREATE_AGENDA,
+                    IntentAction.CREATE_ANNIVERSARY,
+                    IntentAction.CREATE_DAILY_BRIEFING,
+                    IntentAction.CREATE_REMINDER,
+                    IntentAction.CREATE_TASK,
+                    IntentAction.CREATE_NOTE,
+                }:
+                    return AssistantReply(
+                        "修改后的内容不是可确认的创建计划，请重新描述。",
+                        "invalid_plan_revision",
+                        "deterministic",
+                    )
+                return self._stage_plan(revised, context, target_ref=target_ref)
+        model_parsed_action = (
+            intent is not None
+            and (
+                intent.action is IntentAction.CREATE_REMINDER
+                or bool(intent.arguments.get("model_parse"))
+            )
+        )
+        if model_parsed_action:
+            assert intent is not None
             if self.classifier is None:
                 return AssistantReply(
-                    "提醒的自然语言解析需要模型，但当前模型不可用。",
+                    "自然语言日程解析需要模型，但当前模型不可用。",
                     "llm_unavailable",
                     "deterministic",
                 )
             try:
-                reminder_text = text
+                model_text = str(intent.arguments.get("model_text") or text)
                 private = bool(intent.arguments.get("private"))
-                if private and reminder_text.strip().startswith("/私人提醒 "):
-                    reminder_text = reminder_text.strip().removeprefix("/私人提醒 ")
+                if private and model_text.strip().startswith("/私人提醒 "):
+                    model_text = model_text.strip().removeprefix("/私人提醒 ")
                 proposed = self.classifier.classify(
                     context.actor_user_id,
-                    reminder_text,
+                    model_text,
                     reason=LLMCallReason.SCHEDULE_PARSE,
                     reference_time=self.services.clock.now().astimezone(
                         self.router.timezone
@@ -213,13 +326,13 @@ class AssistantEngine:
                 )
             except (InvalidModelOutput, LLMUnavailable, PermissionDenied):
                 return AssistantReply(
-                    "提醒解析失败，请补充明确的日期、时间和事项。",
+                    "日程解析失败，请补充明确的日期、时间和事项。",
                     "llm_unavailable",
                     "deterministic",
                 )
-            if proposed.action is not IntentAction.CREATE_REMINDER:
+            if proposed.action is not intent.action:
                 return AssistantReply(
-                    "没有识别到明确的提醒事项。",
+                    "模型返回的日程类型与命令不一致。",
                     "invalid_intent",
                     "llm",
                 )
@@ -230,7 +343,7 @@ class AssistantEngine:
                 proposed.action,
                 parsed_arguments,
                 source="llm",
-                requires_confirmation=False,
+                requires_confirmation=True,
             )
         if intent is None:
             matches = (
@@ -264,13 +377,10 @@ class AssistantEngine:
                     "llm_unavailable",
                     "deterministic",
                 )
-            if intent.action is IntentAction.CREATE_REMINDER:
-                intent = ParsedIntent(
-                    intent.action,
-                    dict(intent.arguments),
-                    source=intent.source,
-                    requires_confirmation=False,
-                )
+        if intent.action is IntentAction.DELETE_RESOURCE:
+            return self._execute(intent, context, target_ref=target_ref)
+        if intent.requires_confirmation:
+            return self._stage_plan(intent, context, target_ref=target_ref)
         return self._execute(intent, context, target_ref=target_ref)
 
     def _execute(
@@ -280,6 +390,67 @@ class AssistantEngine:
         *,
         target_ref: str,
     ) -> AssistantReply:
+        if intent.action in {IntentAction.CONFIRM_PLAN, IntentAction.REJECT_PLAN}:
+            plan_id = str(intent.arguments.get("plan_id") or "")
+            if self.pending_plans is None or not target_ref:
+                return AssistantReply(
+                    "计划确认功能当前不可用。",
+                    "plan_unavailable",
+                    "deterministic",
+                )
+            now = self.services.clock.now()
+            stored = self.pending_plans.get(
+                plan_id,
+                actor_user_id=context.actor_user_id,
+                target_ref=target_ref,
+                now=now,
+            )
+            if stored is None:
+                return AssistantReply(
+                    "该计划不存在、已过期，或不属于你和当前会话。",
+                    "plan_not_found",
+                    "deterministic",
+                )
+            if intent.action is IntentAction.REJECT_PLAN:
+                self.pending_plans.reject(plan_id, now=now)
+                return AssistantReply(
+                    "已拒绝本版计划。请直接描述怎么修改，例如：改成早上9点，文案改为……",
+                    "plan_revision_requested",
+                    "deterministic",
+                )
+            if not self.pending_plans.consume(plan_id, now=now):
+                return AssistantReply(
+                    "该计划已经处理，请不要重复提交。",
+                    "plan_already_handled",
+                    "deterministic",
+                )
+            try:
+                payload = json.loads(stored.payload_json)
+                arguments = _decode_plan_value(payload)
+                action = IntentAction(stored.action)
+            except (ValueError, TypeError, json.JSONDecodeError):
+                return AssistantReply(
+                    "计划内容校验失败，未执行写入。",
+                    "invalid_plan",
+                    "deterministic",
+                )
+            if not isinstance(arguments, dict):
+                return AssistantReply(
+                    "计划内容校验失败，未执行写入。",
+                    "invalid_plan",
+                    "deterministic",
+                )
+            return self._execute(
+                ParsedIntent(action, arguments, source="confirmed"),
+                context,
+                target_ref=target_ref,
+            )
+        if intent.action is IntentAction.DELETE_RESOURCE:
+            return AssistantReply(
+                "模型不能直接执行删除；请使用明确的资源命令并再次确认。",
+                "dangerous_action_blocked",
+                intent.source,
+            )
         if intent.requires_confirmation and not context.confirmed:
             return AssistantReply(
                 "这是模型建议的写入或删除操作，需要明确确认后才能执行。",
@@ -372,6 +543,141 @@ class AssistantEngine:
             )
         if intent.action is IntentAction.VIEW_CALENDAR:
             return self._calendar_reply(arguments, context, source=intent.source)
+        if intent.action is IntentAction.CREATE_AGENDA:
+            title = str(arguments.get("title") or "").strip()
+            start_at = arguments.get("start_at")
+            end_at = arguments.get("end_at")
+            recurrence_rule = str(arguments.get("recurrence_rule") or "").strip()
+            notifications = arguments.get("notifications") or []
+            if (
+                not title
+                or not isinstance(start_at, datetime)
+                or not isinstance(end_at, datetime)
+                or not recurrence_rule
+            ):
+                return AssistantReply(
+                    "循环日程缺少事项、起止时间或重复规则。",
+                    "invalid_intent",
+                    intent.source,
+                )
+            if not isinstance(notifications, list) or any(
+                not isinstance(value, ModelNotificationProposal)
+                for value in notifications
+            ):
+                return AssistantReply(
+                    "循环日程的通知规则无效。",
+                    "invalid_intent",
+                    intent.source,
+                )
+            if notifications and not target_ref:
+                return AssistantReply(
+                    "循环日程通知缺少当前会话目标。",
+                    "invalid_intent",
+                    intent.source,
+                )
+            item = self.services.command_bus().execute(
+                CreateAgenda(
+                    title=title,
+                    start_at=start_at,
+                    end_at=end_at,
+                    timezone=self.router.timezone.key,
+                    recurrence_rule=recurrence_rule,
+                    all_day=(
+                        start_at.timetz().replace(tzinfo=None) == time.min
+                        and end_at.timetz().replace(tzinfo=None) == time.min
+                        and end_at - start_at >= timedelta(days=1)
+                    ),
+                    private=bool(arguments.get("private")),
+                ),
+                context,
+            )
+            for notification in notifications:
+                self.services.command_bus().execute(
+                    CreateAgendaNotification(
+                        agenda_item_id=item.id,
+                        time_of_day=notification.time_of_day,
+                        day_offset=notification.day_offset,
+                        text=notification.text,
+                        timezone=self.router.timezone.key,
+                        target_ref=target_ref,
+                    ),
+                    context,
+                )
+            return AssistantReply(
+                f"已创建循环日程：{item.title}"
+                + (f"，并配置 {len(notifications)} 条提醒规则" if notifications else ""),
+                "created",
+                intent.source,
+            )
+        if intent.action is IntentAction.CREATE_ANNIVERSARY:
+            title = str(arguments.get("title") or "").strip()
+            anchor_date = arguments.get("anchor_date")
+            if not title or not isinstance(anchor_date, date):
+                return AssistantReply(
+                    "纪念日缺少名称或有效日期。",
+                    "invalid_intent",
+                    intent.source,
+                )
+            anniversary = self.services.command_bus().execute(
+                CreateAnniversary(
+                    title=title,
+                    anchor_date=anchor_date,
+                    timezone=self.router.timezone.key,
+                    private=bool(arguments.get("private")),
+                ),
+                context,
+            )
+            return AssistantReply(
+                f"已创建纪念日：{anniversary.title}（{anniversary.anchor_date:%Y-%m-%d}）",
+                "created",
+                intent.source,
+            )
+        if intent.action is IntentAction.CREATE_DAILY_BRIEFING:
+            briefing_time = arguments.get("briefing_time")
+            if not target_ref or not isinstance(briefing_time, time):
+                return AssistantReply(
+                    "每日简报缺少推送时间或当前会话目标。",
+                    "invalid_intent",
+                    intent.source,
+                )
+            briefing = self.services.command_bus().execute(
+                CreateDailyBriefing(
+                    time_of_day=briefing_time,
+                    timezone=self.router.timezone.key,
+                    target_ref=target_ref,
+                    private=bool(arguments.get("private")),
+                ),
+                context,
+            )
+            return AssistantReply(
+                f"已开启每日简报：每天 {briefing.time_of_day:%H:%M} 推送到当前会话。",
+                "created",
+                intent.source,
+            )
+        if intent.action is IntentAction.LIST_ANNIVERSARIES:
+            anniversaries = self.services.query_bus().execute(
+                ListAnniversaries(), context
+            )
+            if not anniversaries:
+                return AssistantReply("目前没有纪念日。", "ok", intent.source)
+            today = self.services.clock.now().astimezone(self.router.timezone).date()
+            lines = [
+                f"{item.id} · {item.title}：第 {item.day_number(today)} 天"
+                for item in anniversaries
+            ]
+            return AssistantReply("\n".join(lines), "ok", intent.source)
+        if intent.action is IntentAction.LIST_DAILY_BRIEFINGS:
+            briefings = self.services.query_bus().execute(
+                ListDailyBriefings(), context
+            )
+            if not briefings:
+                return AssistantReply("目前没有每日简报。", "ok", intent.source)
+            lines = [
+                f"{item.id} · 每天 {item.time_of_day:%H:%M} · "
+                f"{'启用' if item.enabled else '停用'}"
+                for item in briefings
+            ]
+            return AssistantReply("\n".join(lines), "ok", intent.source)
         if intent.action is IntentAction.LIST_TASKS:
             tasks = self.services.query_bus().execute(ListTasks(), context)
             if not tasks:
@@ -662,13 +968,101 @@ class AssistantEngine:
                         if model_answer:
                             return AssistantReply(model_answer, "ok", "llm")
             return AssistantReply("没有找到确定性答案。", "not_found", intent.source)
-        if intent.action is IntentAction.DELETE_RESOURCE:
+        raise ValidationError("intent action is not executable")
+
+    def _stage_plan(
+        self,
+        intent: ParsedIntent,
+        context: CommandContext,
+        *,
+        target_ref: str,
+    ) -> AssistantReply:
+        if self.pending_plans is None or not target_ref:
             return AssistantReply(
-                "模型不能直接执行删除；请使用明确的资源命令并再次确认。",
-                "dangerous_action_blocked",
+                "解析已完成，但当前会话不支持计划确认，未写入任何数据。",
+                "confirmation_unavailable",
                 intent.source,
             )
-        raise ValidationError("intent action is not executable")
+        encoded = _encode_plan_value(intent.arguments)
+        payload_json = json.dumps(
+            encoded,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        if len(payload_json.encode("utf-8")) > 16_384:
+            return AssistantReply(
+                "计划内容过长，未进入确认队列。",
+                "plan_too_large",
+                "deterministic",
+            )
+        plan = self.pending_plans.put(
+            actor_user_id=context.actor_user_id,
+            target_ref=target_ref,
+            action=intent.action.value,
+            payload_json=payload_json,
+            now=self.services.clock.now(),
+        )
+        scope = "当前内部群共享库" if "internal_group_member" in context.roles else "私人库"
+        lines = ["# 请确认计划", "", f"**写入范围：** {scope}"]
+        arguments = intent.arguments
+        if intent.action is IntentAction.CREATE_AGENDA:
+            recurrence = str(arguments.get("recurrence_rule") or "")
+            recurrence_text = (
+                "每月倒数第二个香港工作日"
+                if recurrence
+                == "X-BUSINESS-DAY;CALENDAR=HK_GENERAL_HOLIDAYS;BYSETPOS=-2"
+                else recurrence
+            )
+            lines.extend(
+                [
+                    f"**事件：** {_escape_markdown_text(str(arguments.get('title') or ''))}",
+                    f"**开始：** `{arguments.get('start_at')}`",
+                    f"**重复：** `{_escape_markdown_text(recurrence_text)}`",
+                ]
+            )
+            notifications = arguments.get("notifications") or []
+            for index, notification in enumerate(notifications, start=1):
+                if isinstance(notification, ModelNotificationProposal):
+                    relation = (
+                        "事件当天"
+                        if notification.day_offset == 0
+                        else f"事件前 {abs(notification.day_offset)} 天"
+                        if notification.day_offset < 0
+                        else f"事件后 {notification.day_offset} 天"
+                    )
+                    lines.append(
+                        f"**通知 {index}：** {relation} {notification.time_of_day:%H:%M} · "
+                        f"{_escape_markdown_text(notification.text)}"
+                    )
+        elif intent.action is IntentAction.CREATE_ANNIVERSARY:
+            lines.extend(
+                [
+                    f"**纪念日：** {_escape_markdown_text(str(arguments.get('title') or ''))}",
+                    f"**起始日期：** `{arguments.get('anchor_date')}`",
+                ]
+            )
+        elif intent.action is IntentAction.CREATE_DAILY_BRIEFING:
+            lines.append(f"**每日简报时间：** `{arguments.get('briefing_time')}`")
+        elif intent.action is IntentAction.CREATE_REMINDER:
+            lines.extend(
+                [
+                    f"**提醒：** {_escape_markdown_text(str(arguments.get('title') or ''))}",
+                    f"**时间：** `{arguments.get('fire_at')}`",
+                ]
+            )
+        else:
+            lines.append(f"**操作：** `{intent.action.value}`")
+        lines.extend(["", "> 接受后才会写入；拒绝后可直接用自然语言修改。"])
+        return AssistantReply(
+            "\n".join(lines),
+            "plan_preview",
+            intent.source,
+            buttons=(
+                MessageButton("接受", f"/确认计划 {plan.id}"),
+                MessageButton("拒绝", f"/拒绝计划 {plan.id}"),
+            ),
+            rich_text=True,
+        )
 
     def _plan_question(
         self,
@@ -749,6 +1143,8 @@ class AssistantEngine:
             IntentAction.VIEW_CALENDAR,
             IntentAction.LIST_TASKS,
             IntentAction.LIST_REMINDERS,
+            IntentAction.LIST_ANNIVERSARIES,
+            IntentAction.LIST_DAILY_BRIEFINGS,
             IntentAction.SEARCH_NOTES,
         }
         if intent.action not in allowed:

@@ -26,6 +26,7 @@ from zhixu.adapters.storage.sqlite import Database
 from zhixu.channels import (
     CalendarPreview,
     ChannelDeliveryResult,
+    DailyAgendaPreview,
     MessageButton,
     MessageKind,
     OutboundMessage,
@@ -321,6 +322,7 @@ def _message(value: dict[str, object]) -> OutboundMessage:
         else ()
     )
     calendar_value = value.get("calendar_preview")
+    daily_value = value.get("daily_agenda_preview")
     return OutboundMessage(
         channel=str(value["channel"]),
         channel_account=str(value["channel_account"]),
@@ -346,6 +348,23 @@ def _message(value: dict[str, object]) -> OutboundMessage:
                 ),
             )
             if isinstance(calendar_value, dict)
+            else None
+        ),
+        daily_agenda_preview=(
+            DailyAgendaPreview(
+                year=int(daily_value["year"]),
+                month=int(daily_value["month"]),
+                day=int(daily_value["day"]),
+                entries=tuple(
+                    (int(item[0]), int(item[1]), str(item[2]))
+                    for item in daily_value.get("entries", [])
+                ),
+                anniversary_day_numbers=tuple(
+                    int(item)
+                    for item in daily_value.get("anniversary_day_numbers", [])
+                ),
+            )
+            if isinstance(daily_value, dict)
             else None
         ),
         classification=DataClassification(int(value["classification"])),

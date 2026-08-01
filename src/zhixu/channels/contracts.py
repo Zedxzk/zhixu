@@ -105,6 +105,32 @@ class CalendarPreview:
 
 
 @dataclass(frozen=True, slots=True)
+class DailyAgendaPreview:
+    """Privacy-minimized timeline data for a daily briefing image."""
+
+    year: int
+    month: int
+    day: int
+    entries: tuple[tuple[int, int, str], ...] = field(default_factory=tuple)
+    anniversary_day_numbers: tuple[int, ...] = field(default_factory=tuple)
+
+    def __post_init__(self) -> None:
+        try:
+            datetime(self.year, self.month, self.day)
+        except ValueError as exc:
+            raise ValidationError("daily agenda preview date is invalid") from exc
+        if any(
+            not 0 <= start < 1440
+            or not start < end <= 1440
+            or kind not in {"agenda", "reminder"}
+            for start, end, kind in self.entries
+        ):
+            raise ValidationError("daily agenda preview entry is invalid")
+        if any(value < 1 for value in self.anniversary_day_numbers):
+            raise ValidationError("daily agenda anniversary count is invalid")
+
+
+@dataclass(frozen=True, slots=True)
 class OutboundMessage:
     channel: str
     channel_account: str
@@ -116,6 +142,7 @@ class OutboundMessage:
     reply_context_ref: str = field(default="", repr=False)
     classification: DataClassification = DataClassification.PERSONAL
     calendar_preview: CalendarPreview | None = field(default=None, repr=False)
+    daily_agenda_preview: DailyAgendaPreview | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if not self.channel.strip() or not self.channel_account.strip():
@@ -126,6 +153,7 @@ class OutboundMessage:
             not self.text.strip()
             and self.attachment_url is None
             and self.calendar_preview is None
+            and self.daily_agenda_preview is None
         ):
             raise ValidationError("outbound message content is required")
         if len(self.reply_context_ref) > 160:

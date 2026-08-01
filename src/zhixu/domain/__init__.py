@@ -2,12 +2,14 @@
 
 from .agenda import (
     AgendaItem,
+    AgendaNotificationRule,
     AgendaOccurrence,
     ExceptionAction,
     RecurrenceException,
     RecurrenceRule,
     occurrences_between,
 )
+from .briefing import Anniversary, DailyBriefing
 from .classification import (
     DataClassification,
     SecretKind,
@@ -31,11 +33,14 @@ from .task import Task, TaskStatus
 __all__ = [
     "Action",
     "AgendaItem",
+    "AgendaNotificationRule",
     "AgendaOccurrence",
+    "Anniversary",
     "AuthenticationStrength",
     "AuthorizedAction",
     "CommandContext",
     "DataClassification",
+    "DailyBriefing",
     "EncryptedIdentifier",
     "ExceptionAction",
     "ExternalIdentity",

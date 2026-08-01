@@ -9,8 +9,20 @@ import threading
 from collections.abc import Sequence
 from pathlib import Path
 
-from zhixu.adapters.storage.sqlite import Database, ReminderRepository
-from zhixu.application import ReminderScheduler
+from zhixu.adapters.storage.sqlite import (
+    AgendaNotificationRepository,
+    AgendaRepository,
+    AnniversaryRepository,
+    DailyBriefingRepository,
+    Database,
+    ReminderRepository,
+)
+from zhixu.application import (
+    AgendaNotificationScheduler,
+    DailyBriefingScheduler,
+    ReminderScheduler,
+)
+from zhixu.delivery import OutboxStore
 from zhixu.ports import SystemClock
 
 from .common import configure_logging
@@ -37,10 +49,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("late grace must not be negative")
     database = Database(Path(args.database))
     database.migrate()
+    reminders = ReminderRepository(database)
     scheduler = ReminderScheduler(
-        ReminderRepository(database),
+        reminders,
         SystemClock(),
         late_grace_seconds=args.late_grace_seconds,
+    )
+    briefing_scheduler = DailyBriefingScheduler(
+        DailyBriefingRepository(database),
+        AnniversaryRepository(database),
+        AgendaRepository(database),
+        reminders,
+        OutboxStore(database),
+        scheduler.clock,
+    )
+    notification_scheduler = AgendaNotificationScheduler(
+        AgendaNotificationRepository(database),
+        AgendaRepository(database),
+        reminders,
+        scheduler.clock,
     )
     stop = threading.Event()
 
@@ -50,9 +77,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, request_stop)
     signal.signal(signal.SIGINT, request_stop)
     while not stop.is_set():
+        materialized = notification_scheduler.tick()
+        if materialized:
+            logger.info("agenda_notifications_materialized count=%d", materialized)
         inserted = scheduler.tick()
         if inserted:
             logger.info("reminders_enqueued count=%d", inserted)
+        briefings_inserted = briefing_scheduler.tick()
+        if briefings_inserted:
+            logger.info("daily_briefings_enqueued count=%d", briefings_inserted)
         if args.once:
             break
         stop.wait(args.interval)

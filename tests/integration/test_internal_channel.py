@@ -13,6 +13,7 @@ from zhixu.adapters.storage.sqlite import (
     GrantRepository,
     GroupMode,
     NoteRepository,
+    PendingPlanStore,
     ReminderRepository,
     TaskRepository,
     UserRepository,
@@ -20,6 +21,7 @@ from zhixu.adapters.storage.sqlite import (
 from zhixu.adapters.web.internal_channel import InternalChannelAPI
 from zhixu.application import (
     AssistantEngine,
+    AssistantReply,
     IntentAction,
     ParsedIntent,
     ReminderScheduler,
@@ -27,7 +29,12 @@ from zhixu.application import (
     ZhixuServices,
 )
 from zhixu.application.commands import CreateNote
-from zhixu.channels import ChannelCapabilities
+from zhixu.channels import (
+    ChannelCapabilities,
+    ConversationKind,
+    InboundEvent,
+    MessageKind,
+)
 from zhixu.delivery import OutboxStore, QuotaManager, QuotaRule
 from zhixu.delivery.quota import QuotaWindow
 from zhixu.domain import (
@@ -60,13 +67,37 @@ class ReminderClassifierStub:
         )
 
 
+def test_button_result_uses_proactive_conversation_feedback() -> None:
+    event = InboundEvent(
+        event_id="synthetic-button-event",
+        channel="qq",
+        channel_account="qq_synthetic",
+        external_actor_ref="actor_ref",
+        external_conversation_ref="conversation_ref",
+        conversation_kind=ConversationKind.PRIVATE,
+        message_kind=MessageKind.BUTTON,
+        received_at=NOW,
+        text="/提醒稍后 reminder_synthetic 60分钟",
+        metadata={"reply_context_ref": "expiring-interaction-context"},
+    )
+
+    message = InternalChannelAPI._reply_message(
+        event,
+        AssistantReply("已稍后提醒：synthetic", "updated", "deterministic"),
+    )
+
+    assert message.target_ref == "conversation_ref"
+    assert message.reply_context_ref == ""
+    assert message.text.startswith("已稍后提醒")
+
+
 def test_qq_network_database_is_separate_and_duplicate_events_are_idempotent(
     tmp_path: Path,
 ) -> None:
     application_database = Database(tmp_path / "application.sqlite3")
     qq_database = Database(tmp_path / "qq.sqlite3")
-    assert application_database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
-    assert qq_database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+    assert application_database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+    assert qq_database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
     references = OpaqueReferenceFactory(b"R" * 32)
     cipher = FieldCipher(b"E" * 32)
     raw_actor = "synthetic-qq-actor"
@@ -142,6 +173,7 @@ def test_qq_network_database_is_separate_and_duplicate_events_are_idempotent(
                 services=services,
                 router=RuleIntentRouter(clock, timezone="UTC"),
                 classifier=ReminderClassifierStub(),  # type: ignore[arg-type]
+                pending_plans=PendingPlanStore(application_database),
             ),
         outbox=outbox,
         quota=QuotaManager(
@@ -196,7 +228,7 @@ def test_qq_network_database_is_separate_and_duplicate_events_are_idempotent(
     assert accepted.status == 202
     assert duplicate.body == {"accepted": False, "reason_code": "duplicate_event"}
     with application_database.connect() as connection:
-        assert connection.execute("SELECT COUNT(*) FROM reminders").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM reminders").fetchone()[0] == 0
         assert connection.execute("SELECT COUNT(*) FROM inbound_event_receipts").fetchone()[0] == 1
     claim = internal.dispatch(
         "POST",
@@ -213,6 +245,8 @@ def test_qq_network_database_is_separate_and_duplicate_events_are_idempotent(
     delivery = claim.body["delivery"]
     assert delivery["target_ref"] == actor_ref
     assert delivery["reply_context_ref"] == "qqr_synthetic_reply_context"
+    assert delivery["text"].startswith("# 请确认计划")
+    confirm_action = delivery["buttons"][0]["action"]
     completed = internal.dispatch(
         "POST",
         "/internal/channel/delivery/complete",
@@ -227,6 +261,48 @@ def test_qq_network_database_is_separate_and_duplicate_events_are_idempotent(
         ).encode(),
     )
     assert completed.body == {"status": "sent"}
+
+    confirmation_event = {
+        **event,
+        "event_id": "event_synthetic_confirmation",
+        "message_kind": "button",
+        "text": confirm_action,
+        "reply_context_ref": "qqr_expiring_button_context",
+    }
+    assert internal.dispatch(
+        "POST",
+        "/internal/channel/event",
+        headers=headers,
+        body=json.dumps(confirmation_event).encode(),
+    ).status == 202
+    confirmation_delivery = internal.dispatch(
+        "POST",
+        "/internal/channel/delivery/claim",
+        headers=headers,
+        body=json.dumps(
+            {
+                "channel": "qq",
+                "channel_account": account,
+                "worker_id": "qq:synthetic",
+            }
+        ).encode(),
+    ).body["delivery"]
+    assert confirmation_delivery["text"].startswith("私人提醒已设置")
+    assert confirmation_delivery["reply_context_ref"] == ""
+    internal.dispatch(
+        "POST",
+        "/internal/channel/delivery/complete",
+        headers=headers,
+        body=json.dumps(
+            {
+                "delivery_id": confirmation_delivery["id"],
+                "lease_token": confirmation_delivery["lease_token"],
+                "ok": True,
+            }
+        ).encode(),
+    )
+    with application_database.connect() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM reminders").fetchone()[0] == 1
 
     help_event = {
         **event,
@@ -477,6 +553,7 @@ def test_group_modes_enforce_public_isolation_and_internal_member_acl(
             services=services,
             router=RuleIntentRouter(clock),
             classifier=ReminderClassifierStub(),  # type: ignore[arg-type]
+            pending_plans=PendingPlanStore(database),
         ),
         outbox=OutboxStore(database),
         quota=QuotaManager(
@@ -484,7 +561,14 @@ def test_group_modes_enforce_public_isolation_and_internal_member_acl(
             (QuotaRule("provider", QuotaWindow.SECOND, 100),),
         ),
         references=references,
-        capabilities={"qq": ChannelCapabilities(outbound_text=True, groups=True)},
+        capabilities={
+            "qq": ChannelCapabilities(
+                outbound_text=True,
+                markdown=True,
+                buttons=True,
+                groups=True,
+            )
+        },
     )
     headers = {"authorization": f"Bearer {SERVICE_TOKEN}"}
 
@@ -693,6 +777,32 @@ def test_group_modes_enforce_public_isolation_and_internal_member_acl(
         body=json.dumps(reminder_event).encode(),
     )
     assert reminder_response.status == 202
+    plan_delivery = internal.dispatch(
+        "POST",
+        "/internal/channel/delivery/claim",
+        headers=headers,
+        body=json.dumps(
+            {
+                "channel": "qq",
+                "channel_account": "qq_synthetic",
+                "worker_id": "worker_synthetic",
+            }
+        ).encode(),
+    ).body["delivery"]
+    assert plan_delivery["text"].startswith("# 请确认计划")
+    confirmation_event = event(
+        "event_shared_reminder_confirmation",
+        "actor_user_owner",
+        plan_delivery["buttons"][0]["action"],
+    )
+    confirmation_event["message_kind"] = "button"
+    confirmation_event["mentioned"] = True
+    assert internal.dispatch(
+        "POST",
+        "/internal/channel/event",
+        headers=headers,
+        body=json.dumps(confirmation_event).encode(),
+    ).status == 202
     with database.connect() as connection:
         reminder_row = connection.execute(
             """

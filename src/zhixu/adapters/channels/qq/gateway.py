@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -160,6 +161,12 @@ class QQEventMapper:
             or resolved.get("button_id")
             or data.get("content")
             or ""
+        ).strip()
+        text = re.sub(
+            rf"^\s*<@!?{re.escape(self.channel_account)}>\s*",
+            "",
+            text,
+            count=1,
         ).strip()
         if not event_id or not text:
             return None

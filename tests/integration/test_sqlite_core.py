@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from zhixu.adapters.storage.sqlite import (
+    AgendaNotificationRepository,
     AgendaRepository,
+    AnniversaryRepository,
     ChannelRouteStore,
+    DailyBriefingRepository,
     Database,
     GroupMode,
     NoteRepository,
@@ -19,27 +23,33 @@ from zhixu.adapters.storage.sqlite import (
     TaskRepository,
     UserRepository,
 )
-from zhixu.application import ReminderScheduler, ZhixuServices
+from zhixu.application import DailyBriefingScheduler, ReminderScheduler, ZhixuServices
 from zhixu.application.commands import (
     CreateAgenda,
+    CreateAnniversary,
+    CreateDailyBriefing,
     CreateNote,
     CreateReminder,
     CreateTask,
     TransitionTask,
 )
 from zhixu.application.queries import AgendaBetween, ListTasks, SearchNotes
+from zhixu.delivery import OutboxStore
 from zhixu.domain import (
     Action,
+    AgendaItem,
     CommandContext,
     DataClassification,
     MissedReminderPolicy,
     PolicyEngine,
+    RecurrenceRule,
     RequestChannel,
     ResourceRef,
     ScheduledJob,
     TaskStatus,
     User,
     UserStatus,
+    occurrences_between,
 )
 from zhixu.domain.errors import ConcurrencyConflict
 from zhixu.ports import FrozenClock
@@ -59,7 +69,7 @@ class SequentialIds:
 @pytest.fixture
 def database(tmp_path: Path) -> Database:
     database = Database(tmp_path / "zhixu.sqlite3")
-    assert database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+    assert database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
     assert database.migrate() == []
     return database
 
@@ -89,6 +99,9 @@ def app(database: Database) -> tuple[ZhixuServices, FrozenClock, UserRepository]
         tasks=TaskRepository(database),
         notes=NoteRepository(database),
         reminders=ReminderRepository(database),
+        anniversaries=AnniversaryRepository(database),
+        daily_briefings=DailyBriefingRepository(database),
+        agenda_notifications=AgendaNotificationRepository(database),
         policy=policy,
         clock=clock,
         id_factory=SequentialIds(),
@@ -123,7 +136,105 @@ def test_migration_creates_required_phase_one_tables(database: Database) -> None
         "group_activation_challenges",
         "qq_reply_contexts",
         "private_link_challenges",
+        "anniversaries",
+        "daily_briefings",
+        "agenda_notification_rules",
+        "assistant_pending_plans",
     } <= names
+
+
+def test_hong_kong_business_calendar_is_scoped_to_explicit_rule() -> None:
+    timezone = ZoneInfo("Asia/Shanghai")
+    salary = AgendaItem(
+        id="agenda_salary_synthetic",
+        owner_user_id="user_synthetic",
+        title="Synthetic salary",
+        start_at=datetime(2026, 6, 29, tzinfo=timezone),
+        end_at=datetime(2026, 6, 30, tzinfo=timezone),
+        timezone="Asia/Shanghai",
+        recurrence=RecurrenceRule(
+            "X-BUSINESS-DAY;CALENDAR=HK_GENERAL_HOLIDAYS;BYSETPOS=-2",
+            "Asia/Shanghai",
+        ),
+    )
+    ordinary = AgendaItem(
+        id="agenda_ordinary_synthetic",
+        owner_user_id="user_synthetic",
+        title="Synthetic ordinary monthly event",
+        start_at=datetime(2026, 6, 29, 10, tzinfo=timezone),
+        end_at=datetime(2026, 6, 29, 11, tzinfo=timezone),
+        timezone="Asia/Shanghai",
+        recurrence=RecurrenceRule("FREQ=MONTHLY", "Asia/Shanghai"),
+    )
+    window_start = datetime(2026, 8, 1, tzinfo=timezone)
+    window_end = datetime(2026, 9, 1, tzinfo=timezone)
+
+    salary_occurrences = occurrences_between(salary, window_start, window_end)
+    ordinary_occurrences = occurrences_between(ordinary, window_start, window_end)
+
+    assert [value.start_at.day for value in salary_occurrences] == [28]
+    assert [value.start_at.day for value in ordinary_occurrences] == [29]
+
+
+def test_daily_briefing_enqueues_anniversary_schedule_image_once(
+    app: tuple[ZhixuServices, FrozenClock, UserRepository],
+    database: Database,
+) -> None:
+    services, clock, _users = app
+    context = CommandContext(actor_user_id="user_test")
+    timezone = ZoneInfo("Asia/Shanghai")
+    target = "qqc_synthetic_daily_briefing"
+    services.command_bus().execute(
+        CreateAnniversary(
+            title="Synthetic relationship",
+            anchor_date=datetime(2025, 1, 1).date(),
+            timezone="Asia/Shanghai",
+        ),
+        context,
+    )
+    services.command_bus().execute(
+        CreateAgenda(
+            title="Synthetic daily event",
+            start_at=datetime(2026, 1, 1, 18, tzinfo=timezone),
+            end_at=datetime(2026, 1, 1, 19, tzinfo=timezone),
+            timezone="Asia/Shanghai",
+        ),
+        context,
+    )
+    services.command_bus().execute(
+        CreateDailyBriefing(
+            time_of_day=time(16),
+            timezone="Asia/Shanghai",
+            target_ref=target,
+        ),
+        context,
+    )
+    ChannelRouteStore(database).observe(
+        channel="qq",
+        channel_account="bot_synthetic",
+        opaque_ref=target,
+        kind="private",
+        now=clock.now(),
+    )
+    outbox = OutboxStore(database)
+    scheduler = DailyBriefingScheduler(
+        services.daily_briefings,
+        services.anniversaries,
+        services.agenda,
+        services.reminders,
+        outbox,
+        clock,
+    )
+
+    assert scheduler.tick() == 1
+    assert scheduler.tick() == 0
+    claimed = outbox.claim(worker_id="synthetic-daily-worker", now=clock.now())
+    assert claimed is not None
+    assert "Synthetic relationship" in claimed.message.text
+    assert "Synthetic daily event" in claimed.message.text
+    assert claimed.message.daily_agenda_preview is not None
+    assert claimed.message.daily_agenda_preview.entries == ((1080, 1140, "agenda"),)
+    assert claimed.message.daily_agenda_preview.anniversary_day_numbers == (366,)
 
 
 def test_project_admin_bootstrap_role_is_singleton(

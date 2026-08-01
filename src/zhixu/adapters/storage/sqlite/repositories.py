@@ -7,14 +7,17 @@ import json
 import re
 import sqlite3
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time
 from zoneinfo import ZoneInfo
 
 from zhixu.domain import (
     Action,
     AgendaItem,
+    AgendaNotificationRule,
     AgendaOccurrence,
+    Anniversary,
     AuthorizedAction,
+    DailyBriefing,
     DataClassification,
     EncryptedIdentifier,
     ExceptionAction,
@@ -775,6 +778,92 @@ class AgendaRepository:
             result,
             key=lambda occurrence: (occurrence.start_at, occurrence.agenda_item_id),
         )
+
+
+class AgendaNotificationRepository:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    @staticmethod
+    def _from_row(row: sqlite3.Row) -> AgendaNotificationRule:
+        created_at = _load_datetime(str(row["created_at"]))
+        assert created_at is not None
+        return AgendaNotificationRule(
+            id=str(row["id"]),
+            agenda_item_id=str(row["agenda_item_id"]),
+            owner_user_id=str(row["owner_user_id"]),
+            creator_user_id=str(row["creator_user_id"]),
+            target_ref=str(row["target_ref"]),
+            time_of_day=time.fromisoformat(str(row["time_of_day"])),
+            day_offset=int(row["day_offset"]),
+            text=str(row["notification_text"]),
+            timezone=str(row["timezone"]),
+            classification=DataClassification(int(row["classification"])),
+            enabled=bool(row["enabled"]),
+            created_at=created_at,
+        )
+
+    def create(
+        self,
+        rule: AgendaNotificationRule,
+        authorization: AuthorizedAction,
+    ) -> AgendaNotificationRule:
+        _require_authorization(
+            authorization,
+            action=Action.CREATE,
+            kind="agenda_notification",
+            resource_id=rule.id,
+            owner_user_id=rule.owner_user_id,
+            classification=rule.classification,
+        )
+        stored = replace(rule, created_at=authorization.authorized_at)
+        try:
+            with self.database.transaction() as connection:
+                agenda = connection.execute(
+                    "SELECT owner_user_id FROM agenda_items WHERE id=?",
+                    (stored.agenda_item_id,),
+                ).fetchone()
+                if agenda is None:
+                    raise NotFoundError("agenda item not found")
+                if str(agenda["owner_user_id"]) != stored.owner_user_id:
+                    raise PermissionDenied("agenda notification owner mismatch")
+                connection.execute(
+                    """
+                    INSERT INTO agenda_notification_rules(
+                        id,agenda_item_id,owner_user_id,creator_user_id,target_ref,
+                        time_of_day,day_offset,notification_text,timezone,
+                        classification,enabled,created_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        stored.id,
+                        stored.agenda_item_id,
+                        stored.owner_user_id,
+                        stored.creator_user_id,
+                        stored.target_ref,
+                        stored.time_of_day.isoformat(timespec="minutes"),
+                        stored.day_offset,
+                        stored.text,
+                        stored.timezone,
+                        int(stored.classification),
+                        int(stored.enabled),
+                        _dump_datetime(stored.created_at),
+                    ),
+                )
+                _audit(connection, authorization)
+        except sqlite3.IntegrityError as exc:
+            raise _raise_conflict(exc) from exc
+        return stored
+
+    def list_enabled(self) -> list[AgendaNotificationRule]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM agenda_notification_rules
+                WHERE enabled=1 ORDER BY owner_user_id,agenda_item_id,id
+                """
+            ).fetchall()
+        return [self._from_row(row) for row in rows]
 
 
 class TaskRepository:
@@ -1581,6 +1670,196 @@ class ReminderRepository:
                     ),
                 )
         return inserted
+
+
+class AnniversaryRepository:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    @staticmethod
+    def _from_row(row: sqlite3.Row) -> Anniversary:
+        created_at = _load_datetime(str(row["created_at"]))
+        assert created_at is not None
+        return Anniversary(
+            id=str(row["id"]),
+            owner_user_id=str(row["owner_user_id"]),
+            creator_user_id=str(row["creator_user_id"]),
+            title=str(row["title"]),
+            anchor_date=date.fromisoformat(str(row["anchor_date"])),
+            timezone=str(row["timezone"]),
+            classification=DataClassification(int(row["classification"])),
+            created_at=created_at,
+        )
+
+    def create(
+        self,
+        anniversary: Anniversary,
+        authorization: AuthorizedAction,
+    ) -> Anniversary:
+        _require_authorization(
+            authorization,
+            action=Action.CREATE,
+            kind="anniversary",
+            resource_id=anniversary.id,
+            owner_user_id=anniversary.owner_user_id,
+            classification=anniversary.classification,
+        )
+        stored = replace(anniversary, created_at=authorization.authorized_at)
+        try:
+            with self.database.transaction() as connection:
+                connection.execute(
+                    """
+                    INSERT INTO anniversaries(
+                        id,owner_user_id,creator_user_id,title,anchor_date,
+                        timezone,classification,created_at
+                    ) VALUES(?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        stored.id,
+                        stored.owner_user_id,
+                        stored.creator_user_id,
+                        stored.title,
+                        stored.anchor_date.isoformat(),
+                        stored.timezone,
+                        int(stored.classification),
+                        _dump_datetime(stored.created_at),
+                    ),
+                )
+                _audit(connection, authorization)
+        except sqlite3.IntegrityError as exc:
+            raise _raise_conflict(exc) from exc
+        return stored
+
+    def list_for_owner(self, owner_user_id: str) -> list[Anniversary]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM anniversaries WHERE owner_user_id=? ORDER BY anchor_date,id",
+                (owner_user_id,),
+            ).fetchall()
+        return [self._from_row(row) for row in rows]
+
+
+class DailyBriefingRepository:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    @staticmethod
+    def _from_row(row: sqlite3.Row) -> DailyBriefing:
+        created_at = _load_datetime(str(row["created_at"]))
+        updated_at = _load_datetime(str(row["updated_at"]))
+        assert created_at is not None and updated_at is not None
+        return DailyBriefing(
+            id=str(row["id"]),
+            owner_user_id=str(row["owner_user_id"]),
+            creator_user_id=str(row["creator_user_id"]),
+            target_ref=str(row["target_ref"]),
+            time_of_day=time.fromisoformat(str(row["time_of_day"])),
+            timezone=str(row["timezone"]),
+            classification=DataClassification(int(row["classification"])),
+            enabled=bool(row["enabled"]),
+            last_sent_on=(
+                date.fromisoformat(str(row["last_sent_on"]))
+                if row["last_sent_on"] is not None
+                else None
+            ),
+            created_at=created_at,
+            updated_at=updated_at,
+        )
+
+    def create(
+        self,
+        briefing: DailyBriefing,
+        authorization: AuthorizedAction,
+    ) -> DailyBriefing:
+        _require_authorization(
+            authorization,
+            action=Action.CREATE,
+            kind="daily_briefing",
+            resource_id=briefing.id,
+            owner_user_id=briefing.owner_user_id,
+            classification=briefing.classification,
+        )
+        stored = replace(
+            briefing,
+            created_at=authorization.authorized_at,
+            updated_at=authorization.authorized_at,
+        )
+        try:
+            with self.database.transaction() as connection:
+                connection.execute(
+                    """
+                    INSERT INTO daily_briefings(
+                        id,owner_user_id,creator_user_id,target_ref,time_of_day,
+                        timezone,classification,enabled,last_sent_on,created_at,updated_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        stored.id,
+                        stored.owner_user_id,
+                        stored.creator_user_id,
+                        stored.target_ref,
+                        stored.time_of_day.isoformat(timespec="minutes"),
+                        stored.timezone,
+                        int(stored.classification),
+                        int(stored.enabled),
+                        None,
+                        _dump_datetime(stored.created_at),
+                        _dump_datetime(stored.updated_at),
+                    ),
+                )
+                _audit(connection, authorization)
+        except sqlite3.IntegrityError as exc:
+            raise _raise_conflict(exc) from exc
+        return stored
+
+    def list_for_owner(self, owner_user_id: str) -> list[DailyBriefing]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM daily_briefings WHERE owner_user_id=? ORDER BY time_of_day,id",
+                (owner_user_id,),
+            ).fetchall()
+        return [self._from_row(row) for row in rows]
+
+    def due(self, now: datetime) -> list[tuple[DailyBriefing, date]]:
+        require_aware(now, "now")
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM daily_briefings WHERE enabled=1 ORDER BY id"
+            ).fetchall()
+        result: list[tuple[DailyBriefing, date]] = []
+        for row in rows:
+            briefing = self._from_row(row)
+            local = now.astimezone(ZoneInfo(briefing.timezone))
+            if local.time().replace(tzinfo=None) < briefing.time_of_day:
+                continue
+            if briefing.last_sent_on == local.date():
+                continue
+            result.append((briefing, local.date()))
+        return result
+
+    def mark_sent(self, briefing_id: str, sent_on: date, now: datetime) -> None:
+        require_aware(now, "now")
+        with self.database.transaction() as connection:
+            connection.execute(
+                """
+                UPDATE daily_briefings SET last_sent_on=?,updated_at=?
+                WHERE id=? AND enabled=1
+                """,
+                (sent_on.isoformat(), _dump_datetime(now), briefing_id),
+            )
+
+    def target_channel(self, target_ref: str) -> tuple[str, str] | None:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT channel,channel_account FROM channel_routes
+                WHERE opaque_ref=? ORDER BY last_seen_at DESC LIMIT 1
+                """,
+                (target_ref,),
+            ).fetchone()
+        if row is None:
+            return None
+        return str(row["channel"]), str(row["channel_account"])
 
 
 class ScheduledJobRepository:

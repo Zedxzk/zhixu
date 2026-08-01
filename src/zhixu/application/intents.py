@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime, time
 from enum import StrEnum
 from typing import Any
 
@@ -16,6 +16,13 @@ class IntentAction(StrEnum):
     HELP = "help"
     LIST_AGENDA = "list_agenda"
     VIEW_CALENDAR = "view_calendar"
+    CREATE_AGENDA = "create_agenda"
+    CREATE_ANNIVERSARY = "create_anniversary"
+    CREATE_DAILY_BRIEFING = "create_daily_briefing"
+    CONFIRM_PLAN = "confirm_plan"
+    REJECT_PLAN = "reject_plan"
+    LIST_ANNIVERSARIES = "list_anniversaries"
+    LIST_DAILY_BRIEFINGS = "list_daily_briefings"
     LIST_TASKS = "list_tasks"
     LIST_REMINDERS = "list_reminders"
     SEARCH_NOTES = "search_notes"
@@ -50,15 +57,39 @@ class ModelIntentProposal(BaseModel):
     answer: str | None = Field(default=None, max_length=4000)
     fire_at: datetime | None = None
     due_at: datetime | None = None
+    start_at: datetime | None = None
+    end_at: datetime | None = None
+    recurrence_rule: str | None = Field(default=None, max_length=500)
+    anchor_date: date | None = None
+    briefing_time: time | None = None
+    notifications: list[ModelNotificationProposal] = Field(
+        default_factory=list,
+        max_length=8,
+    )
     task_id: str | None = Field(default=None, max_length=160)
     reminder_id: str | None = Field(default=None, max_length=160)
     resource_id: str | None = Field(default=None, max_length=160)
 
-    @field_validator("fire_at", "due_at")
+    @field_validator("fire_at", "due_at", "start_at", "end_at")
     @classmethod
     def require_aware_datetime(cls, value: datetime | None) -> datetime | None:
         if value is not None and value.tzinfo is None:
             raise ValueError("model-proposed datetimes must include a timezone")
+        return value
+
+
+class ModelNotificationProposal(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    time_of_day: time
+    day_offset: int = Field(default=0, ge=-366, le=366)
+    text: str = Field(min_length=1, max_length=500)
+
+    @field_validator("time_of_day")
+    @classmethod
+    def require_wall_time(cls, value: time) -> time:
+        if value.tzinfo is not None:
+            raise ValueError("notification time must be a local wall time")
         return value
 
 

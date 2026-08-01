@@ -45,7 +45,7 @@ def test_calendar_preview_rejects_impossible_or_duplicate_days() -> None:
 def target_store(tmp_path: Path) -> tuple[OutboundTargetStore, Path]:
     path = tmp_path / "zhixu.sqlite3"
     database = Database(path)
-    assert database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+    assert database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
     return (
         OutboundTargetStore(
             database,

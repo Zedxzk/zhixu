@@ -17,6 +17,9 @@ from .intents import IntentAction, ModelIntentProposal, ParsedIntent
 from .llm import LLMGateway
 
 _MUTATING_MODEL_ACTIONS = {
+    IntentAction.CREATE_AGENDA,
+    IntentAction.CREATE_ANNIVERSARY,
+    IntentAction.CREATE_DAILY_BRIEFING,
     IntentAction.CREATE_TASK,
     IntentAction.CREATE_NOTE,
     IntentAction.CREATE_REMINDER,
@@ -39,12 +42,58 @@ class RuleIntentRouter:
         compact = re.sub(r"\s+", "", value)
         if value.lower() in {"/帮助", "/help", "帮助", "help", "/菜单", "菜单"}:
             return ParsedIntent(IntentAction.HELP)
+        plan_confirmation = re.fullmatch(
+            r"/(确认|拒绝)计划\s+(plan_[A-Za-z0-9_-]{8,80})",
+            value,
+        )
+        if plan_confirmation:
+            return ParsedIntent(
+                (
+                    IntentAction.CONFIRM_PLAN
+                    if plan_confirmation.group(1) == "确认"
+                    else IntentAction.REJECT_PLAN
+                ),
+                {"plan_id": plan_confirmation.group(2)},
+            )
         if value in {"/今天", "/日程"} or compact in {
             "今天有什么安排",
             "今天的日程",
             "今日安排",
         }:
             return ParsedIntent(IntentAction.LIST_AGENDA)
+        if value == "/纪念日":
+            return ParsedIntent(IntentAction.LIST_ANNIVERSARIES)
+        anniversary = re.fullmatch(r"/纪念日\s+(.+?)\s+(\d{4}-\d{1,2}-\d{1,2})", value)
+        if anniversary:
+            try:
+                anchor_date = datetime.strptime(
+                    anniversary.group(2), "%Y-%m-%d"
+                ).date()
+            except ValueError:
+                return None
+            return ParsedIntent(
+                IntentAction.CREATE_ANNIVERSARY,
+                {"title": anniversary.group(1).strip(), "anchor_date": anchor_date},
+            )
+        if value == "/每日简报":
+            return ParsedIntent(IntentAction.LIST_DAILY_BRIEFINGS)
+        daily_briefing = re.fullmatch(r"/每日简报\s+(\d{1,2}):(\d{2})", value)
+        if daily_briefing:
+            hour, minute = int(daily_briefing.group(1)), int(daily_briefing.group(2))
+            if hour > 23 or minute > 59:
+                return None
+            return ParsedIntent(
+                IntentAction.CREATE_DAILY_BRIEFING,
+                {"briefing_time": time(hour, minute)},
+            )
+        if value.startswith("/循环 ") and value.removeprefix("/循环 ").strip():
+            return ParsedIntent(
+                IntentAction.CREATE_AGENDA,
+                {
+                    "model_parse": True,
+                    "model_text": value.removeprefix("/循环 ").strip(),
+                },
+            )
         calendar_view = re.fullmatch(
             r"/(?:日历|月历)(?:\s+(\d{4})-(\d{1,2}))?",
             value,
@@ -262,10 +311,18 @@ class ModelIntentClassifier:
         *,
         reason: LLMCallReason,
         reference_time: datetime | None = None,
+        revision_context: str = "",
     ) -> ParsedIntent:
         temporal_context = (
             f" Reference time: {reference_time.isoformat()}."
             if reference_time is not None
+            else ""
+        )
+        revision_instruction = (
+            " Revise the existing structured plan using the user's latest changes. "
+            "Keep every field the user did not ask to change. Existing plan: "
+            f"{revision_context}"
+            if revision_context
             else ""
         )
         request = LLMRequest(
@@ -274,8 +331,28 @@ class ModelIntentClassifier:
                 "Classify the request into the provided schema. Never invent identifiers, "
                 "times, or actions. Resolve relative time only from the supplied reference "
                 "time. For a reminder request use action=create_reminder and include title, "
-                "confidence, and an ISO-8601 fire_at with timezone. Return only JSON."
-                f"{temporal_context}"
+                "confidence, and an ISO-8601 fire_at with timezone. For a recurring calendar "
+                "event use action=create_agenda with title, aware start_at, aware end_at, and "
+                "an RFC 5545 recurrence_rule; an unspecified event time means an all-day "
+                "event starting at local midnight and ending at the next local midnight. "
+                "This project uses the ordinary calendar for all events except salary. "
+                "Only when the event is salary/payday on the second-to-last Hong Kong "
+                "business day of every month, set recurrence_rule exactly to "
+                "X-BUSINESS-DAY;CALENDAR=HK_GENERAL_HOLIDAYS;BYSETPOS=-2. Never use that "
+                "Hong Kong rule for anniversaries, briefings, or other recurring events. "
+                "For that custom business-day rule, use the supplied reference date at "
+                "local midnight as start_at and the next local midnight as end_at; the "
+                "deterministic calendar engine, not the model, chooses each actual payday. "
+                "A recurring calendar request may also contain zero or more notification "
+                "rules. Put each in notifications with a timezone-free time_of_day, "
+                "day_offset relative to the event date (0 means the same day, -1 means "
+                "one day before), and the exact requested notification text. Do not put "
+                "the notification wording into the calendar title. "
+                "For an anniversary use "
+                "action=create_anniversary with title and anchor_date. For a daily morning "
+                "briefing use action=create_daily_briefing and briefing_time; use 08:00 only "
+                "when the user says morning without a precise time. Return only JSON."
+                f"{temporal_context}{revision_instruction}"
             ),
             user_prompt=text,
             response_schema=ModelIntentProposal.model_json_schema(),
@@ -300,6 +377,12 @@ class ModelIntentClassifier:
                 "answer": proposal.answer,
                 "fire_at": proposal.fire_at,
                 "due_at": proposal.due_at,
+                "start_at": proposal.start_at,
+                "end_at": proposal.end_at,
+                "recurrence_rule": proposal.recurrence_rule,
+                "anchor_date": proposal.anchor_date,
+                "briefing_time": proposal.briefing_time,
+                "notifications": proposal.notifications or None,
                 "task_id": proposal.task_id,
                 "reminder_id": proposal.reminder_id,
                 "resource_id": proposal.resource_id,

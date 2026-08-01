@@ -783,7 +783,11 @@ class InternalChannelAPI:
             reply.text,
             buttons=reply.buttons,
             calendar_preview=reply.calendar_preview,
-            reply_context_ref=str(event.metadata.get("reply_context_ref") or ""),
+            reply_context_ref=(
+                ""
+                if event.message_kind is MessageKind.BUTTON
+                else str(event.metadata.get("reply_context_ref") or "")
+            ),
         )
 
     def _claim(self, payload: ClaimPayload) -> AdminResponse:
@@ -844,6 +848,24 @@ class InternalChannelAPI:
                             "today_day": rendered.calendar_preview.today_day,
                         }
                         if rendered.calendar_preview is not None
+                        else None
+                    ),
+                    "daily_agenda_preview": (
+                        {
+                            "year": rendered.daily_agenda_preview.year,
+                            "month": rendered.daily_agenda_preview.month,
+                            "day": rendered.daily_agenda_preview.day,
+                            "entries": [
+                                [start, end, kind]
+                                for start, end, kind in (
+                                    rendered.daily_agenda_preview.entries
+                                )
+                            ],
+                            "anniversary_day_numbers": list(
+                                rendered.daily_agenda_preview.anniversary_day_numbers
+                            ),
+                        }
+                        if rendered.daily_agenda_preview is not None
                         else None
                     ),
                     "reply_context_ref": rendered.reply_context_ref,

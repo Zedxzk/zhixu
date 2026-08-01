@@ -9,7 +9,10 @@ from dataclasses import replace
 from zhixu.domain import (
     Action,
     AgendaItem,
+    AgendaNotificationRule,
+    Anniversary,
     CommandContext,
+    DailyBriefing,
     DataClassification,
     Note,
     PolicyEngine,
@@ -20,10 +23,13 @@ from zhixu.domain import (
     ResourceRef,
     Task,
 )
-from zhixu.domain.errors import ConcurrencyConflict, NotFoundError
+from zhixu.domain.errors import ConcurrencyConflict, NotFoundError, ValidationError
 from zhixu.ports import (
+    AgendaNotificationRepositoryPort,
     AgendaRepositoryPort,
+    AnniversaryRepositoryPort,
     Clock,
+    DailyBriefingRepositoryPort,
     NoteRepositoryPort,
     ReminderRepositoryPort,
     TaskRepositoryPort,
@@ -34,6 +40,9 @@ from .commands import (
     CancelReminder,
     CommandBus,
     CreateAgenda,
+    CreateAgendaNotification,
+    CreateAnniversary,
+    CreateDailyBriefing,
     CreateNote,
     CreateReminder,
     CreateTask,
@@ -48,7 +57,15 @@ from .commands import (
     UpdateNote,
     UpdateTask,
 )
-from .queries import AgendaBetween, ListReminders, ListTasks, QueryBus, SearchNotes
+from .queries import (
+    AgendaBetween,
+    ListAnniversaries,
+    ListDailyBriefings,
+    ListReminders,
+    ListTasks,
+    QueryBus,
+    SearchNotes,
+)
 
 IdFactory = Callable[[str], str]
 
@@ -68,6 +85,9 @@ class ZhixuServices:
         policy: PolicyEngine,
         clock: Clock,
         id_factory: IdFactory = random_id,
+        anniversaries: AnniversaryRepositoryPort | None = None,
+        daily_briefings: DailyBriefingRepositoryPort | None = None,
+        agenda_notifications: AgendaNotificationRepositoryPort | None = None,
     ) -> None:
         self.agenda = agenda
         self.tasks = tasks
@@ -76,6 +96,9 @@ class ZhixuServices:
         self.policy = policy
         self.clock = clock
         self.id_factory = id_factory
+        self.anniversaries = anniversaries
+        self.daily_briefings = daily_briefings
+        self.agenda_notifications = agenda_notifications
 
     def _context(self, context: CommandContext) -> CommandContext:
         return replace(context, now=self.clock.now())
@@ -128,6 +151,99 @@ class ZhixuServices:
             self._ref("agenda", item.id, item.owner_user_id, item.classification),
         )
         return self.agenda.create(item, authorization)
+
+    def create_anniversary(
+        self,
+        command: CreateAnniversary,
+        context: CommandContext,
+    ) -> Anniversary:
+        if self.anniversaries is None:
+            raise ValidationError("anniversary repository is unavailable")
+        current = self._context(context)
+        anniversary = Anniversary(
+            id=self.id_factory("anniversary"),
+            owner_user_id=self._create_owner(current, private=command.private),
+            creator_user_id=current.actor_user_id,
+            title=command.title,
+            anchor_date=command.anchor_date,
+            timezone=command.timezone,
+            classification=command.classification,
+        )
+        authorization = self.policy.require(
+            current,
+            Action.CREATE,
+            self._ref(
+                "anniversary",
+                anniversary.id,
+                anniversary.owner_user_id,
+                anniversary.classification,
+            ),
+        )
+        return self.anniversaries.create(anniversary, authorization)
+
+    def create_agenda_notification(
+        self,
+        command: CreateAgendaNotification,
+        context: CommandContext,
+    ) -> AgendaNotificationRule:
+        if self.agenda_notifications is None:
+            raise ValidationError("agenda notification repository is unavailable")
+        item = self.agenda.get(command.agenda_item_id)
+        if item is None:
+            raise NotFoundError("agenda item not found")
+        current = self._context(context)
+        rule = AgendaNotificationRule(
+            id=self.id_factory("agenda_notification"),
+            agenda_item_id=item.id,
+            owner_user_id=item.owner_user_id,
+            creator_user_id=current.actor_user_id,
+            target_ref=command.target_ref,
+            time_of_day=command.time_of_day,
+            day_offset=command.day_offset,
+            text=command.text,
+            timezone=command.timezone,
+            classification=max(item.classification, command.classification),
+        )
+        authorization = self.policy.require(
+            current,
+            Action.CREATE,
+            self._ref(
+                "agenda_notification",
+                rule.id,
+                rule.owner_user_id,
+                rule.classification,
+            ),
+        )
+        return self.agenda_notifications.create(rule, authorization)
+
+    def create_daily_briefing(
+        self,
+        command: CreateDailyBriefing,
+        context: CommandContext,
+    ) -> DailyBriefing:
+        if self.daily_briefings is None:
+            raise ValidationError("daily briefing repository is unavailable")
+        current = self._context(context)
+        briefing = DailyBriefing(
+            id=self.id_factory("briefing"),
+            owner_user_id=self._create_owner(current, private=command.private),
+            creator_user_id=current.actor_user_id,
+            target_ref=command.target_ref,
+            time_of_day=command.time_of_day,
+            timezone=command.timezone,
+            classification=command.classification,
+        )
+        authorization = self.policy.require(
+            current,
+            Action.CREATE,
+            self._ref(
+                "daily_briefing",
+                briefing.id,
+                briefing.owner_user_id,
+                briefing.classification,
+            ),
+        )
+        return self.daily_briefings.create(briefing, authorization)
 
     def update_agenda(self, command: UpdateAgenda, context: CommandContext) -> AgendaItem:
         existing = self.agenda.get(command.item_id)
@@ -595,9 +711,60 @@ class ZhixuServices:
             visible.append(note)
         return visible
 
+    def list_anniversaries(
+        self,
+        _query: ListAnniversaries,
+        context: CommandContext,
+    ) -> list[Anniversary]:
+        if self.anniversaries is None:
+            return []
+        current = self._context(context)
+        values: list[Anniversary] = []
+        for owner_user_id in self._read_owners(current):
+            values.extend(self.anniversaries.list_for_owner(owner_user_id))
+        for anniversary in values:
+            self.policy.require(
+                current,
+                Action.READ,
+                self._ref(
+                    "anniversary",
+                    anniversary.id,
+                    anniversary.owner_user_id,
+                    anniversary.classification,
+                ),
+            )
+        return values
+
+    def list_daily_briefings(
+        self,
+        _query: ListDailyBriefings,
+        context: CommandContext,
+    ) -> list[DailyBriefing]:
+        if self.daily_briefings is None:
+            return []
+        current = self._context(context)
+        values: list[DailyBriefing] = []
+        for owner_user_id in self._read_owners(current):
+            values.extend(self.daily_briefings.list_for_owner(owner_user_id))
+        for briefing in values:
+            self.policy.require(
+                current,
+                Action.READ,
+                self._ref(
+                    "daily_briefing",
+                    briefing.id,
+                    briefing.owner_user_id,
+                    briefing.classification,
+                ),
+            )
+        return values
+
     def command_bus(self) -> CommandBus:
         bus = CommandBus()
         bus.register(CreateAgenda, self.create_agenda)
+        bus.register(CreateAgendaNotification, self.create_agenda_notification)
+        bus.register(CreateAnniversary, self.create_anniversary)
+        bus.register(CreateDailyBriefing, self.create_daily_briefing)
         bus.register(UpdateAgenda, self.update_agenda)
         bus.register(DeleteAgenda, self.delete_agenda)
         bus.register(SetAgendaException, self.set_agenda_exception)
@@ -621,4 +788,6 @@ class ZhixuServices:
         bus.register(ListTasks, self.list_tasks)
         bus.register(SearchNotes, self.search_notes)
         bus.register(ListReminders, self.list_reminders)
+        bus.register(ListAnniversaries, self.list_anniversaries)
+        bus.register(ListDailyBriefings, self.list_daily_briefings)
         return bus

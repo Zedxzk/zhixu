@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Protocol
 
 from zhixu.domain import (
     AgendaItem,
+    AgendaNotificationRule,
     AgendaOccurrence,
+    Anniversary,
     AuthorizedAction,
+    DailyBriefing,
     ExternalIdentity,
     JobRun,
     Note,
@@ -62,6 +65,16 @@ class AgendaRepositoryPort(Protocol):
         window_start: datetime,
         window_end: datetime,
     ) -> list[AgendaOccurrence]: ...
+
+
+class AgendaNotificationRepositoryPort(Protocol):
+    def create(
+        self,
+        rule: AgendaNotificationRule,
+        authorization: AuthorizedAction,
+    ) -> AgendaNotificationRule: ...
+
+    def list_enabled(self) -> list[AgendaNotificationRule]: ...
 
 
 class TaskRepositoryPort(Protocol):
@@ -156,3 +169,29 @@ class ScheduledJobRepositoryPort(Protocol):
         scheduled_for: datetime,
         authorization: AuthorizedAction,
     ) -> tuple[JobRun, bool]: ...
+
+
+class AnniversaryRepositoryPort(Protocol):
+    def create(
+        self,
+        anniversary: Anniversary,
+        authorization: AuthorizedAction,
+    ) -> Anniversary: ...
+
+    def list_for_owner(self, owner_user_id: str) -> list[Anniversary]: ...
+
+
+class DailyBriefingRepositoryPort(Protocol):
+    def create(
+        self,
+        briefing: DailyBriefing,
+        authorization: AuthorizedAction,
+    ) -> DailyBriefing: ...
+
+    def list_for_owner(self, owner_user_id: str) -> list[DailyBriefing]: ...
+
+    def due(self, now: datetime) -> list[tuple[DailyBriefing, date]]: ...
+
+    def mark_sent(self, briefing_id: str, sent_on: date, now: datetime) -> None: ...
+
+    def target_channel(self, target_ref: str) -> tuple[str, str] | None: ...

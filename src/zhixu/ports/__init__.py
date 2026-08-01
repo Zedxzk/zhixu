@@ -10,8 +10,12 @@ from .llm import (
     LLMResponse,
     LLMUsagePort,
 )
+from .pending_plan import PendingPlanStorePort, StoredPendingPlan
 from .repositories import (
+    AgendaNotificationRepositoryPort,
     AgendaRepositoryPort,
+    AnniversaryRepositoryPort,
+    DailyBriefingRepositoryPort,
     NoteRepositoryPort,
     ReminderRepositoryPort,
     ScheduledJobRepositoryPort,
@@ -21,8 +25,11 @@ from .repositories import (
 
 __all__ = [
     "AgendaRepositoryPort",
+    "AgendaNotificationRepositoryPort",
+    "AnniversaryRepositoryPort",
     "Clock",
     "ChannelAdapter",
+    "DailyBriefingRepositoryPort",
     "FrozenClock",
     "LLMBudgetLimit",
     "LLMCallReason",
@@ -31,9 +38,11 @@ __all__ = [
     "LLMResponse",
     "LLMUsagePort",
     "NoteRepositoryPort",
+    "PendingPlanStorePort",
     "ReminderRepositoryPort",
     "ScheduledJobRepositoryPort",
     "SystemClock",
+    "StoredPendingPlan",
     "TaskRepositoryPort",
     "UserRepositoryPort",
 ]

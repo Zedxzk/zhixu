@@ -30,6 +30,7 @@ from zhixu.channels import (
     ChannelCapabilities,
     ChannelDeliveryResult,
     ConversationKind,
+    DailyAgendaPreview,
     InboundEvent,
     MessageButton,
     MessageKind,
@@ -63,7 +64,7 @@ NOW = datetime(2026, 6, 1, 8, tzinfo=UTC)
 @pytest.fixture
 def database(tmp_path: Path) -> Database:
     value = Database(tmp_path / "zhixu.sqlite3")
-    assert value.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+    assert value.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
     return value
 
 
@@ -692,6 +693,68 @@ def test_calendar_preview_survives_outbox_without_storing_png(
     assert "PNG" not in payload
 
 
+def test_daily_agenda_preview_survives_outbox_and_uploads_png(
+    database: Database,
+    privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
+) -> None:
+    create_user(database)
+    contacts = register_account(database, privacy_primitives)
+    target_ref = contacts.record(
+        channel_account="bot_test_a",
+        kind="private",
+        external_identifier="private-openid-daily-agenda-test",
+        now=NOW,
+    )
+    preview = DailyAgendaPreview(
+        2026,
+        8,
+        28,
+        entries=((540, 600, "agenda"), (720, 735, "reminder")),
+        anniversary_day_numbers=(365,),
+    )
+    outbox = OutboxStore(database)
+    assert outbox.enqueue(
+        delivery_id="delivery_daily_agenda_test",
+        idempotency_key="idempotency_daily_agenda_test",
+        owner_user_id="user_test",
+        message=OutboundMessage(
+            "qq",
+            "bot_test_a",
+            target_ref,
+            MessageKind.BUTTON,
+            "# Synthetic daily briefing",
+            buttons=(MessageButton("今天", "/今天"),),
+            daily_agenda_preview=preview,
+        ),
+        now=NOW,
+    )
+    claimed = outbox.claim(worker_id="worker_daily", now=NOW)
+    assert claimed is not None
+    assert claimed.message.daily_agenda_preview == preview
+
+    transport = FakeTransport()
+    adapter = QQHttpAdapter(
+        QQBotCredentials("bot_test_a", "synthetic-app", "synthetic-secret"),
+        contacts,
+        transport=transport,
+    )
+    assert adapter.send(claimed.message).ok
+    upload_payload = next(
+        request[2] for request in transport.requests if request[0].endswith("/files")
+    )
+    assert upload_payload is not None
+    png = base64.b64decode(upload_payload["file_data"], validate=True)
+    assert png.startswith(b"\x89PNG\r\n\x1a\n")
+    with database.connect() as connection:
+        payload = str(
+            connection.execute(
+                "SELECT payload_json FROM outbox_deliveries WHERE id=?",
+                ("delivery_daily_agenda_test",),
+            ).fetchone()["payload_json"]
+        )
+    assert "file_data" not in payload
+
+
 def test_qq_group_reply_uses_encrypted_message_context(
     database: Database,
     privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
@@ -1173,6 +1236,29 @@ def test_gateway_maps_button_interaction_to_deterministic_command(
     assert event.conversation_kind is ConversationKind.PRIVATE
     assert event.text == "/提醒稍后 reminder_synthetic 15分钟"
     assert event.metadata["mentioned"] is True
+
+
+def test_gateway_strips_only_the_bot_mention_from_group_natural_language(
+    database: Database,
+    privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
+) -> None:
+    contacts = register_account(database, privacy_primitives)
+    event = QQEventMapper("bot_test_a", contacts).map(
+        "GROUP_AT_MESSAGE_CREATE",
+        {
+            "id": "synthetic-natural-event",
+            "group_openid": "synthetic-group",
+            "content": (
+                "<@!bot_test_a> every month create a synthetic recurring event"
+            ),
+            "author": {"member_openid": "synthetic-member"},
+        },
+        received_at=NOW,
+    )
+
+    assert event is not None
+    assert event.metadata["mentioned"] is True
+    assert event.text == "every month create a synthetic recurring event"
 
 
 def test_gateway_acknowledges_button_before_forwarding_command(

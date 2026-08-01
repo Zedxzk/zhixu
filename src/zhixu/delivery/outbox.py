@@ -11,6 +11,7 @@ from zhixu.adapters.storage.sqlite.database import Database
 from zhixu.channels import (
     CalendarPreview,
     ChannelDeliveryResult,
+    DailyAgendaPreview,
     MessageButton,
     MessageKind,
     OutboundMessage,
@@ -50,6 +51,19 @@ def _message_json(message: OutboundMessage) -> str:
                 if message.calendar_preview is not None
                 else None
             ),
+            "daily_agenda_preview": (
+                {
+                    "year": message.daily_agenda_preview.year,
+                    "month": message.daily_agenda_preview.month,
+                    "day": message.daily_agenda_preview.day,
+                    "entries": message.daily_agenda_preview.entries,
+                    "anniversary_day_numbers": (
+                        message.daily_agenda_preview.anniversary_day_numbers
+                    ),
+                }
+                if message.daily_agenda_preview is not None
+                else None
+            ),
             "reply_context_ref": message.reply_context_ref,
         },
         ensure_ascii=False,
@@ -60,6 +74,7 @@ def _message_json(message: OutboundMessage) -> str:
 def _message_from_row(row: object) -> OutboundMessage:
     payload = json.loads(str(row["payload_json"]))  # type: ignore[index]
     calendar_value = payload.get("calendar_preview")
+    daily_value = payload.get("daily_agenda_preview")
     return OutboundMessage(
         channel=str(row["channel"]),  # type: ignore[index]
         channel_account=str(row["channel_account"]),  # type: ignore[index]
@@ -86,6 +101,23 @@ def _message_from_row(row: object) -> OutboundMessage:
                 ),
             )
             if isinstance(calendar_value, dict)
+            else None
+        ),
+        daily_agenda_preview=(
+            DailyAgendaPreview(
+                year=int(daily_value["year"]),
+                month=int(daily_value["month"]),
+                day=int(daily_value["day"]),
+                entries=tuple(
+                    (int(item[0]), int(item[1]), str(item[2]))
+                    for item in daily_value.get("entries", [])
+                ),
+                anniversary_day_numbers=tuple(
+                    int(item)
+                    for item in daily_value.get("anniversary_day_numbers", [])
+                ),
+            )
+            if isinstance(daily_value, dict)
             else None
         ),
         reply_context_ref=str(payload.get("reply_context_ref") or ""),

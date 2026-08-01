@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, time
 from enum import StrEnum
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -11,6 +12,11 @@ from dateutil.rrule import rrulestr
 
 from .classification import DataClassification, require_ordinary_storage
 from .errors import ValidationError
+from .hong_kong_calendar import monthly_business_day
+
+_HK_BUSINESS_RULE = re.compile(
+    r"^X-BUSINESS-DAY;CALENDAR=HK_GENERAL_HOLIDAYS;BYSETPOS=(-?\d{1,2})$"
+)
 
 
 def require_aware(value: datetime, field: str) -> None:
@@ -34,6 +40,8 @@ class RecurrenceRule:
         if not self.value.strip():
             raise ValidationError("recurrence rule is required")
         require_timezone(self.timezone)
+        if _HK_BUSINESS_RULE.fullmatch(self.value):
+            return
         try:
             rrulestr(self.value, dtstart=datetime.now(ZoneInfo(self.timezone)))
         except (TypeError, ValueError) as exc:
@@ -102,6 +110,42 @@ class AgendaItem:
 
 
 @dataclass(frozen=True, slots=True)
+class AgendaNotificationRule:
+    id: str
+    agenda_item_id: str
+    owner_user_id: str
+    creator_user_id: str
+    target_ref: str
+    time_of_day: time
+    day_offset: int
+    text: str
+    timezone: str
+    classification: DataClassification = DataClassification.PERSONAL
+    enabled: bool = True
+    created_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        required = (
+            self.id,
+            self.agenda_item_id,
+            self.owner_user_id,
+            self.creator_user_id,
+            self.target_ref,
+            self.text,
+        )
+        if any(not value.strip() for value in required):
+            raise ValidationError("agenda notification fields must not be empty")
+        if self.time_of_day.tzinfo is not None:
+            raise ValidationError("agenda notification wall time must be timezone-free")
+        if not -366 <= self.day_offset <= 366:
+            raise ValidationError("agenda notification day offset is out of range")
+        require_timezone(self.timezone)
+        require_ordinary_storage(self.classification)
+        if self.created_at is not None:
+            require_aware(self.created_at, "created_at")
+
+
+@dataclass(frozen=True, slots=True)
 class AgendaOccurrence:
     agenda_item_id: str
     start_at: datetime
@@ -129,8 +173,34 @@ def occurrences_between(
             return []
         starts = [item.start_at]
     else:
-        rule = rrulestr(item.recurrence.value, dtstart=item.start_at)
-        starts = list(rule.between(window_start - duration, window_end, inc=True))
+        business_rule = _HK_BUSINESS_RULE.fullmatch(item.recurrence.value)
+        if business_rule:
+            local_start = item.start_at.astimezone(ZoneInfo(item.timezone))
+            local_window_start = (window_start - duration).astimezone(
+                ZoneInfo(item.timezone)
+            )
+            local_window_end = window_end.astimezone(ZoneInfo(item.timezone))
+            starts = []
+            year, month = local_window_start.year, local_window_start.month
+            while (year, month) <= (local_window_end.year, local_window_end.month):
+                occurrence_date = monthly_business_day(
+                    year,
+                    month,
+                    int(business_rule.group(1)),
+                )
+                occurrence = datetime.combine(
+                    occurrence_date,
+                    local_start.timetz(),
+                )
+                if occurrence >= item.start_at:
+                    starts.append(occurrence)
+                if month == 12:
+                    year, month = year + 1, 1
+                else:
+                    month += 1
+        else:
+            rule = rrulestr(item.recurrence.value, dtstart=item.start_at)
+            starts = list(rule.between(window_start - duration, window_end, inc=True))
 
     exception_map = {exception.occurrence_at: exception for exception in exceptions}
     result: list[AgendaOccurrence] = []
