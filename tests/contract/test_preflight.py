@@ -165,6 +165,33 @@ def test_preflight_rejects_loose_permissions_symlinks_and_unknown_config(
     assert unknown.value.code == "runtime_config_invalid"
 
 
+def test_preflight_accepts_a_qq_bot_display_name_but_rejects_a_leading_at(
+    tmp_path: Path,
+) -> None:
+    paths = _configuration(tmp_path)
+    original = paths.runtime_config.read_text(encoding="utf-8")
+
+    with paths.runtime_config.open("a", encoding="utf-8") as output:
+        output.write("\nZHIXU_QQ_BOT_DISPLAY_NAME=SyntheticBotName\n")
+    verify_deployment_configuration(
+        paths,
+        expected_owner_uid=os.getuid(),
+        expected_owner_gid=os.getgid(),
+    )
+
+    paths.runtime_config.write_text(
+        original + "\nZHIXU_QQ_BOT_DISPLAY_NAME=@SyntheticBotName\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(PreflightFailure) as leading_at:
+        verify_deployment_configuration(
+            paths,
+            expected_owner_uid=os.getuid(),
+            expected_owner_gid=os.getgid(),
+        )
+    assert leading_at.value.code == "runtime_qq_display_name_invalid"
+
+
 def test_preflight_requires_declared_outbound_credentials_to_match(
     tmp_path: Path,
 ) -> None:

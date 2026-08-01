@@ -33,6 +33,7 @@ _OPTIONAL_RUNTIME = {
     "ZHIXU_LLM_WEB_SEARCH",
     "ZHIXU_ALLOW_PERSONAL_LLM_EGRESS",
     "ZHIXU_ALLOW_CONFIDENTIAL_LOCAL_LLM",
+    "ZHIXU_QQ_BOT_DISPLAY_NAME",
 }
 _BOOLEAN_VALUES = {"0", "1", "false", "no", "off", "on", "true", "yes"}
 
@@ -284,6 +285,10 @@ def _runtime_configuration(path: Path) -> dict[str, str]:
     } & result.keys():
         if result[key].lower() not in _BOOLEAN_VALUES:
             raise PreflightFailure("runtime_boolean_invalid")
+    display_name = result.get("ZHIXU_QQ_BOT_DISPLAY_NAME", "")
+    if display_name and (len(display_name) > 160 or display_name.startswith("@")):
+        # The name is matched behind a literal @, so it must not carry its own.
+        raise PreflightFailure("runtime_qq_display_name_invalid")
     return result
 
 
