@@ -294,3 +294,70 @@ def test_a_plain_reminder_keeps_its_own_time(database: Database) -> None:
     text = _reminder_notification_text(plain)
     assert "**时间：** 2026-08-01 15:00" in text
     assert "距开始" not in text
+
+
+def test_the_card_is_read_in_the_timezone_of_the_event(database: Database) -> None:
+    from zhixu.adapters.storage.sqlite.repositories import (
+        _reminder_notification_text,
+    )
+    from zhixu.domain import AgendaItem
+
+    # An event kept in London: 09:00 there is 16:00 in Shanghai, so a card that
+    # silently rendered Shanghai time would name the wrong hour and weekday.
+    london = ZoneInfo("Europe/London")
+    start = datetime(2026, 8, 6, 9, 0, tzinfo=london)
+    item = AgendaItem(
+        id="agenda_london",
+        owner_user_id="user_test",
+        creator_user_id="user_test",
+        title="London review",
+        start_at=start,
+        end_at=start + timedelta(hours=1),
+        timezone="Europe/London",
+    )
+    AgendaRepository(database).create(
+        item,
+        PolicyEngine().require(
+            CommandContext(actor_user_id="user_test", now=NOW),
+            Action.CREATE,
+            ResourceRef("agenda", item.id, "user_test"),
+        ),
+    )
+    leads = NotificationLeadRepository(database)
+    leads.set_override("agenda_london", "user_test", [60], now=NOW)
+    reminders = ReminderRepository(database)
+    NotificationLeadScheduler(
+        leads,
+        AgendaRepository(database),
+        reminders,
+        DailyBriefingRepository(database),
+        FrozenClock(NOW),
+        horizon_days=10,
+    ).tick()
+
+    stored = reminders.list_for_owner("user_test")[0]
+    assert stored.timezone == "Europe/London"
+    text = _reminder_notification_text(stored)
+    assert "09:00" in text
+    assert "Europe/London" in text
+    assert "北京时间" not in text
+    assert "16:00" not in text
+
+
+def test_a_reminder_without_a_timezone_keeps_the_previous_wording(
+    database: Database,
+) -> None:
+    from zhixu.adapters.storage.sqlite.repositories import (
+        _reminder_notification_text,
+    )
+    from zhixu.domain import Reminder
+
+    legacy = Reminder(
+        id="reminder_legacy",
+        owner_user_id="user_test",
+        title="旧提醒",
+        fire_at=datetime(2026, 8, 1, 15, 0, tzinfo=SHANGHAI),
+        target_ref="qqc_target_test",
+    )
+    text = _reminder_notification_text(legacy)
+    assert "2026-08-01 15:00（北京时间）" in text

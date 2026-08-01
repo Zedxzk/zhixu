@@ -7,7 +7,7 @@ from datetime import datetime
 from enum import StrEnum
 
 from .action_link import ActionLink
-from .agenda import require_aware
+from .agenda import require_aware, require_timezone
 from .classification import DataClassification, require_ordinary_storage
 from .errors import ValidationError
 
@@ -40,6 +40,9 @@ class Reminder:
     # When this reminder announces something that starts later, the moment
     # it starts. Distinct from fire_at, which is when the reminder speaks.
     related_start_at: datetime | None = None
+    # The timezone this reminder should be read in, normally the one the
+    # related resource keeps. Unset means the delivery default.
+    timezone: str | None = None
     version: int = 1
     created_at: datetime | None = None
     updated_at: datetime | None = None
@@ -53,6 +56,8 @@ class Reminder:
         require_aware(self.fire_at, "fire_at")
         if (self.related_kind is None) != (self.related_id is None):
             raise ValidationError("related kind and id must be supplied together")
+        if self.timezone is not None:
+            require_timezone(self.timezone)
         if self.related_start_at is not None:
             require_aware(self.related_start_at, "related_start_at")
             if self.related_id is None:

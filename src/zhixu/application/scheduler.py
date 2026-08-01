@@ -186,6 +186,7 @@ class AgendaNotificationScheduler:
                 classification=rule.classification,
                 related_kind="agenda",
                 related_id=rule.agenda_item_id,
+                timezone=rule.timezone,
             )
             authorization = AuthorizedAction(
                 actor_user_id="service:agenda-notification",
@@ -289,6 +290,7 @@ class NotificationLeadScheduler:
                 related_kind="agenda",
                 related_id=item.id,
                 related_start_at=occurrence.start_at,
+                timezone=item.timezone,
             )
             authorization = AuthorizedAction(
                 actor_user_id="service:agenda-notification",

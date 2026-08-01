@@ -9,7 +9,7 @@ import sqlite3
 from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, date, datetime, time
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from zhixu.domain import (
     DEFAULT_NOTIFICATION_LEAD_MINUTES,
@@ -72,6 +72,7 @@ def _load_datetime(value: str | None, *, timezone: str | None = None) -> datetim
 
 
 _REMINDER_NOTIFICATION_TIMEZONE = ZoneInfo("Asia/Shanghai")
+_DEFAULT_TIMEZONE_LABEL = "北京时间"
 
 
 def _escape_markdown_text(value: str) -> str:
@@ -97,16 +98,30 @@ def _humanise_gap(seconds: float) -> str:
     return f"还有 {days} 天" + (f" {hours} 小时" if hours else "")
 
 
+_TIMEZONE_LABELS = {"Asia/Shanghai": "北京时间", "Asia/Hong_Kong": "香港时间"}
+
+
+def _timezone_of(reminder: Reminder) -> tuple[ZoneInfo, str]:
+    """The zone this reminder is read in, and how to name it to the reader."""
+
+    if reminder.timezone is None:
+        return _REMINDER_NOTIFICATION_TIMEZONE, _DEFAULT_TIMEZONE_LABEL
+    try:
+        zone = ZoneInfo(reminder.timezone)
+    except (ZoneInfoNotFoundError, ValueError):
+        return _REMINDER_NOTIFICATION_TIMEZONE, _DEFAULT_TIMEZONE_LABEL
+    return zone, _TIMEZONE_LABELS.get(reminder.timezone, reminder.timezone)
+
+
 def _reminder_notification_text(reminder: Reminder) -> str:
-    local_fire_at = reminder.fire_at.astimezone(_REMINDER_NOTIFICATION_TIMEZONE)
+    zone, zone_label = _timezone_of(reminder)
+    local_fire_at = reminder.fire_at.astimezone(zone)
     title = _escape_markdown_text(reminder.title)
     lines = ["# ⏰ 日程提醒", "", f"**事项：** {title}"]
     if reminder.related_start_at is not None:
         # This reminder speaks before the thing it announces, so the moment the
         # reader needs is when that thing starts, not when the reminder fired.
-        starts_at = reminder.related_start_at.astimezone(
-            _REMINDER_NOTIFICATION_TIMEZONE
-        )
+        starts_at = reminder.related_start_at.astimezone(zone)
         gap = (reminder.related_start_at - reminder.fire_at).total_seconds()
         weekday = _WEEKDAYS[starts_at.weekday()]
         same_day = starts_at.date() == local_fire_at.date()
@@ -116,14 +131,14 @@ def _reminder_notification_text(reminder: Reminder) -> str:
                 "",
                 f"**开始：** {when} 周{weekday}"
                 + ("（今天）" if same_day else "")
-                + "（北京时间）",
+                + f"（{zone_label}）",
                 "",
                 f"**距开始：** {_humanise_gap(gap)}",
             ]
         )
     else:
         lines.extend(
-            ["", f"**时间：** {local_fire_at:%Y-%m-%d %H:%M}（北京时间）"]
+            ["", f"**时间：** {local_fire_at:%Y-%m-%d %H:%M}（{zone_label}）"]
         )
     return "\n".join(lines)
 
@@ -1488,6 +1503,7 @@ class ReminderRepository:
             related_kind=row["related_kind"],
             related_id=row["related_id"],
             related_start_at=_load_datetime(row["related_start_at"]),
+            timezone=row["timezone"],
             version=int(row["version"]),
             created_at=_load_datetime(str(row["created_at"])),
             updated_at=_load_datetime(str(row["updated_at"])),
@@ -1519,9 +1535,9 @@ class ReminderRepository:
                     INSERT INTO reminders(
                         id,owner_user_id,creator_user_id,title,fire_at,target_ref,status,missed_policy,
                         classification,related_kind,related_id,related_start_at,
-                        action_links_json,
+                        timezone,action_links_json,
                         version,created_at,updated_at
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         stored.id,
@@ -1540,6 +1556,7 @@ class ReminderRepository:
                             if stored.related_start_at is not None
                             else None
                         ),
+                        stored.timezone,
                         _dump_action_links(stored.action_links),
                         stored.version,
                         _dump_datetime(stored.created_at),

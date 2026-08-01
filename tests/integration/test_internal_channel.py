@@ -96,8 +96,8 @@ def test_qq_network_database_is_separate_and_duplicate_events_are_idempotent(
 ) -> None:
     application_database = Database(tmp_path / "application.sqlite3")
     qq_database = Database(tmp_path / "qq.sqlite3")
-    assert application_database.migrate() == list(range(1, 18))
-    assert qq_database.migrate() == list(range(1, 18))
+    assert application_database.migrate() == list(range(1, 19))
+    assert qq_database.migrate() == list(range(1, 19))
     references = OpaqueReferenceFactory(b"R" * 32)
     cipher = FieldCipher(b"E" * 32)
     raw_actor = "synthetic-qq-actor"
