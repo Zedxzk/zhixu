@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from zhixu.channels import ButtonActionKind, CalendarPreview, MessageButton
 from zhixu.domain import (
+    UNKNOWN_YEAR,
     ActionLink,
     CalendarSystem,
     CommandContext,
@@ -42,10 +43,16 @@ from .commands import (
     CreateReminder,
     CreateTask,
     DeleteAgenda,
+    DeleteAgendaNotification,
+    DeleteAnniversary,
+    DeleteDailyBriefing,
     PostponeTask,
     SetNotificationLeads,
     SnoozeReminder,
     TransitionTask,
+    UpdateAgendaNotification,
+    UpdateAnniversary,
+    UpdateDailyBriefing,
 )
 from .intent_router import ModelIntentClassifier, RuleIntentRouter
 from .intents import (
@@ -188,10 +195,15 @@ _HELP_TEXT = """# 知序 · 帮助
 > 计划预览固定提供“接受 / 修改 / 取消创建”。群聊修改受 QQ 入站限制，
 > 后续自然语言仍需再次 @机器人；私聊不需要重复 @。
 
-## 纪念日与每日简报
+## 重要日子与每日简报
 - `/纪念日 名称 YYYY-MM-DD` — 创建纪念日
-- `/纪念日` — 查看纪念日及累计天数
-- `/每日简报 08:00` — 每天向当前会话推送纪念日、日程图和日程卡片
+- `/生日 名字 1995-08-20` — 创建生日，可省略年份；`农历 7-25` 记农历
+- `/纪念日` — 查看全部重要日子及标识
+- `/重要日子 改 <标识> 类型|名称|日期|预告 …` — 修改单个字段
+- `/重要日子 删除 <标识>` — 删除（需确认）
+- `/每日简报 08:00` — 每天向当前会话推送重要日子、日程图和日程卡片
+- `/每日简报 改 <标识> 时间|开关 …`、`/每日简报 删除 <标识>`
+- `/提前提醒 24小时 6小时 1小时 30分钟 准点` — 日程提前多久通知
 - `/每日简报` — 查看已配置的简报
 
 ## 待办
@@ -307,6 +319,55 @@ def _important_day_created_text(anniversary, today: date) -> str:
     if upcoming is not None:
         text += f"，下次 {upcoming:%Y-%m-%d}"
     return text
+
+
+def _important_day_updated_text(anniversary) -> str:
+    label = "生日" if anniversary.kind is ImportantDayKind.BIRTHDAY else "纪念日"
+    if anniversary.calendar is CalendarSystem.LUNAR:
+        leap = "闰" if anniversary.lunar_leap else ""
+        when = f"农历{leap}{anniversary.lunar_month}月{anniversary.lunar_day}日"
+    elif anniversary.anchor_date.year <= UNKNOWN_YEAR:
+        when = f"{anniversary.anchor_date:%m-%d}"
+    else:
+        when = f"{anniversary.anchor_date:%Y-%m-%d}"
+    advance = (
+        "、".join(f"{day}天" for day in anniversary.advance_days)
+        if anniversary.advance_days
+        else "无"
+    )
+    return f"已更新{label}：{anniversary.title}（{when}），提前预告 {advance}"
+
+
+def _important_day_preview_lines(arguments: dict) -> list[str]:
+    """Describe an important day exactly as it is about to be stored.
+
+    The preview is what the user confirms against, so calling a birthday an
+    anniversary is the difference between accepting and rejecting the plan.
+    """
+
+    is_birthday = str(arguments.get("kind") or "") == str(ImportantDayKind.BIRTHDAY)
+    is_lunar = str(arguments.get("calendar") or "") == str(CalendarSystem.LUNAR)
+    title = _escape_markdown_text(str(arguments.get("title") or ""))
+    anchor = arguments.get("anchor_date")
+    lines = [f"**{'生日' if is_birthday else '纪念日'}：** {title}"]
+    if is_lunar:
+        leap = "闰" if arguments.get("lunar_leap") else ""
+        lines.append(
+            f"**农历日期：** `{leap}{arguments.get('lunar_month')}月"
+            f"{arguments.get('lunar_day')}日`"
+        )
+        if isinstance(anchor, date) and anchor.year > UNKNOWN_YEAR:
+            lines.append(f"**出生年：** `{anchor.year}`")
+    elif isinstance(anchor, date) and anchor.year <= UNKNOWN_YEAR:
+        lines.append(f"**日期：** `{anchor:%m-%d}`（年份未知）")
+    else:
+        lines.append(f"**{'出生日期' if is_birthday else '起始日期'}：** `{anchor}`")
+    advance = arguments.get("advance_days")
+    if isinstance(advance, (list, tuple)) and advance:
+        lines.append(
+            "**提前预告：** " + "、".join(f"{int(day)}天" for day in advance)
+        )
+    return lines
 
 
 class AssistantEngine:
@@ -910,6 +971,134 @@ class AssistantEngine:
                 "created",
                 intent.source,
             )
+        if intent.action is IntentAction.DELETE_ANNIVERSARY:
+            try:
+                self.services.command_bus().execute(
+                    DeleteAnniversary(str(arguments.get("anniversary_id") or "")),
+                    context,
+                )
+            except (ValidationError, NotFoundError) as error:
+                return AssistantReply(str(error), "not_found", intent.source)
+            return AssistantReply("已删除该重要日子。", "deleted", intent.source)
+        if intent.action is IntentAction.UPDATE_ANNIVERSARY:
+            advance = arguments.get("advance_days")
+            try:
+                updated = self.services.command_bus().execute(
+                    UpdateAnniversary(
+                        anniversary_id=str(arguments.get("anniversary_id") or ""),
+                        title=(
+                            str(arguments["title"]) if arguments.get("title") else None
+                        ),
+                        anchor_date=(
+                            arguments["anchor_date"]
+                            if isinstance(arguments.get("anchor_date"), date)
+                            else None
+                        ),
+                        kind=(
+                            ImportantDayKind(str(arguments["kind"]))
+                            if arguments.get("kind")
+                            else None
+                        ),
+                        calendar=(
+                            CalendarSystem(str(arguments["calendar"]))
+                            if arguments.get("calendar")
+                            else None
+                        ),
+                        lunar_month=_optional_int(arguments.get("lunar_month")),
+                        lunar_day=_optional_int(arguments.get("lunar_day")),
+                        lunar_leap=(
+                            bool(arguments["lunar_leap"])
+                            if arguments.get("lunar_leap") is not None
+                            else None
+                        ),
+                        advance_days=(
+                            tuple(int(value) for value in advance)
+                            if isinstance(advance, (list, tuple))
+                            else None
+                        ),
+                    ),
+                    context,
+                )
+            except (ValidationError, NotFoundError, ValueError) as error:
+                return AssistantReply(str(error), "invalid_intent", intent.source)
+            return AssistantReply(
+                _important_day_updated_text(updated),
+                "updated",
+                intent.source,
+            )
+        if intent.action is IntentAction.DELETE_DAILY_BRIEFING:
+            try:
+                self.services.command_bus().execute(
+                    DeleteDailyBriefing(str(arguments.get("briefing_id") or "")),
+                    context,
+                )
+            except (ValidationError, NotFoundError) as error:
+                return AssistantReply(str(error), "not_found", intent.source)
+            return AssistantReply("已删除该每日简报。", "deleted", intent.source)
+        if intent.action is IntentAction.UPDATE_DAILY_BRIEFING:
+            try:
+                briefing = self.services.command_bus().execute(
+                    UpdateDailyBriefing(
+                        briefing_id=str(arguments.get("briefing_id") or ""),
+                        time_of_day=(
+                            arguments["briefing_time"]
+                            if isinstance(arguments.get("briefing_time"), time)
+                            else None
+                        ),
+                        enabled=(
+                            bool(arguments["enabled"])
+                            if arguments.get("enabled") is not None
+                            else None
+                        ),
+                    ),
+                    context,
+                )
+            except (ValidationError, NotFoundError) as error:
+                return AssistantReply(str(error), "invalid_intent", intent.source)
+            state = "启用" if briefing.enabled else "停用"
+            return AssistantReply(
+                f"已更新每日简报：每天 {briefing.time_of_day:%H:%M} · {state}。",
+                "updated",
+                intent.source,
+            )
+        if intent.action is IntentAction.DELETE_AGENDA_NOTIFICATION:
+            try:
+                self.services.command_bus().execute(
+                    DeleteAgendaNotification(str(arguments.get("rule_id") or "")),
+                    context,
+                )
+            except (ValidationError, NotFoundError) as error:
+                return AssistantReply(str(error), "not_found", intent.source)
+            return AssistantReply("已删除该日程通知。", "deleted", intent.source)
+        if intent.action is IntentAction.UPDATE_AGENDA_NOTIFICATION:
+            try:
+                rule = self.services.command_bus().execute(
+                    UpdateAgendaNotification(
+                        rule_id=str(arguments.get("rule_id") or ""),
+                        text=str(arguments["text"]) if arguments.get("text") else None,
+                        time_of_day=(
+                            arguments["time_of_day"]
+                            if isinstance(arguments.get("time_of_day"), time)
+                            else None
+                        ),
+                        day_offset=_optional_int(arguments.get("day_offset")),
+                        enabled=(
+                            bool(arguments["enabled"])
+                            if arguments.get("enabled") is not None
+                            else None
+                        ),
+                    ),
+                    context,
+                )
+            except (ValidationError, NotFoundError) as error:
+                return AssistantReply(str(error), "invalid_intent", intent.source)
+            relation = "当天" if rule.day_offset == 0 else f"提前 {rule.day_offset} 天"
+            state = "启用" if rule.enabled else "停用"
+            return AssistantReply(
+                f"已更新日程通知：{relation} {rule.time_of_day:%H:%M} · {state}。",
+                "updated",
+                intent.source,
+            )
         if intent.action is IntentAction.SET_NOTIFICATION_LEADS:
             raw = arguments.get("lead_minutes")
             if not isinstance(raw, (list, tuple)) or not raw:
@@ -1403,14 +1592,15 @@ class AssistantEngine:
                         f"**操作入口 {index}：** {_escape_markdown_text(link.label)}"
                     )
         elif intent.action is IntentAction.CREATE_ANNIVERSARY:
-            lines.extend(
-                [
-                    f"**纪念日：** {_escape_markdown_text(str(arguments.get('title') or ''))}",
-                    f"**起始日期：** `{arguments.get('anchor_date')}`",
-                ]
-            )
+            lines.extend(_important_day_preview_lines(arguments))
         elif intent.action is IntentAction.CREATE_DAILY_BRIEFING:
             lines.append(f"**每日简报时间：** `{arguments.get('briefing_time')}`")
+        elif intent.action is IntentAction.DELETE_ANNIVERSARY:
+            lines.append(f"**删除重要日子：** `{arguments.get('anniversary_id')}`")
+        elif intent.action is IntentAction.DELETE_DAILY_BRIEFING:
+            lines.append(f"**删除每日简报：** `{arguments.get('briefing_id')}`")
+        elif intent.action is IntentAction.DELETE_AGENDA_NOTIFICATION:
+            lines.append(f"**删除日程通知：** `{arguments.get('rule_id')}`")
         elif intent.action is IntentAction.CREATE_REMINDER:
             lines.extend(
                 [

@@ -109,6 +109,97 @@ def _parse_lead_minutes(value: str) -> tuple[int, ...] | None:
         return None
 
 
+def _parse_switch(value: str) -> bool | None:
+    if value in {"开", "启用", "on", "开启"}:
+        return True
+    if value in {"关", "停用", "off", "关闭"}:
+        return False
+    return None
+
+
+def _parse_wall_time(value: str) -> time | None:
+    match = re.fullmatch(r"(\d{1,2}):(\d{2})", value.strip())
+    if match is None:
+        return None
+    hour, minute = int(match.group(1)), int(match.group(2))
+    if hour > 23 or minute > 59:
+        return None
+    return time(hour, minute)
+
+
+def _parse_important_day_edit(rest: str) -> dict[str, object] | None:
+    field, _, body = rest.strip().partition(" ")
+    body = body.strip()
+    if field == "名称" and body:
+        return {"title": body}
+    if field == "类型":
+        if body in {"生日", "birthday"}:
+            return {"kind": "birthday"}
+        if body in {"纪念日", "anniversary"}:
+            return {"kind": "anniversary"}
+        return None
+    if field == "预告":
+        if body in {"关闭", "关", "无"}:
+            return {"advance_days": ()}
+        days = [part for part in re.split(r"[\s,，、]+", body) if part]
+        if not days or any(not part.isdigit() for part in days):
+            return None
+        values = tuple(sorted({int(part) for part in days}, reverse=True))
+        if any(not 1 <= day <= 366 for day in values) or len(values) > 8:
+            return None
+        return {"advance_days": values}
+    if field == "日期":
+        lunar = re.fullmatch(r"农历\s+(闰)?(\d{1,2})-(\d{1,2})", body)
+        if lunar:
+            return {
+                "calendar": "lunar",
+                "lunar_leap": lunar.group(1) is not None,
+                "lunar_month": int(lunar.group(2)),
+                "lunar_day": int(lunar.group(3)),
+            }
+        solar = re.fullmatch(r"(?:(\d{4})-)?(\d{1,2})-(\d{1,2})", body)
+        if solar is None:
+            return None
+        year = int(solar.group(1)) if solar.group(1) else UNKNOWN_YEAR
+        try:
+            anchor = date(year, int(solar.group(2)), int(solar.group(3)))
+        except ValueError:
+            return None
+        return {"calendar": "solar", "anchor_date": anchor}
+    return None
+
+
+def _parse_briefing_edit(rest: str) -> dict[str, object] | None:
+    field, _, body = rest.strip().partition(" ")
+    body = body.strip()
+    if field == "时间":
+        when = _parse_wall_time(body)
+        return None if when is None else {"briefing_time": when}
+    if field == "开关":
+        switch = _parse_switch(body)
+        return None if switch is None else {"enabled": switch}
+    return None
+
+
+def _parse_notification_edit(rest: str) -> dict[str, object] | None:
+    field, _, body = rest.strip().partition(" ")
+    body = body.strip()
+    if field == "文本" and body:
+        return {"text": body}
+    if field == "时间":
+        when = _parse_wall_time(body)
+        return None if when is None else {"time_of_day": when}
+    if field == "提前":
+        if not re.fullmatch(r"-?\d{1,3}", body):
+            return None
+        offset = int(body)
+        return None if not -366 <= offset <= 366 else {"day_offset": offset}
+    if field == "开关":
+        switch = _parse_switch(body)
+        return None if switch is None else {"enabled": switch}
+    return None
+
+
 class RuleIntentRouter:
     def __init__(self, clock: Clock, *, timezone: str = "Asia/Shanghai") -> None:
         self.clock = clock
@@ -157,6 +248,68 @@ class RuleIntentRouter:
             return ParsedIntent(
                 IntentAction.CREATE_ANNIVERSARY,
                 {"title": anniversary.group(1).strip(), "anchor_date": anchor_date},
+            )
+        important_day = re.fullmatch(
+            r"(?:/重要日子|/纪念日|/生日)\s+(删除|改)\s+(\S+)(?:\s+(.*))?",
+            value,
+            re.DOTALL,
+        )
+        if important_day:
+            operation, identifier, rest = important_day.groups()
+            if operation == "删除":
+                # Destroying a record is confirmed the same way as any
+                # other delete, rather than on the strength of one message.
+                return ParsedIntent(
+                    IntentAction.DELETE_ANNIVERSARY,
+                    {"anniversary_id": identifier},
+                    requires_confirmation=True,
+                )
+            edit = _parse_important_day_edit(rest or "")
+            if edit is None:
+                return None
+            return ParsedIntent(
+                IntentAction.UPDATE_ANNIVERSARY,
+                {"anniversary_id": identifier, **edit},
+            )
+        briefing_edit = re.fullmatch(
+            r"/每日简报\s+(删除|改)\s+(\S+)(?:\s+(.*))?", value, re.DOTALL
+        )
+        if briefing_edit:
+            operation, identifier, rest = briefing_edit.groups()
+            if operation == "删除":
+                # Destroying a record is confirmed the same way as any
+                # other delete, rather than on the strength of one message.
+                return ParsedIntent(
+                    IntentAction.DELETE_DAILY_BRIEFING,
+                    {"briefing_id": identifier},
+                    requires_confirmation=True,
+                )
+            edit = _parse_briefing_edit(rest or "")
+            if edit is None:
+                return None
+            return ParsedIntent(
+                IntentAction.UPDATE_DAILY_BRIEFING,
+                {"briefing_id": identifier, **edit},
+            )
+        notification_edit = re.fullmatch(
+            r"/日程通知\s+(删除|改)\s+(\S+)(?:\s+(.*))?", value, re.DOTALL
+        )
+        if notification_edit:
+            operation, identifier, rest = notification_edit.groups()
+            if operation == "删除":
+                # Destroying a record is confirmed the same way as any
+                # other delete, rather than on the strength of one message.
+                return ParsedIntent(
+                    IntentAction.DELETE_AGENDA_NOTIFICATION,
+                    {"rule_id": identifier},
+                    requires_confirmation=True,
+                )
+            edit = _parse_notification_edit(rest or "")
+            if edit is None:
+                return None
+            return ParsedIntent(
+                IntentAction.UPDATE_AGENDA_NOTIFICATION,
+                {"rule_id": identifier, **edit},
             )
         birthday = re.fullmatch(
             r"/生日\s+(.+?)\s+(?:(农历)\s+)?(?:(\d{4})-)?(\d{1,2})-(\d{1,2})",
@@ -511,7 +664,10 @@ class ModelIntentClassifier:
                 "user separately asks for a reminder, notification, or push. "
                 "For an anniversary use action=create_anniversary with title and "
                 "anchor_date, and set important_day_kind=anniversary. For a birthday use "
-                "the same action with important_day_kind=birthday; anchor_date carries the "
+                "the same action with important_day_kind=birthday, which is required "
+                "whenever the request calls the day a birthday (生日) rather than an "
+                "anniversary (纪念日), including a correction that only says it is a "
+                "birthday; anchor_date carries the "
                 "birth date, or 0001-01-01 when the year is unknown. When the user states "
                 "the date on the Chinese lunisolar calendar, set calendar_system=lunar with "
                 "lunar_month, lunar_day and lunar_leap, and never convert it yourself. "
@@ -576,8 +732,11 @@ class ModelIntentClassifier:
                 "lunar_month": proposal.lunar_month,
                 "lunar_day": proposal.lunar_day,
                 "lunar_leap": proposal.lunar_leap,
-                "advance_days": tuple(proposal.advance_days),
-                "lead_minutes": tuple(proposal.lead_minutes),
+                # An empty list means the model said nothing about these, not
+                # that the user asked for none; passing it on would override the
+                # defaults with silence.
+                "advance_days": tuple(proposal.advance_days) or None,
+                "lead_minutes": tuple(proposal.lead_minutes) or None,
                 "include_in_daily_briefing": (
                     proposal.include_in_daily_briefing or briefing_inclusion
                 ),

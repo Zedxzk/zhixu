@@ -63,6 +63,64 @@ class CreateAnniversary:
 
 
 @dataclass(frozen=True, slots=True)
+class UpdateAnniversary:
+    """An unset field keeps its stored value, so one field can be edited alone.
+
+    ``calendar`` carries its own date fields, so changing it always arrives
+    together with the date it switches to.
+    """
+
+    anniversary_id: str
+    title: str | None = None
+    anchor_date: date | None = None
+    kind: ImportantDayKind | None = None
+    calendar: CalendarSystem | None = None
+    lunar_month: int | None = None
+    lunar_day: int | None = None
+    lunar_leap: bool | None = None
+    advance_days: tuple[int, ...] | None = None
+    timezone: str | None = None
+    classification: DataClassification | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DeleteAnniversary:
+    anniversary_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class UpdateDailyBriefing:
+    briefing_id: str
+    time_of_day: time | None = None
+    target_ref: str | None = None
+    timezone: str | None = None
+    enabled: bool | None = None
+    classification: DataClassification | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DeleteDailyBriefing:
+    briefing_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class UpdateAgendaNotification:
+    rule_id: str
+    text: str | None = None
+    time_of_day: time | None = None
+    day_offset: int | None = None
+    target_ref: str | None = None
+    timezone: str | None = None
+    enabled: bool | None = None
+    classification: DataClassification | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DeleteAgendaNotification:
+    rule_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class SetNotificationLeads:
     lead_minutes: tuple[int, ...]
     agenda_item_id: str | None = None
@@ -207,6 +265,12 @@ Command = (
     | CreateAnniversary
     | CreateDailyBriefing
     | SetNotificationLeads
+    | UpdateAnniversary
+    | DeleteAnniversary
+    | UpdateDailyBriefing
+    | DeleteDailyBriefing
+    | UpdateAgendaNotification
+    | DeleteAgendaNotification
     | UpdateAgenda
     | DeleteAgenda
     | SetAgendaException

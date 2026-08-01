@@ -56,6 +56,9 @@ from .commands import (
     CreateReminder,
     CreateTask,
     DeleteAgenda,
+    DeleteAgendaNotification,
+    DeleteAnniversary,
+    DeleteDailyBriefing,
     DeleteNote,
     DeleteTask,
     PostponeTask,
@@ -64,6 +67,9 @@ from .commands import (
     SnoozeReminder,
     TransitionTask,
     UpdateAgenda,
+    UpdateAgendaNotification,
+    UpdateAnniversary,
+    UpdateDailyBriefing,
     UpdateNote,
     UpdateTask,
 )
@@ -303,6 +309,223 @@ class ZhixuServices:
             command.lead_minutes,
             now=current.now or self.clock.now(),
         )
+
+
+    def update_anniversary(
+        self,
+        command: UpdateAnniversary,
+        context: CommandContext,
+    ) -> Anniversary:
+        if self.anniversaries is None:
+            raise ValidationError("anniversary repository is unavailable")
+        existing = self.anniversaries.get(command.anniversary_id)
+        if existing is None:
+            raise NotFoundError("important day was not found")
+        current = self._context(context)
+        calendar = command.calendar or existing.calendar
+        # Switching calendar carries the new date with it; keeping the old
+        # calendar keeps whichever date fields that calendar uses.
+        if command.calendar is not None:
+            lunar_month, lunar_day = command.lunar_month, command.lunar_day
+            lunar_leap = bool(command.lunar_leap)
+        else:
+            lunar_month = (
+                command.lunar_month
+                if command.lunar_month is not None
+                else existing.lunar_month
+            )
+            lunar_day = (
+                command.lunar_day
+                if command.lunar_day is not None
+                else existing.lunar_day
+            )
+            lunar_leap = (
+                command.lunar_leap
+                if command.lunar_leap is not None
+                else existing.lunar_leap
+            )
+        updated = replace(
+            existing,
+            title=command.title or existing.title,
+            anchor_date=command.anchor_date or existing.anchor_date,
+            kind=command.kind or existing.kind,
+            calendar=calendar,
+            lunar_month=lunar_month,
+            lunar_day=lunar_day,
+            lunar_leap=lunar_leap,
+            advance_days=(
+                command.advance_days
+                if command.advance_days is not None
+                else existing.advance_days
+            ),
+            timezone=command.timezone or existing.timezone,
+            classification=(
+                command.classification
+                if command.classification is not None
+                else existing.classification
+            ),
+        )
+        authorization = self.policy.require(
+            current,
+            Action.UPDATE,
+            self._ref(
+                "anniversary",
+                updated.id,
+                updated.owner_user_id,
+                updated.classification,
+            ),
+        )
+        return self.anniversaries.update(updated, authorization)
+
+    def delete_anniversary(
+        self,
+        command: DeleteAnniversary,
+        context: CommandContext,
+    ) -> None:
+        if self.anniversaries is None:
+            raise ValidationError("anniversary repository is unavailable")
+        existing = self.anniversaries.get(command.anniversary_id)
+        if existing is None:
+            raise NotFoundError("important day was not found")
+        authorization = self.policy.require(
+            self._context(context),
+            Action.DELETE,
+            self._ref(
+                "anniversary",
+                existing.id,
+                existing.owner_user_id,
+                existing.classification,
+            ),
+        )
+        self.anniversaries.delete(existing.id, authorization)
+
+    def update_daily_briefing(
+        self,
+        command: UpdateDailyBriefing,
+        context: CommandContext,
+    ) -> DailyBriefing:
+        if self.daily_briefings is None:
+            raise ValidationError("daily briefing repository is unavailable")
+        existing = self.daily_briefings.get(command.briefing_id)
+        if existing is None:
+            raise NotFoundError("daily briefing was not found")
+        current = self._context(context)
+        updated = replace(
+            existing,
+            time_of_day=command.time_of_day or existing.time_of_day,
+            target_ref=command.target_ref or existing.target_ref,
+            timezone=command.timezone or existing.timezone,
+            enabled=(
+                command.enabled if command.enabled is not None else existing.enabled
+            ),
+            classification=(
+                command.classification
+                if command.classification is not None
+                else existing.classification
+            ),
+        )
+        authorization = self.policy.require(
+            current,
+            Action.UPDATE,
+            self._ref(
+                "daily_briefing",
+                updated.id,
+                updated.owner_user_id,
+                updated.classification,
+            ),
+        )
+        return self.daily_briefings.update(
+            updated,
+            authorization,
+            now=current.now or self.clock.now(),
+        )
+
+    def delete_daily_briefing(
+        self,
+        command: DeleteDailyBriefing,
+        context: CommandContext,
+    ) -> None:
+        if self.daily_briefings is None:
+            raise ValidationError("daily briefing repository is unavailable")
+        existing = self.daily_briefings.get(command.briefing_id)
+        if existing is None:
+            raise NotFoundError("daily briefing was not found")
+        authorization = self.policy.require(
+            self._context(context),
+            Action.DELETE,
+            self._ref(
+                "daily_briefing",
+                existing.id,
+                existing.owner_user_id,
+                existing.classification,
+            ),
+        )
+        self.daily_briefings.delete(existing.id, authorization)
+
+    def update_agenda_notification(
+        self,
+        command: UpdateAgendaNotification,
+        context: CommandContext,
+    ) -> AgendaNotificationRule:
+        if self.agenda_notifications is None:
+            raise ValidationError("agenda notification repository is unavailable")
+        existing = self.agenda_notifications.get(command.rule_id)
+        if existing is None:
+            raise NotFoundError("agenda notification rule was not found")
+        current = self._context(context)
+        updated = replace(
+            existing,
+            text=command.text or existing.text,
+            time_of_day=command.time_of_day or existing.time_of_day,
+            day_offset=(
+                command.day_offset
+                if command.day_offset is not None
+                else existing.day_offset
+            ),
+            target_ref=command.target_ref or existing.target_ref,
+            timezone=command.timezone or existing.timezone,
+            enabled=(
+                command.enabled if command.enabled is not None else existing.enabled
+            ),
+            classification=(
+                command.classification
+                if command.classification is not None
+                else existing.classification
+            ),
+        )
+        authorization = self.policy.require(
+            current,
+            Action.UPDATE,
+            self._ref(
+                "agenda_notification",
+                updated.id,
+                updated.owner_user_id,
+                updated.classification,
+            ),
+        )
+        return self.agenda_notifications.update(updated, authorization)
+
+    def delete_agenda_notification(
+        self,
+        command: DeleteAgendaNotification,
+        context: CommandContext,
+    ) -> None:
+        if self.agenda_notifications is None:
+            raise ValidationError("agenda notification repository is unavailable")
+        existing = self.agenda_notifications.get(command.rule_id)
+        if existing is None:
+            raise NotFoundError("agenda notification rule was not found")
+        authorization = self.policy.require(
+            self._context(context),
+            Action.DELETE,
+            self._ref(
+                "agenda_notification",
+                existing.id,
+                existing.owner_user_id,
+                existing.classification,
+            ),
+        )
+        self.agenda_notifications.delete(existing.id, authorization)
 
 
     def create_daily_briefing(
@@ -915,6 +1138,12 @@ class ZhixuServices:
         bus.register(CreateAgendaNotification, self.create_agenda_notification)
         bus.register(CreateAnniversary, self.create_anniversary)
         bus.register(SetNotificationLeads, self.set_notification_leads)
+        bus.register(UpdateAnniversary, self.update_anniversary)
+        bus.register(DeleteAnniversary, self.delete_anniversary)
+        bus.register(UpdateDailyBriefing, self.update_daily_briefing)
+        bus.register(DeleteDailyBriefing, self.delete_daily_briefing)
+        bus.register(UpdateAgendaNotification, self.update_agenda_notification)
+        bus.register(DeleteAgendaNotification, self.delete_agenda_notification)
         bus.register(CreateDailyBriefing, self.create_daily_briefing)
         bus.register(UpdateAgenda, self.update_agenda)
         bus.register(DeleteAgenda, self.delete_agenda)

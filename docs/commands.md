@@ -117,6 +117,31 @@ A birthday marks a date rather than accumulating a count, so it says nothing unt
 near: 7, 3 and 1 days ahead by default, then on the day, with an age when the birth year is
 known. Omit the year when it is not.
 
+```text
+/重要日子 改 <标识> 名称 新名字
+/重要日子 改 <标识> 类型 生日
+/重要日子 改 <标识> 日期 2001-12-17
+/重要日子 改 <标识> 日期 农历 闰6-15
+/重要日子 改 <标识> 预告 30 15 7
+/重要日子 改 <标识> 预告 关闭
+/重要日子 删除 <标识>
+
+/每日简报 改 <标识> 时间 07:30
+/每日简报 改 <标识> 开关 关
+/每日简报 删除 <标识>
+
+/日程通知 改 <标识> 文本 新的提醒内容
+/日程通知 改 <标识> 时间 09:00
+/日程通知 改 <标识> 提前 1
+/日程通知 改 <标识> 开关 关
+/日程通知 删除 <标识>
+```
+
+`/纪念日` lists every important day with the identifier these edits take. Each edit names one
+field and leaves the rest alone, so correcting a kind never disturbs a date. Changing the
+calendar carries the new date with it, because a lunisolar date and a Gregorian one are not
+interchangeable. Deleting is staged for confirmation like every other destructive action.
+
 `农历` records the date on the Chinese lunisolar calendar, whose Gregorian day moves every
 year; the conversion uses a vendored snapshot of the Hong Kong Observatory tables, which
 agree with the mainland calculation published under GB/T 33661-2017. Supporting the

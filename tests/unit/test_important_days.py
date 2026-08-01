@@ -143,3 +143,36 @@ def test_a_solar_birthday_without_a_year_still_recurs() -> None:
     assert _important_day_lines(birthday, date(2026, 8, 20)) == [
         "🎂 今天是 同事 的生日。"
     ]
+
+
+def test_plan_preview_names_the_kind_and_calendar_it_will_store() -> None:
+    # The preview is what the user confirms against; labelling a birthday as an
+    # anniversary is the difference between accepting and rejecting the plan.
+    from zhixu.application.assistant import _important_day_preview_lines
+
+    lines = _important_day_preview_lines(
+        {
+            "title": "香宝生日",
+            "anchor_date": date(2001, 9, 20),
+            "kind": "birthday",
+            "calendar": "solar",
+            "advance_days": (7, 3, 1),
+        }
+    )
+    assert any("**生日：** 香宝生日" in line for line in lines)
+    assert not any("纪念日" in line for line in lines)
+    assert any("出生日期" in line for line in lines)
+    assert any("提前预告" in line for line in lines)
+
+    lunar_lines = _important_day_preview_lines(
+        {
+            "title": "奶奶",
+            "anchor_date": date(UNKNOWN_YEAR, 1, 1),
+            "kind": "birthday",
+            "calendar": "lunar",
+            "lunar_month": 7,
+            "lunar_day": 25,
+        }
+    )
+    assert any("农历日期" in line and "7月25日" in line for line in lunar_lines)
+    assert not any("出生年" in line for line in lunar_lines)

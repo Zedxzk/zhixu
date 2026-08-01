@@ -102,6 +102,16 @@ class AgendaRepositoryPort(Protocol):
 
 
 class AgendaNotificationRepositoryPort(Protocol):
+    def get(self, rule_id: str) -> AgendaNotificationRule | None: ...
+
+    def update(
+        self,
+        rule: AgendaNotificationRule,
+        authorization: AuthorizedAction,
+    ) -> AgendaNotificationRule: ...
+
+    def delete(self, rule_id: str, authorization: AuthorizedAction) -> None: ...
+
     def create(
         self,
         rule: AgendaNotificationRule,
@@ -206,6 +216,16 @@ class ScheduledJobRepositoryPort(Protocol):
 
 
 class AnniversaryRepositoryPort(Protocol):
+    def get(self, anniversary_id: str) -> Anniversary | None: ...
+
+    def update(
+        self,
+        anniversary: Anniversary,
+        authorization: AuthorizedAction,
+    ) -> Anniversary: ...
+
+    def delete(self, anniversary_id: str, authorization: AuthorizedAction) -> None: ...
+
     def create(
         self,
         anniversary: Anniversary,
@@ -216,6 +236,18 @@ class AnniversaryRepositoryPort(Protocol):
 
 
 class DailyBriefingRepositoryPort(Protocol):
+    def get(self, briefing_id: str) -> DailyBriefing | None: ...
+
+    def update(
+        self,
+        briefing: DailyBriefing,
+        authorization: AuthorizedAction,
+        *,
+        now: datetime,
+    ) -> DailyBriefing: ...
+
+    def delete(self, briefing_id: str, authorization: AuthorizedAction) -> None: ...
+
     def create(
         self,
         briefing: DailyBriefing,

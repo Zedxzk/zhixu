@@ -913,6 +913,67 @@ class AgendaNotificationRepository:
             raise _raise_conflict(exc) from exc
         return stored
 
+    def get(self, rule_id: str) -> AgendaNotificationRule | None:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM agenda_notification_rules WHERE id=?", (rule_id,)
+            ).fetchone()
+        return None if row is None else self._from_row(row)
+
+    def update(
+        self,
+        rule: AgendaNotificationRule,
+        authorization: AuthorizedAction,
+    ) -> AgendaNotificationRule:
+        _require_authorization(
+            authorization,
+            action=Action.UPDATE,
+            kind="agenda_notification",
+            resource_id=rule.id,
+            owner_user_id=rule.owner_user_id,
+            classification=rule.classification,
+        )
+        with self.database.transaction() as connection:
+            changed = connection.execute(
+                """
+                UPDATE agenda_notification_rules SET
+                    target_ref=?,time_of_day=?,day_offset=?,notification_text=?,
+                    timezone=?,classification=?,enabled=?
+                WHERE id=?
+                """,
+                (
+                    rule.target_ref,
+                    rule.time_of_day.isoformat(timespec="minutes"),
+                    rule.day_offset,
+                    rule.text,
+                    rule.timezone,
+                    int(rule.classification),
+                    int(rule.enabled),
+                    rule.id,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise NotFoundError("agenda notification rule was not found")
+            _audit(connection, authorization)
+        return rule
+
+    def delete(self, rule_id: str, authorization: AuthorizedAction) -> None:
+        _require_authorization(
+            authorization,
+            action=Action.DELETE,
+            kind="agenda_notification",
+            resource_id=rule_id,
+            owner_user_id=authorization.resource.owner_user_id,
+            classification=authorization.resource.classification,
+        )
+        with self.database.transaction() as connection:
+            changed = connection.execute(
+                "DELETE FROM agenda_notification_rules WHERE id=?", (rule_id,)
+            ).rowcount
+            if changed != 1:
+                raise NotFoundError("agenda notification rule was not found")
+            _audit(connection, authorization)
+
     def list_enabled(self) -> list[AgendaNotificationRule]:
         with self.database.connect() as connection:
             rows = connection.execute(
@@ -1819,6 +1880,70 @@ class AnniversaryRepository:
             raise _raise_conflict(exc) from exc
         return stored
 
+    def get(self, anniversary_id: str) -> Anniversary | None:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM anniversaries WHERE id=?", (anniversary_id,)
+            ).fetchone()
+        return None if row is None else self._from_row(row)
+
+    def update(
+        self,
+        anniversary: Anniversary,
+        authorization: AuthorizedAction,
+    ) -> Anniversary:
+        _require_authorization(
+            authorization,
+            action=Action.UPDATE,
+            kind="anniversary",
+            resource_id=anniversary.id,
+            owner_user_id=anniversary.owner_user_id,
+            classification=anniversary.classification,
+        )
+        with self.database.transaction() as connection:
+            changed = connection.execute(
+                """
+                UPDATE anniversaries SET
+                    title=?,anchor_date=?,timezone=?,classification=?,kind=?,
+                    calendar=?,lunar_month=?,lunar_day=?,lunar_leap=?,advance_days=?
+                WHERE id=?
+                """,
+                (
+                    anniversary.title,
+                    anniversary.anchor_date.isoformat(),
+                    anniversary.timezone,
+                    int(anniversary.classification),
+                    str(anniversary.kind),
+                    str(anniversary.calendar),
+                    anniversary.lunar_month,
+                    anniversary.lunar_day,
+                    int(anniversary.lunar_leap),
+                    ",".join(str(value) for value in anniversary.advance_days),
+                    anniversary.id,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise NotFoundError("anniversary was not found")
+            _audit(connection, authorization)
+        return anniversary
+
+    def delete(self, anniversary_id: str, authorization: AuthorizedAction) -> None:
+        _require_authorization(
+            authorization,
+            action=Action.DELETE,
+            kind="anniversary",
+            resource_id=anniversary_id,
+            owner_user_id=authorization.resource.owner_user_id,
+            classification=authorization.resource.classification,
+        )
+        with self.database.transaction() as connection:
+            changed = connection.execute(
+                "DELETE FROM anniversaries WHERE id=?", (anniversary_id,)
+            ).rowcount
+            if changed != 1:
+                raise NotFoundError("anniversary was not found")
+            _audit(connection, authorization)
+
     def list_for_owner(self, owner_user_id: str) -> list[Anniversary]:
         with self.database.connect() as connection:
             rows = connection.execute(
@@ -1900,6 +2025,68 @@ class DailyBriefingRepository:
         except sqlite3.IntegrityError as exc:
             raise _raise_conflict(exc) from exc
         return stored
+
+    def get(self, briefing_id: str) -> DailyBriefing | None:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM daily_briefings WHERE id=?", (briefing_id,)
+            ).fetchone()
+        return None if row is None else self._from_row(row)
+
+    def update(
+        self,
+        briefing: DailyBriefing,
+        authorization: AuthorizedAction,
+        *,
+        now: datetime,
+    ) -> DailyBriefing:
+        _require_authorization(
+            authorization,
+            action=Action.UPDATE,
+            kind="daily_briefing",
+            resource_id=briefing.id,
+            owner_user_id=briefing.owner_user_id,
+            classification=briefing.classification,
+        )
+        with self.database.transaction() as connection:
+            changed = connection.execute(
+                """
+                UPDATE daily_briefings SET
+                    target_ref=?,time_of_day=?,timezone=?,classification=?,
+                    enabled=?,updated_at=?
+                WHERE id=?
+                """,
+                (
+                    briefing.target_ref,
+                    briefing.time_of_day.isoformat(timespec="minutes"),
+                    briefing.timezone,
+                    int(briefing.classification),
+                    int(briefing.enabled),
+                    _dump_datetime(now),
+                    briefing.id,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise NotFoundError("daily briefing was not found")
+            _audit(connection, authorization)
+        return replace(briefing, updated_at=now)
+
+    def delete(self, briefing_id: str, authorization: AuthorizedAction) -> None:
+        _require_authorization(
+            authorization,
+            action=Action.DELETE,
+            kind="daily_briefing",
+            resource_id=briefing_id,
+            owner_user_id=authorization.resource.owner_user_id,
+            classification=authorization.resource.classification,
+        )
+        with self.database.transaction() as connection:
+            changed = connection.execute(
+                "DELETE FROM daily_briefings WHERE id=?", (briefing_id,)
+            ).rowcount
+            if changed != 1:
+                raise NotFoundError("daily briefing was not found")
+            _audit(connection, authorization)
 
     def list_for_owner(self, owner_user_id: str) -> list[DailyBriefing]:
         with self.database.connect() as connection:
