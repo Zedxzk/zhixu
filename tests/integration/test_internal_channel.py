@@ -790,10 +790,115 @@ def test_group_modes_enforce_public_isolation_and_internal_member_acl(
         ).encode(),
     ).body["delivery"]
     assert plan_delivery["text"].startswith("# 请确认计划")
+    continuation_event = event(
+        "event_shared_reminder_continuation",
+        "actor_user_owner",
+        "change the synthetic notification wording",
+    )
+    continuation = internal.dispatch(
+        "POST",
+        "/internal/channel/event",
+        headers=headers,
+        body=json.dumps(continuation_event).encode(),
+    )
+    assert continuation.status == 202
+    outsider_continuation = internal.dispatch(
+        "POST",
+        "/internal/channel/event",
+        headers=headers,
+        body=json.dumps(
+            event(
+                "event_shared_reminder_outsider_continuation",
+                "actor_user_outsider",
+                "change another user's pending plan",
+            )
+        ).encode(),
+    )
+    assert outsider_continuation.body == {
+        "accepted": False,
+        "reason_code": "group_trigger_required",
+    }
+    outsider_plan_event = event(
+        "event_shared_reminder_outsider_start",
+        "actor_user_outsider",
+        "创建明天提醒Synthetic second member处理事项",
+    )
+    outsider_plan_event["mentioned"] = True
+    assert internal.dispatch(
+        "POST",
+        "/internal/channel/event",
+        headers=headers,
+        body=json.dumps(outsider_plan_event).encode(),
+    ).status == 202
+    pending_plans = PendingPlanStore(database)
+    owner_plan = pending_plans.current(
+        actor_user_id="user_owner",
+        target_ref="group_synthetic",
+        now=NOW,
+    )
+    outsider_plan = pending_plans.current(
+        actor_user_id="user_outsider",
+        target_ref="group_synthetic",
+        now=NOW,
+    )
+    assert owner_plan is not None
+    assert outsider_plan is not None
+    assert owner_plan.id != outsider_plan.id
+    revised_plan_delivery = internal.dispatch(
+        "POST",
+        "/internal/channel/delivery/claim",
+        headers=headers,
+        body=json.dumps(
+            {
+                "channel": "qq",
+                "channel_account": "qq_synthetic",
+                "worker_id": "worker_synthetic",
+            }
+        ).encode(),
+    ).body["delivery"]
+    assert revised_plan_delivery["text"].startswith("# 请确认计划")
+    outsider_plan_delivery = internal.dispatch(
+        "POST",
+        "/internal/channel/delivery/claim",
+        headers=headers,
+        body=json.dumps(
+            {
+                "channel": "qq",
+                "channel_account": "qq_synthetic",
+                "worker_id": "worker_synthetic",
+            }
+        ).encode(),
+    ).body["delivery"]
+    assert outsider_plan_delivery["text"].startswith("# 请确认计划")
+    assert internal.dispatch(
+        "POST",
+        "/internal/channel/event",
+        headers=headers,
+        body=json.dumps(
+            event(
+                "event_shared_reminder_outsider_own_continuation",
+                "actor_user_outsider",
+                "change the second member's synthetic notification wording",
+            )
+        ).encode(),
+    ).status == 202
+    outsider_revised_delivery = internal.dispatch(
+        "POST",
+        "/internal/channel/delivery/claim",
+        headers=headers,
+        body=json.dumps(
+            {
+                "channel": "qq",
+                "channel_account": "qq_synthetic",
+                "worker_id": "worker_synthetic",
+            }
+        ).encode(),
+    ).body["delivery"]
+    assert outsider_revised_delivery["text"].startswith("# 请确认计划")
     confirmation_event = event(
         "event_shared_reminder_confirmation",
         "actor_user_owner",
-        plan_delivery["buttons"][0]["action"],
+        revised_plan_delivery["buttons"][0]["action"],
     )
     confirmation_event["message_kind"] = "button"
     confirmation_event["mentioned"] = True

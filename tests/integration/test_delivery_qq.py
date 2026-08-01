@@ -1261,6 +1261,28 @@ def test_gateway_strips_only_the_bot_mention_from_group_natural_language(
     assert event.text == "every month create a synthetic recurring event"
 
 
+def test_gateway_maps_full_group_message_without_marking_it_mentioned(
+    database: Database,
+    privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
+) -> None:
+    contacts = register_account(database, privacy_primitives)
+    event = QQEventMapper("bot_test_a", contacts).map(
+        "GROUP_MESSAGE_CREATE",
+        {
+            "id": "synthetic-continuation-event",
+            "group_openid": "synthetic-group",
+            "content": "change the synthetic notification time",
+            "author": {"member_openid": "synthetic-member"},
+        },
+        received_at=NOW,
+    )
+
+    assert event is not None
+    assert event.conversation_kind is ConversationKind.GROUP
+    assert event.metadata["mentioned"] is False
+    assert event.text == "change the synthetic notification time"
+
+
 def test_gateway_acknowledges_button_before_forwarding_command(
     database: Database,
     privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],

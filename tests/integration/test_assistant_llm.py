@@ -378,6 +378,8 @@ def test_natural_compound_schedule_is_previewed_revised_and_materialized(
     )
     assert preview.code == "plan_preview"
     assert "每月倒数第二个香港工作日" in preview.text
+    assert "首次执行：** `2026-06-29`" in preview.text
+    assert "通知形式：** 提醒卡片" in preview.text
     assert "08:00" in preview.text
     assert services.agenda.list_for_owner("user_test") == []
 
@@ -432,6 +434,60 @@ def test_natural_compound_schedule_is_previewed_revised_and_materialized(
     payload = json.loads(str(delivery["payload_json"]))
     assert payload["buttons"][3]["label"] == "60分钟"
     assert payload["buttons"][4]["label"] == "完成"
+
+
+def test_revision_cannot_downgrade_recurring_agenda_to_one_off_reminder(
+    assistant_parts: tuple[ZhixuServices, FrozenClock, Database, CommandContext],
+) -> None:
+    services, clock, database, context = assistant_parts
+    clock.set(datetime(2026, 7, 31, 16, tzinfo=UTC))
+    recurring = json.dumps(
+        {
+            "action": "create_agenda",
+            "confidence": 0.99,
+            "title": "Synthetic salary day",
+            "start_at": "2026-08-01T00:00:00+08:00",
+            "end_at": "2026-08-02T00:00:00+08:00",
+            "recurrence_rule": (
+                "X-BUSINESS-DAY;CALENDAR=HK_GENERAL_HOLIDAYS;BYSETPOS=-2"
+            ),
+            "notifications": [
+                {
+                    "time_of_day": "08:00:00",
+                    "day_offset": 0,
+                    "text": "Synthetic salary notification",
+                }
+            ],
+        }
+    )
+    incorrect_revision = json.dumps(
+        {
+            "action": "create_reminder",
+            "confidence": 0.99,
+            "title": "Synthetic salary day",
+            "fire_at": "2026-06-30T08:00:00+08:00",
+        }
+    )
+    client = FakeLLM([recurring, incorrect_revision])
+    engine = engine_with(services, clock, database, client)
+    target = "qqc_synthetic_revision_guard"
+
+    preview = engine.handle("Create a synthetic recurring salary card", context, target_ref=target)
+    engine.handle(preview.buttons[1].action, context, target_ref=target)
+    guarded = engine.handle(
+        "Use the appropriate reminder card notification",
+        context,
+        target_ref=target,
+    )
+
+    assert guarded.code == "plan_preview"
+    assert "已拒绝该变更并保留原循环计划" in guarded.text
+    assert "每月倒数第二个香港工作日" in guarded.text
+    assert "首次执行：** `2026-08-28`" in guarded.text
+    assert "提醒卡片" in guarded.text
+    assert "2026-06-30T08:00" not in guarded.text
+    assert services.agenda.list_for_owner("user_test") == []
+    assert "MUST return action=create_agenda" in client.requests[1].system_prompt
 
 
 def test_fts_answer_wins_before_model(

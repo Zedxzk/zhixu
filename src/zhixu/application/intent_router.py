@@ -312,6 +312,7 @@ class ModelIntentClassifier:
         reason: LLMCallReason,
         reference_time: datetime | None = None,
         revision_context: str = "",
+        required_action: IntentAction | None = None,
     ) -> ParsedIntent:
         temporal_context = (
             f" Reference time: {reference_time.isoformat()}."
@@ -320,7 +321,16 @@ class ModelIntentClassifier:
         )
         revision_instruction = (
             " Revise the existing structured plan using the user's latest changes. "
-            "Keep every field the user did not ask to change. Existing plan: "
+            "Keep every field the user did not ask to change. A request about notification "
+            "wording, time, or card style must only update notifications and must preserve "
+            "the recurring event and recurrence_rule. "
+            + (
+                f"You MUST return action={required_action.value}; changing the action is "
+                "forbidden. "
+                if required_action is not None
+                else ""
+            )
+            + "Existing plan: "
             f"{revision_context}"
             if revision_context
             else ""

@@ -47,6 +47,14 @@ class PendingPlanStorePort(Protocol):
         now: datetime,
     ) -> StoredPendingPlan | None: ...
 
+    def current(
+        self,
+        *,
+        actor_user_id: str,
+        target_ref: str,
+        now: datetime,
+    ) -> StoredPendingPlan | None: ...
+
     def reject(self, plan_id: str, *, now: datetime) -> None: ...
 
     def consume(self, plan_id: str, *, now: datetime) -> bool: ...

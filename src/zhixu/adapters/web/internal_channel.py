@@ -244,17 +244,36 @@ class InternalChannelAPI:
             explicitly_addressed = bool(event.metadata.get("mentioned")) or (
                 event.text or ""
             ).lstrip().startswith("/")
-            if not explicitly_addressed:
-                return ChannelAdmissionDecision(
-                    False,
-                    None,
-                    "group_trigger_required",
-                )
             route = self.routes.get(
                 event.channel,
                 event.channel_account,
                 event.external_conversation_ref,
             )
+            if not explicitly_addressed:
+                continuous_actor = self.users.identity_by_opaque_ref(
+                    event.channel,
+                    event.channel_account,
+                    event.external_actor_ref,
+                )
+                continuous_plan = (
+                    self.assistant.pending_plans.current(
+                        actor_user_id=continuous_actor.user_id,
+                        target_ref=event.external_conversation_ref,
+                        now=self.assistant.services.clock.now(),
+                    )
+                    if route is not None
+                    and route.commands_enabled
+                    and route.group_mode is GroupMode.INTERNAL
+                    and continuous_actor is not None
+                    and self.assistant.pending_plans is not None
+                    else None
+                )
+                if continuous_plan is None:
+                    return ChannelAdmissionDecision(
+                        False,
+                        None,
+                        "group_trigger_required",
+                    )
             activation = re.fullmatch(
                 r"/启用内部群\s+(\d{8})",
                 (event.text or "").strip(),

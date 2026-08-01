@@ -18,6 +18,7 @@ from zhixu.domain.errors import (
     PermissionDenied,
     ValidationError,
 )
+from zhixu.domain.hong_kong_calendar import monthly_business_day
 from zhixu.ports import LLMCallReason, LLMRequest, PendingPlanStorePort
 from zhixu.security import web_query_is_safe
 
@@ -128,6 +129,18 @@ def _decode_plan_value(value):
     if value_type == "notification" and isinstance(encoded, dict):
         return ModelNotificationProposal.model_validate_json(json.dumps(encoded))
     return {str(key): _decode_plan_value(item) for key, item in value.items()}
+
+
+def _model_context_value(value):
+    if isinstance(value, (datetime, date, time)):
+        return value.isoformat()
+    if isinstance(value, ModelNotificationProposal):
+        return value.model_dump(mode="json")
+    if isinstance(value, dict):
+        return {str(key): _model_context_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_model_context_value(item) for item in value]
+    return value
 
 
 _HELP_TEXT = """# 知序 · 帮助
@@ -260,12 +273,37 @@ class AssistantEngine:
     ) -> AssistantReply:
         intent = self.router.route(text)
         if intent is None and self.pending_plans is not None and target_ref:
-            revising = self.pending_plans.revising(
+            revising = self.pending_plans.current(
                 actor_user_id=context.actor_user_id,
                 target_ref=target_ref,
                 now=self.services.clock.now(),
             )
             if revising is not None and self.classifier is not None:
+                try:
+                    original_action = IntentAction(revising.action)
+                    original_arguments = _decode_plan_value(
+                        json.loads(revising.payload_json)
+                    )
+                except (ValueError, TypeError, json.JSONDecodeError):
+                    return AssistantReply(
+                        "上一版计划无法安全恢复，请重新描述完整需求。",
+                        "invalid_plan",
+                        "deterministic",
+                    )
+                if not isinstance(original_arguments, dict):
+                    return AssistantReply(
+                        "上一版计划无法安全恢复，请重新描述完整需求。",
+                        "invalid_plan",
+                        "deterministic",
+                    )
+                revision_context = json.dumps(
+                    {
+                        "action": original_action.value,
+                        "arguments": _model_context_value(original_arguments),
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
                 try:
                     revised = self.classifier.classify(
                         context.actor_user_id,
@@ -274,13 +312,29 @@ class AssistantEngine:
                         reference_time=self.services.clock.now().astimezone(
                             self.router.timezone
                         ),
-                        revision_context=revising.payload_json,
+                        revision_context=revision_context,
+                        required_action=original_action,
                     )
                 except (InvalidModelOutput, LLMUnavailable, PermissionDenied):
                     return AssistantReply(
                         "没有理解修改内容。请说明要改的字段，例如：改成早上9点，文案改为……",
                         "invalid_plan_revision",
                         "deterministic",
+                    )
+                if revised.action is not original_action:
+                    return self._stage_plan(
+                        ParsedIntent(
+                            original_action,
+                            original_arguments,
+                            source="deterministic",
+                            requires_confirmation=True,
+                        ),
+                        context,
+                        target_ref=target_ref,
+                        notice=(
+                            "模型试图改变计划类型，已拒绝该变更并保留原循环计划。"
+                            "事件通知本身会使用提醒卡片。"
+                        ),
                     )
                 if revised.action not in {
                     IntentAction.CREATE_AGENDA,
@@ -976,6 +1030,7 @@ class AssistantEngine:
         context: CommandContext,
         *,
         target_ref: str,
+        notice: str = "",
     ) -> AssistantReply:
         if self.pending_plans is None or not target_ref:
             return AssistantReply(
@@ -1003,7 +1058,10 @@ class AssistantEngine:
             now=self.services.clock.now(),
         )
         scope = "当前内部群共享库" if "internal_group_member" in context.roles else "私人库"
-        lines = ["# 请确认计划", "", f"**写入范围：** {scope}"]
+        lines = ["# 请确认计划"]
+        if notice:
+            lines.extend(["", f"> {_escape_markdown_text(notice)}"])
+        lines.extend(["", f"**写入范围：** {scope}"])
         arguments = intent.arguments
         if intent.action is IntentAction.CREATE_AGENDA:
             recurrence = str(arguments.get("recurrence_rule") or "")
@@ -1013,14 +1071,34 @@ class AssistantEngine:
                 == "X-BUSINESS-DAY;CALENDAR=HK_GENERAL_HOLIDAYS;BYSETPOS=-2"
                 else recurrence
             )
-            lines.extend(
-                [
-                    f"**事件：** {_escape_markdown_text(str(arguments.get('title') or ''))}",
-                    f"**开始：** `{arguments.get('start_at')}`",
-                    f"**重复：** `{_escape_markdown_text(recurrence_text)}`",
-                ]
+            lines.append(
+                f"**事件：** {_escape_markdown_text(str(arguments.get('title') or ''))}"
             )
+            if recurrence_text == "每月倒数第二个香港工作日":
+                local_today = self.services.clock.now().astimezone(
+                    self.router.timezone
+                ).date()
+                try:
+                    first_date = monthly_business_day(
+                        local_today.year,
+                        local_today.month,
+                        -2,
+                    )
+                    if first_date < local_today:
+                        next_year = local_today.year + int(local_today.month == 12)
+                        next_month = 1 if local_today.month == 12 else local_today.month + 1
+                        first_date = monthly_business_day(next_year, next_month, -2)
+                    lines.append(f"**首次执行：** `{first_date:%Y-%m-%d}`")
+                except ValidationError:
+                    pass
+            else:
+                lines.append(f"**开始：** `{arguments.get('start_at')}`")
+            lines.append(f"**重复：** `{_escape_markdown_text(recurrence_text)}`")
             notifications = arguments.get("notifications") or []
+            if notifications:
+                lines.append(
+                    "**通知形式：** 提醒卡片（支持延后 5/15/30/60 分钟、完成、取消）"
+                )
             for index, notification in enumerate(notifications, start=1):
                 if isinstance(notification, ModelNotificationProposal):
                     relation = (

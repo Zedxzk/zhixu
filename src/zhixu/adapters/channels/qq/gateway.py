@@ -234,7 +234,7 @@ class QQEventMapper:
             )
             conversation_ref = actor_ref
             mentioned = False
-        elif event_type == "GROUP_AT_MESSAGE_CREATE":
+        elif event_type in {"GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE"}:
             actor = str(author.get("member_openid") or "")
             conversation = str(data.get("group_openid") or "")
             if not actor or not conversation:
@@ -252,7 +252,7 @@ class QQEventMapper:
                 external_identifier=conversation,
                 now=received_at,
             )
-            mentioned = True
+            mentioned = event_type == "GROUP_AT_MESSAGE_CREATE"
         elif event_type in {"AT_MESSAGE_CREATE", "DIRECT_MESSAGE_CREATE"}:
             actor = str(author.get("id") or "")
             conversation = str(data.get("channel_id") or "")

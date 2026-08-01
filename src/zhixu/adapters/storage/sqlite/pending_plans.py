@@ -121,6 +121,26 @@ class PendingPlanStore:
             ).fetchone()
         return self._from_row(row) if row is not None else None
 
+    def current(
+        self,
+        *,
+        actor_user_id: str,
+        target_ref: str,
+        now: datetime,
+    ) -> StoredPendingPlan | None:
+        require_aware(now, "now")
+        with self.database.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM assistant_pending_plans
+                WHERE actor_user_id=? AND target_ref=?
+                  AND state IN ('pending','revising') AND expires_at>?
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (actor_user_id, target_ref, _dump(now)),
+            ).fetchone()
+        return self._from_row(row) if row is not None else None
+
     def reject(self, plan_id: str, *, now: datetime) -> None:
         require_aware(now, "now")
         with self.database.transaction() as connection:

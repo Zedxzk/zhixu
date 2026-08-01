@@ -18,6 +18,7 @@ from zhixu.adapters.storage.sqlite import (
     GroupMode,
     NoteRepository,
     OutboxRepository,
+    PendingPlanStore,
     ReminderRepository,
     ScheduledJobRepository,
     TaskRepository,
@@ -235,6 +236,82 @@ def test_daily_briefing_enqueues_anniversary_schedule_image_once(
     assert claimed.message.daily_agenda_preview is not None
     assert claimed.message.daily_agenda_preview.entries == ((1080, 1140, "agenda"),)
     assert claimed.message.daily_agenda_preview.anniversary_day_numbers == (366,)
+
+
+def test_pending_plan_sessions_are_actor_isolated_and_expire(
+    app: tuple[ZhixuServices, FrozenClock, UserRepository],
+    database: Database,
+) -> None:
+    _services, clock, users = app
+    policy = PolicyEngine()
+    users.create(
+        User("user_second", "Synthetic Second User", UserStatus.ACTIVE, NOW),
+        policy.require(
+            CommandContext(actor_user_id="user_second", now=NOW),
+            Action.CREATE,
+            ResourceRef("user", "user_second", "user_second"),
+        ),
+    )
+    store = PendingPlanStore(database)
+    plan = store.put(
+        actor_user_id="user_test",
+        target_ref="qqc_synthetic_continuation",
+        action="create_agenda",
+        payload_json="{}",
+        now=clock.now(),
+    )
+    second_plan = store.put(
+        actor_user_id="user_second",
+        target_ref="qqc_synthetic_continuation",
+        action="create_reminder",
+        payload_json="{}",
+        now=clock.now(),
+    )
+
+    assert store.current(
+        actor_user_id="user_test",
+        target_ref="qqc_synthetic_continuation",
+        now=clock.now() + timedelta(minutes=29, seconds=59),
+    ) == plan
+    assert store.current(
+        actor_user_id="user_second",
+        target_ref="qqc_synthetic_continuation",
+        now=clock.now(),
+    ) == second_plan
+    assert store.consume(plan.id, now=clock.now())
+    assert (
+        store.current(
+            actor_user_id="user_test",
+            target_ref="qqc_synthetic_continuation",
+            now=clock.now(),
+        )
+        is None
+    )
+    assert store.current(
+        actor_user_id="user_second",
+        target_ref="qqc_synthetic_continuation",
+        now=clock.now(),
+    ) == second_plan
+    expiring_plan = store.put(
+        actor_user_id="user_test",
+        target_ref="qqc_synthetic_continuation",
+        action="create_agenda",
+        payload_json="{}",
+        now=clock.now(),
+    )
+    assert store.current(
+        actor_user_id="user_test",
+        target_ref="qqc_synthetic_continuation",
+        now=clock.now() + timedelta(minutes=29, seconds=59),
+    ) == expiring_plan
+    assert (
+        store.current(
+            actor_user_id="user_test",
+            target_ref="qqc_synthetic_continuation",
+            now=clock.now() + timedelta(minutes=30),
+        )
+        is None
+    )
 
 
 def test_project_admin_bootstrap_role_is_singleton(
