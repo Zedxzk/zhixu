@@ -25,7 +25,8 @@ RestrictRealtime=yes
 LockPersonality=yes
 CapabilityBoundingSet=
 RestrictAddressFamilies=AF_UNIX
-ReadOnlyPaths=/var/lib/zhixu
-ReadWritePaths=/var/backups/zhixu/application /var/backups/zhixu/qq /var/backups/zhixu/outbound
+# The backup command opens sources with SQLite mode=ro. WAL databases still need
+# directory access for SQLite's WAL/SHM coordination files while writers are active.
+ReadWritePaths=/var/lib/zhixu /var/backups/zhixu/application /var/backups/zhixu/qq /var/backups/zhixu/outbound
 InaccessiblePaths=/var/lib/zhixu-vault
 LogNamespace=zhixu

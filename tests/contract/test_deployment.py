@@ -220,4 +220,6 @@ def test_backup_unit_covers_every_persistent_database_boundary() -> None:
     ):
         assert f"--database {database}" in backup
         assert f"--destination {destination}" in backup
+    assert "ReadWritePaths=/var/lib/zhixu " in backup
+    assert "ReadOnlyPaths=/var/lib/zhixu" not in backup
     assert "/var/lib/zhixu-vault" in backup
