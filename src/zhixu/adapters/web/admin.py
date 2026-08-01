@@ -1291,6 +1291,7 @@ class AdminAPI:
                 ),
                 classification=self._classification(data),
                 private=self._boolean(data, "private", default=True),
+                allow_duplicate=context.confirmed,
             ),
             context,
         )

@@ -22,6 +22,7 @@ from zhixu.domain import (
     TaskStatus,
 )
 from zhixu.domain.errors import (
+    ConfirmationRequired,
     InvalidModelOutput,
     LLMUnavailable,
     NotFoundError,
@@ -368,6 +369,54 @@ def _important_day_preview_lines(arguments: dict) -> list[str]:
             "**提前预告：** " + "、".join(f"{int(day)}天" for day in advance)
         )
     return lines
+
+
+def _important_day_command(
+    arguments: dict[str, object],
+    *,
+    timezone: str,
+) -> CreateAnniversary:
+    title = str(arguments.get("title") or "").strip()
+    anchor_date = arguments.get("anchor_date")
+    if not title or not isinstance(anchor_date, date):
+        raise ValidationError("纪念日缺少名称或有效日期。")
+    try:
+        kind = ImportantDayKind(str(arguments.get("kind") or "anniversary"))
+        calendar = CalendarSystem(str(arguments.get("calendar") or "solar"))
+    except ValueError as exc:
+        raise ValidationError("重要日子的类型或历法无法识别。") from exc
+    advance = arguments.get("advance_days")
+    return CreateAnniversary(
+        title=title,
+        anchor_date=anchor_date,
+        timezone=timezone,
+        kind=kind,
+        calendar=calendar,
+        lunar_month=_optional_int(arguments.get("lunar_month")),
+        lunar_day=_optional_int(arguments.get("lunar_day")),
+        lunar_leap=bool(arguments.get("lunar_leap")),
+        advance_days=(
+            tuple(int(value) for value in advance)
+            if isinstance(advance, (list, tuple))
+            else None
+        ),
+        private=bool(arguments.get("private")),
+        allow_duplicate=bool(arguments.get("_allow_duplicate")),
+    )
+
+
+def _important_day_duplicate_notice(item) -> str:
+    if item.calendar is CalendarSystem.LUNAR:
+        leap = "闰" if item.lunar_leap else ""
+        when = f"农历{leap}{item.lunar_month}月{item.lunar_day}日"
+    elif item.kind is ImportantDayKind.BIRTHDAY:
+        when = f"{item.anchor_date:%m-%d}"
+    else:
+        when = f"{item.anchor_date:%Y-%m-%d}"
+    return (
+        f"检测到可能重复：当前范围已有“{item.title}”（{when}）。"
+        "接受后仍会创建一条新记录。"
+    )
 
 
 class AssistantEngine:
@@ -923,43 +972,43 @@ class AssistantEngine:
                 intent.source,
             )
         if intent.action is IntentAction.CREATE_ANNIVERSARY:
-            title = str(arguments.get("title") or "").strip()
-            anchor_date = arguments.get("anchor_date")
-            if not title or not isinstance(anchor_date, date):
+            try:
+                command = _important_day_command(
+                    arguments,
+                    timezone=self.router.timezone.key,
+                )
+            except ValidationError as error:
                 return AssistantReply(
-                    "纪念日缺少名称或有效日期。",
+                    str(error),
                     "invalid_intent",
                     intent.source,
                 )
-            try:
-                kind = ImportantDayKind(str(arguments.get("kind") or "anniversary"))
-                calendar = CalendarSystem(str(arguments.get("calendar") or "solar"))
-            except ValueError:
-                return AssistantReply(
-                    "重要日子的类型或历法无法识别。",
-                    "invalid_intent",
-                    intent.source,
-                )
-            advance = arguments.get("advance_days")
-            try:
-                anniversary = self.services.command_bus().execute(
-                    CreateAnniversary(
-                        title=title,
-                        anchor_date=anchor_date,
-                        timezone=self.router.timezone.key,
-                        kind=kind,
-                        calendar=calendar,
-                        lunar_month=_optional_int(arguments.get("lunar_month")),
-                        lunar_day=_optional_int(arguments.get("lunar_day")),
-                        lunar_leap=bool(arguments.get("lunar_leap")),
-                        advance_days=(
-                            tuple(int(value) for value in advance)
-                            if isinstance(advance, (list, tuple))
-                            else None
-                        ),
-                        private=bool(arguments.get("private")),
+            duplicate = self.services.find_matching_anniversary(command, context)
+            if duplicate is not None and not (
+                context.confirmed and command.allow_duplicate
+            ):
+                duplicate_arguments = {**arguments, "_allow_duplicate": True}
+                return self._stage_plan(
+                    ParsedIntent(
+                        IntentAction.CREATE_ANNIVERSARY,
+                        duplicate_arguments,
+                        source=intent.source,
+                        requires_confirmation=True,
                     ),
                     context,
+                    target_ref=target_ref,
+                    notice=_important_day_duplicate_notice(duplicate),
+                )
+            try:
+                anniversary = self.services.command_bus().execute(
+                    command,
+                    context,
+                )
+            except ConfirmationRequired:
+                return AssistantReply(
+                    "执行前出现了新的重复记录，请重新发送创建内容并确认。",
+                    "duplicate_confirmation_required",
+                    intent.source,
                 )
             except ValidationError as error:
                 return AssistantReply(str(error), "invalid_intent", intent.source)
@@ -1509,7 +1558,22 @@ class AssistantEngine:
                 "confirmation_unavailable",
                 intent.source,
             )
-        encoded = _encode_plan_value(intent.arguments)
+        arguments = dict(intent.arguments)
+        if intent.action is IntentAction.CREATE_ANNIVERSARY:
+            try:
+                command = _important_day_command(
+                    arguments,
+                    timezone=self.router.timezone.key,
+                )
+                duplicate = self.services.find_matching_anniversary(command, context)
+            except ValidationError:
+                duplicate = None
+            if duplicate is not None:
+                arguments["_allow_duplicate"] = True
+                duplicate_notice = _important_day_duplicate_notice(duplicate)
+                if duplicate_notice not in notice:
+                    notice = f"{notice}；{duplicate_notice}" if notice else duplicate_notice
+        encoded = _encode_plan_value(arguments)
         payload_json = json.dumps(
             encoded,
             ensure_ascii=False,
@@ -1533,7 +1597,6 @@ class AssistantEngine:
         if notice:
             lines.extend(["", f"> {_escape_markdown_text(notice)}"])
         lines.extend(["", f"**写入范围：** {scope}"])
-        arguments = intent.arguments
         if intent.action is IntentAction.CREATE_AGENDA:
             recurrence = str(arguments.get("recurrence_rule") or "")
             recurrence_text = (

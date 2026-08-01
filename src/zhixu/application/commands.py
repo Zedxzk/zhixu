@@ -60,6 +60,7 @@ class CreateAnniversary:
     advance_days: tuple[int, ...] | None = None
     classification: DataClassification = DataClassification.PERSONAL
     private: bool = False
+    allow_duplicate: bool = False
 
 
 @dataclass(frozen=True, slots=True)

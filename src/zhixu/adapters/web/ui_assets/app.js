@@ -567,10 +567,13 @@ async function updateRoute(item, groupMode) {
   finally { setBusy(false); }
 }
 
-function confirmAction(title, message) {
+function confirmAction(title, message, { confirmLabel = "确认", dangerous = true } = {}) {
   const dialog = qs("#confirm-dialog");
   qs("#confirm-title").textContent = title;
   qs("#confirm-message").textContent = message;
+  const submit = qs("#confirm-submit");
+  submit.textContent = confirmLabel;
+  submit.className = `button ${dangerous ? "button-danger" : "button-primary"}`;
   dialog.showModal();
   return new Promise((resolve) => dialog.addEventListener("close", () => resolve(dialog.returnValue === "confirm"), { once: true }));
 }
@@ -743,7 +746,28 @@ async function submitEditor(event) {
   }
   setBusy(true);
   try {
-    await api(endpoint, { method: editing ? "PUT" : "POST", body });
+    try {
+      await api(endpoint, { method: editing ? "PUT" : "POST", body });
+    } catch (error) {
+      const duplicateConfirmation = !editing
+        && kind === "important-day"
+        && error.status === 428
+        && error.payload?.error?.code === "confirmation_required";
+      if (!duplicateConfirmation) throw error;
+      setBusy(false);
+      const confirmed = await confirmAction(
+        "可能重复的重要日子",
+        `“${body.title}”的同类型、同日期记录已经存在。是否仍然再创建一条？`,
+        { confirmLabel: "仍然创建", dangerous: true },
+      );
+      if (!confirmed) return;
+      setBusy(true);
+      await api(endpoint, {
+        method: "POST",
+        headers: { "X-Zhixu-Confirm": "true" },
+        body,
+      });
+    }
     qs("#editor-dialog").close();
     state.editorItem = null;
     toast(editing ? "修改已保存" : "已保存");

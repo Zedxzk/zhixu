@@ -209,3 +209,19 @@ def test_a_birthday_without_a_year_keeps_the_sentinel_through_an_edit(
     assert updated.anchor_date.year == UNKNOWN_YEAR
     assert updated.title == "同事小王"
     assert updated.occurrence_in(2026) == date(2026, 8, 20)
+
+
+def test_duplicate_important_day_requires_a_second_confirmation(assistant) -> None:
+    engine, context, database = assistant
+    first = engine.handle("/生日 同事 8-20", context, target_ref="qqc_group")
+    assert first.code == "created"
+
+    staged = engine.handle("/生日 同事 8-20", context, target_ref="qqc_group")
+    assert staged.code == "plan_preview"
+    assert "检测到可能重复" in staged.text
+    assert len(AnniversaryRepository(database).list_for_owner("owner")) == 1
+
+    accept = next(button for button in staged.buttons if "接受" in button.label)
+    created = engine.handle(accept.action, context, target_ref="qqc_group")
+    assert created.code == "created"
+    assert len(AnniversaryRepository(database).list_for_owner("owner")) == 2

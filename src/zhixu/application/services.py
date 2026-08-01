@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 import uuid
 from collections.abc import Callable
 from dataclasses import replace
@@ -28,6 +29,7 @@ from zhixu.domain import (
 )
 from zhixu.domain.errors import (
     ConcurrencyConflict,
+    ConfirmationRequired,
     NotFoundError,
     PermissionDenied,
     ValidationError,
@@ -95,6 +97,24 @@ def _default_advance_days(kind: ImportantDayKind) -> tuple[int, ...]:
     if kind is ImportantDayKind.BIRTHDAY:
         return DEFAULT_BIRTHDAY_ADVANCE_DAYS
     return DEFAULT_ANNIVERSARY_ADVANCE_DAYS
+
+
+def _important_day_title_key(value: str) -> str:
+    return "".join(unicodedata.normalize("NFKC", value).casefold().split())
+
+
+def _important_day_date_key(value: Anniversary | CreateAnniversary) -> tuple[object, ...]:
+    if value.calendar.value == "lunar":
+        date_parts: tuple[object, ...] = (
+            value.lunar_month,
+            value.lunar_day,
+            value.lunar_leap,
+        )
+    else:
+        date_parts = (value.anchor_date.month, value.anchor_date.day)
+    if value.kind is ImportantDayKind.ANNIVERSARY:
+        return (*date_parts, value.anchor_date.year)
+    return date_parts
 
 
 class ZhixuServices:
@@ -201,6 +221,13 @@ class ZhixuServices:
         if self.anniversaries is None:
             raise ValidationError("anniversary repository is unavailable")
         current = self._context(context)
+        duplicate = self.find_matching_anniversary(command, current)
+        if duplicate is not None and not (
+            current.confirmed and command.allow_duplicate
+        ):
+            raise ConfirmationRequired(
+                "a matching important day already exists; confirm duplicate creation"
+            )
         anniversary = Anniversary(
             id=self.id_factory("anniversary"),
             owner_user_id=self._create_owner(current, private=command.private),
@@ -231,6 +258,39 @@ class ZhixuServices:
             ),
         )
         return self.anniversaries.create(anniversary, authorization)
+
+    def find_matching_anniversary(
+        self,
+        command: CreateAnniversary,
+        context: CommandContext,
+    ) -> Anniversary | None:
+        """Return an exact semantic duplicate in the destination workspace."""
+
+        if self.anniversaries is None:
+            return None
+        current = self._context(context)
+        owner_user_id = self._create_owner(current, private=command.private)
+        title_key = _important_day_title_key(command.title)
+        date_key = _important_day_date_key(command)
+        for item in self.anniversaries.list_for_owner(owner_user_id):
+            if (
+                item.kind is command.kind
+                and item.calendar is command.calendar
+                and _important_day_title_key(item.title) == title_key
+                and _important_day_date_key(item) == date_key
+            ):
+                self.policy.require(
+                    current,
+                    Action.READ,
+                    self._ref(
+                        "anniversary",
+                        item.id,
+                        item.owner_user_id,
+                        item.classification,
+                    ),
+                )
+                return item
+        return None
 
     def create_agenda_notification(
         self,

@@ -48,6 +48,9 @@ def test_ui_is_packaged_and_contains_no_remote_dependencies() -> None:
     assert 'class="content-grid system-observability-grid"' in index
     assert ".system-table .table-row" in style
     assert "cell.title = text" in script
+    assert 'id="confirm-submit"' in index
+    assert '"X-Zhixu-Confirm": "true"' in script
+    assert "可能重复的重要日子" in script
 
 
 def test_ui_response_has_strict_browser_security_headers() -> None:

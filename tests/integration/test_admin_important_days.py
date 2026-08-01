@@ -145,6 +145,41 @@ def test_admin_creates_a_lunar_birthday(
     assert created.body["next_occurrence"] == "2026-09-06"
 
 
+def test_admin_requires_explicit_confirmation_before_creating_a_duplicate(
+    api: tuple[AdminAPI, dict[str, str]],
+) -> None:
+    admin, headers = api
+    original = {
+        "title": "Synthetic Person",
+        "anchor_date": "0001-08-20",
+        "timezone": "Asia/Shanghai",
+        "kind": "birthday",
+        "calendar": "solar",
+        "private": True,
+    }
+    assert admin.dispatch(
+        "POST", "/admin/important-days", headers=headers, body=_body(original)
+    ).status == 201
+
+    duplicate = {**original, "title": "  Synthetic   Person  ", "anchor_date": "1990-08-20"}
+    blocked = admin.dispatch(
+        "POST", "/admin/important-days", headers=headers, body=_body(duplicate)
+    )
+
+    assert blocked.status == 428
+    assert blocked.body["error"]["code"] == "confirmation_required"
+    assert len(admin.dispatch("GET", "/admin/important-days", headers=headers).body) == 1
+
+    confirmed = admin.dispatch(
+        "POST",
+        "/admin/important-days",
+        headers={**headers, "X-Zhixu-Confirm": "true"},
+        body=_body(duplicate),
+    )
+    assert confirmed.status == 201
+    assert len(admin.dispatch("GET", "/admin/important-days", headers=headers).body) == 2
+
+
 def test_admin_rejects_invalid_or_unauthenticated_important_days(
     api: tuple[AdminAPI, dict[str, str]],
 ) -> None:
