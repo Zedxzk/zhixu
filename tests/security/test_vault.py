@@ -567,6 +567,41 @@ def test_passkey_registration_and_step_up_consume_challenges(
         )
 
 
+@pytest.mark.parametrize(
+    ("rp_id", "origin", "accepted"),
+    [
+        ("localhost", "http://localhost:8840", True),
+        ("localhost", "http://localhost", True),
+        ("example.invalid", "https://example.invalid", True),
+        ("127.0.0.1", "http://127.0.0.1:8840", False),
+        ("example.invalid", "http://example.invalid", False),
+        ("localhost", "http://localhost.example.invalid:8840", False),
+        ("localhost", "http://localhost:8840/path", False),
+        ("localhost", "http://user@localhost:8840", False),
+    ],
+)
+def test_passkey_origin_accepts_only_https_or_exact_localhost_tunnel(
+    tmp_path: Path,
+    rp_id: str,
+    origin: str,
+    accepted: bool,
+) -> None:
+    def build_manager() -> PasskeyManager:
+        return PasskeyManager(
+            VaultDatabase(tmp_path / "origin.sqlite3"),
+            rp_id=rp_id,
+            rp_name="Synthetic RP",
+            expected_origin=origin,
+            now=lambda: NOW,
+        )
+
+    if accepted:
+        build_manager()
+    else:
+        with pytest.raises(ValueError, match="secure origin"):
+            build_manager()
+
+
 def test_export_rotation_backup_restore_and_l4_rejection(
     vault: tuple[
         VaultDatabase,

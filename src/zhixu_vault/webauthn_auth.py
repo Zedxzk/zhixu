@@ -10,6 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import urlsplit
 
 from webauthn import (
     generate_authentication_options,
@@ -36,6 +37,32 @@ def _unb64(value: str) -> bytes:
     return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
 
 
+def _valid_origin(rp_id: str, expected_origin: str) -> bool:
+    normalized_rp = rp_id.strip().rstrip(".").lower()
+    if not normalized_rp or not expected_origin:
+        return False
+    try:
+        ascii_rp = normalized_rp.encode("idna").decode("ascii")
+        origin = urlsplit(expected_origin)
+        hostname = (origin.hostname or "").rstrip(".").lower()
+        ascii_host = hostname.encode("idna").decode("ascii")
+        _ = origin.port
+    except (UnicodeError, ValueError):
+        return False
+    localhost_tunnel = (
+        origin.scheme == "http" and ascii_host == "localhost" and ascii_rp == "localhost"
+    )
+    return (
+        ascii_host == ascii_rp
+        and (origin.scheme == "https" or localhost_tunnel)
+        and origin.username is None
+        and origin.password is None
+        and origin.path in {"", "/"}
+        and not origin.query
+        and not origin.fragment
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class StepUpProof:
     user_id: str
@@ -57,8 +84,8 @@ class PasskeyManager:
         registration_verifier=verify_registration_response,
         authentication_verifier=verify_authentication_response,
     ) -> None:
-        if not rp_id or not rp_name or not expected_origin.startswith("https://"):
-            raise ValueError("Passkey RP and HTTPS origin are required")
+        if not rp_name or not _valid_origin(rp_id, expected_origin):
+            raise ValueError("Passkey RP and secure origin are required")
         self.database = database
         self.rp_id = rp_id
         self.rp_name = rp_name
