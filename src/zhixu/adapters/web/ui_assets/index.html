@@ -199,11 +199,11 @@
 
       <section id="view-system" class="view" data-view-panel="system">
         <div id="health-grid" class="metric-grid"></div>
-        <div class="content-grid">
-          <article class="card section-card"><header class="section-header"><div><p class="eyebrow">DELIVERY</p><h2>最近投递</h2></div></header><div id="outbox-list" class="table-list"></div></article>
-          <article class="card section-card"><header class="section-header"><div><p class="eyebrow">LLM</p><h2>模型调用</h2></div></header><div id="llm-list" class="table-list"></div></article>
+        <div class="content-grid system-observability-grid">
+          <article class="card section-card"><header class="section-header"><div><p class="eyebrow">DELIVERY</p><h2>最近投递</h2></div></header><div id="outbox-list" class="table-list system-table system-table-delivery"></div></article>
+          <article class="card section-card"><header class="section-header"><div><p class="eyebrow">LLM</p><h2>模型调用</h2></div></header><div id="llm-list" class="table-list system-table system-table-llm"></div></article>
         </div>
-        <article class="card section-card"><header class="section-header"><div><p class="eyebrow">AUDIT</p><h2>操作审计</h2></div></header><div id="audit-list" class="table-list"></div></article>
+        <article class="card section-card system-audit-card"><header class="section-header"><div><p class="eyebrow">AUDIT</p><h2>操作审计</h2></div></header><div id="audit-list" class="table-list system-table system-table-audit"></div></article>
         <article class="security-card card">
           <div><p class="eyebrow">STEP-UP SECURITY</p><h2>Passkey 安全验证</h2><p>高敏感操作需要临时提升认证等级。验证结果不会离开当前会话。</p></div>
           <div class="security-actions"><button id="passkey-register" class="button button-secondary">登记此设备</button><button id="passkey-verify" class="button button-primary">进行安全验证</button></div>

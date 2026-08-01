@@ -45,6 +45,9 @@ def test_ui_is_packaged_and_contains_no_remote_dependencies() -> None:
     assert 'id="workspace-scope"' in index
     assert 'api("/admin/workspaces")' in script
     assert "workspaceTag(item)" in script
+    assert 'class="content-grid system-observability-grid"' in index
+    assert ".system-table .table-row" in style
+    assert "cell.title = text" in script
 
 
 def test_ui_response_has_strict_browser_security_headers() -> None:

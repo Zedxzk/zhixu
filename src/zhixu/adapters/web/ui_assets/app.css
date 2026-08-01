@@ -168,7 +168,8 @@ a { color: inherit; text-decoration: none; }
 
 .content-grid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(300px, .65fr); gap: 1rem; margin-top: 1rem; }
 .content-grid.wide-left { grid-template-columns: 1.2fr .8fr; }
-.section-card { padding: 1.4rem; }
+.content-grid > *, .section-card, .table-list, .table-row > * { min-width: 0; }
+.section-card { min-width: 0; padding: 1.4rem; }
 .section-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
 .section-header h2 { margin: 0; font-size: 1.15rem; letter-spacing: -.025em; }
 .timeline { display: grid; }
@@ -242,10 +243,15 @@ a { color: inherit; text-decoration: none; }
 
 .route-card { margin-top: 1rem; }
 .table-list { display: grid; }
-.table-row { display: grid; grid-template-columns: minmax(120px, 1.2fr) repeat(3, minmax(90px, .7fr)); gap: .8rem; align-items: center; min-height: 52px; padding: .7rem .2rem; border-top: 1px solid var(--line); font-size: .72rem; }
+.table-row { display: grid; grid-template-columns: minmax(120px, 1.2fr) repeat(3, minmax(90px, .7fr)); gap: .8rem; width: 100%; min-width: 0; align-items: center; min-height: 52px; padding: .7rem .2rem; border-top: 1px solid var(--line); font-size: .72rem; }
 .table-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .table-row span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .table-row select { padding: .38rem .55rem; border: 1px solid var(--line); border-radius: 9px; color: var(--text); background: var(--surface-2); font-size: .68rem; }
+.system-observability-grid { grid-template-columns: minmax(0, 1.25fr) minmax(520px, .75fr); }
+.system-table .table-row { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr) minmax(0, .8fr) minmax(64px, .65fr); }
+.system-table-delivery .table-row { grid-template-columns: minmax(0, .75fr) minmax(0, 1.15fr) minmax(0, .75fr) minmax(54px, .45fr); }
+.system-table-audit .table-row { grid-template-columns: minmax(0, 1.15fr) minmax(0, .9fr) minmax(0, .75fr) minmax(130px, .8fr); }
+.system-audit-card { margin-top: 1rem; }
 .health-state { display: inline-flex; align-items: center; gap: .4rem; color: var(--muted); }
 .health-state::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--lime); }
 .health-state.degraded::before { background: var(--coral); }
@@ -289,6 +295,10 @@ a { color: inherit; text-decoration: none; }
   .metric-grid { grid-template-columns: repeat(2, 1fr); }
 }
 
+@media (max-width: 1280px) {
+  .system-observability-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
 @media (max-width: 780px) {
   .login-shell { grid-template-columns: 1fr; }
   .login-story { min-height: auto; padding: 1.5rem; border: 0; }
@@ -322,6 +332,9 @@ a { color: inherit; text-decoration: none; }
   .task-board, .note-grid, .important-day-grid { grid-template-columns: 1fr; }
   .table-row { grid-template-columns: 1.2fr .8fr; }
   .table-row > :nth-child(n+3) { display: none; }
+  .system-table .table-row { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem 1rem; padding-block: .9rem; }
+  .system-table .table-row > :nth-child(n+3) { display: block; }
+  .system-table .table-cell::before { content: attr(data-label); display: block; margin-bottom: .22rem; overflow: hidden; color: var(--muted-2); font-size: .58rem; font-weight: 650; letter-spacing: .04em; text-overflow: ellipsis; white-space: nowrap; }
   .mobile-nav { position: fixed; left: .7rem; right: .7rem; bottom: max(.7rem, env(safe-area-inset-bottom)); z-index: 40; display: grid; grid-template-columns: repeat(5, 1fr); padding: .45rem; border: 1px solid var(--line-strong); border-radius: 20px; background: color-mix(in srgb, var(--bg-deep) 92%, transparent); box-shadow: var(--shadow); backdrop-filter: blur(22px); }
   .mobile-nav button { display: grid; place-items: center; gap: .12rem; min-height: 48px; border: 0; border-radius: 14px; color: var(--muted); background: transparent; font-size: .58rem; }
   .mobile-nav button span { font-size: 1rem; }

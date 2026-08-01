@@ -514,16 +514,25 @@ function renderSystem() {
     metric.append(top, node("strong", "", value === "available" || value === "ready" ? "正常" : value), node("small", "", value));
     return metric;
   }));
-  renderRows(qs("#outbox-list"), state.outbox, (item) => [item.channel || "—", item.message_kind, item.status, `${item.attempts}/${item.max_attempts}`], "暂无投递记录");
-  renderRows(qs("#llm-list"), state.llm, (item) => [item.reason || "调用", item.model_ref || "模型", item.outcome, `${item.estimated_input_units || 0} → ${item.output_units || 0}`], "暂无模型调用");
-  renderRows(qs("#audit-list"), state.audit, (item) => [item.action, item.resource_kind, item.outcome, formatDate(item.occurred_at)], "暂无审计记录");
+  renderRows(qs("#outbox-list"), state.outbox, (item) => [item.channel || "—", item.message_kind, item.status, `${item.attempts}/${item.max_attempts}`], "暂无投递记录", ["渠道", "消息类型", "状态", "尝试"]);
+  renderRows(qs("#llm-list"), state.llm, (item) => [item.reason || "调用", item.model_ref || "模型", item.outcome, `${item.estimated_input_units || 0} → ${item.output_units || 0}`], "暂无模型调用", ["用途", "模型", "结果", "用量"]);
+  renderRows(qs("#audit-list"), state.audit, (item) => [item.action, item.resource_kind, item.outcome, formatDate(item.occurred_at)], "暂无审计记录", ["操作", "资源", "结果", "时间"]);
 }
 
-function renderRows(container, items, mapper, message) {
+function renderRows(container, items, mapper, message, labels = []) {
   if (!items.length) return empty(container, message);
   container.replaceChildren(...items.map((item) => {
     const row = node("div", "table-row");
-    mapper(item).forEach((value, index) => row.append(node(index === 0 ? "strong" : "span", "", value || "—")));
+    mapper(item).forEach((value, index) => {
+      const text = String(value || "—");
+      const cell = node(index === 0 ? "strong" : "span", "table-cell", text);
+      cell.title = text;
+      if (labels[index]) {
+        cell.dataset.label = labels[index];
+        cell.setAttribute("aria-label", `${labels[index]}：${text}`);
+      }
+      row.append(cell);
+    });
     return row;
   }));
 }
