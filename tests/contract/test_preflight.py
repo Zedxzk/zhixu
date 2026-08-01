@@ -127,6 +127,49 @@ def test_preflight_allows_headless_mode_only_without_passkey_origin(
     assert configured.value.code == "passkey_disabled_configuration"
 
 
+def test_preflight_accepts_http_only_for_a_localhost_ssh_tunnel(
+    tmp_path: Path,
+) -> None:
+    paths = _configuration(tmp_path)
+    original = paths.runtime_config.read_text(encoding="utf-8")
+    paths.runtime_config.write_text(
+        original.replace(
+            "ZHIXU_PASSKEY_RP_ID=assistant.example.invalid\n"
+            "ZHIXU_PASSKEY_ORIGIN=https://assistant.example.invalid",
+            "ZHIXU_PASSKEY_RP_ID=localhost\n"
+            "ZHIXU_PASSKEY_ORIGIN=http://localhost:8840",
+        ),
+        encoding="utf-8",
+    )
+    verify_deployment_configuration(
+        paths,
+        expected_owner_uid=os.getuid(),
+        expected_owner_gid=os.getgid(),
+    )
+
+    for rp_id, origin in (
+        ("127.0.0.1", "http://127.0.0.1:8840"),
+        ("assistant.example.invalid", "http://assistant.example.invalid"),
+        ("localhost", "http://localhost.example.invalid:8840"),
+    ):
+        paths.runtime_config.write_text(
+            original.replace(
+                "ZHIXU_PASSKEY_RP_ID=assistant.example.invalid\n"
+                "ZHIXU_PASSKEY_ORIGIN=https://assistant.example.invalid",
+                f"ZHIXU_PASSKEY_RP_ID={rp_id}\n"
+                f"ZHIXU_PASSKEY_ORIGIN={origin}",
+            ),
+            encoding="utf-8",
+        )
+        with pytest.raises(PreflightFailure) as insecure:
+            verify_deployment_configuration(
+                paths,
+                expected_owner_uid=os.getuid(),
+                expected_owner_gid=os.getgid(),
+            )
+        assert insecure.value.code == "passkey_origin_invalid"
+
+
 def test_preflight_rejects_loose_permissions_symlinks_and_unknown_config(
     tmp_path: Path,
 ) -> None:

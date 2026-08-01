@@ -202,9 +202,25 @@ private administration API. They are stored only as authenticated ciphertext in
 The outbound worker receives the dedicated target key, but not the application field key,
 application reference key, QQ credentials, LLM credential, grant signer, or vault data.
 
-## 6. Private HTTPS
+## 6. Private browser access
 
 This section is required only when `ZHIXU_ADMIN_WEB_ENABLED=true`.
+
+The domain-free option is an SSH local-forward. Configure the server with
+`ZHIXU_PASSKEY_RP_ID=localhost` and
+`ZHIXU_PASSKEY_ORIGIN=http://localhost:8840`, then open the tunnel from the
+trusted administration machine:
+
+```bash
+ssh -N -L 127.0.0.1:8840:127.0.0.1:8840 ubuntu@PRIVATE_SERVER
+```
+
+Open `http://localhost:8840/` in the browser. HTTP is accepted only for the
+literal `localhost` origin: the browser-to-port hop stays on the local machine,
+and SSH encrypts the entire network hop. The application remains bound to
+server loopback and no public listener is created.
+
+Alternatively, use a private HTTPS ingress:
 
 Render `deploy/reverse-proxy/nginx-private.conf.template` with a private interface address
 and a private DNS name. Verify the rendered listener is not a wildcard address. TLS keys

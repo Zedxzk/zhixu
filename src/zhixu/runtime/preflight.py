@@ -313,10 +313,15 @@ def _validate_passkey(runtime: dict[str, str]) -> None:
         raise PreflightFailure("passkey_origin_invalid") from exc
     origin = urlsplit(configured_origin)
     hostname = (origin.hostname or "").rstrip(".").lower()
+    loopback_tunnel_origin = (
+        origin.scheme == "http"
+        and hostname == "localhost"
+        and ascii_rp_id == "localhost"
+    )
     if (
         not ascii_rp_id
         or hostname != ascii_rp_id
-        or origin.scheme != "https"
+        or (origin.scheme != "https" and not loopback_tunnel_origin)
         or origin.username is not None
         or origin.password is not None
         or origin.path not in {"", "/"}

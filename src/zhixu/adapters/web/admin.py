@@ -6,9 +6,10 @@ import json
 import secrets
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
+from zoneinfo import ZoneInfo
 
 from zhixu.adapters.channels import (
     ChannelRegistry,
@@ -28,6 +29,7 @@ from zhixu.adapters.storage.sqlite import (
 from zhixu.application.commands import (
     CancelReminder,
     CreateAgenda,
+    CreateAnniversary,
     CreateNote,
     CreateReminder,
     CreateTask,
@@ -41,17 +43,19 @@ from zhixu.application.commands import (
     UpdateNote,
     UpdateTask,
 )
-from zhixu.application.queries import ListReminders
+from zhixu.application.queries import ListAnniversaries, ListReminders
 from zhixu.application.services import ZhixuServices, random_id
 from zhixu.channels import MessageKind, OutboundMessage
 from zhixu.delivery import OutboxStore
 from zhixu.domain import (
     Action,
     AuthenticationStrength,
+    CalendarSystem,
     CommandContext,
     DataClassification,
     EncryptedIdentifier,
     ExceptionAction,
+    ImportantDayKind,
     MissedReminderPolicy,
     NoteAttachment,
     PolicyEngine,
@@ -324,6 +328,14 @@ class AdminAPI:
                     return self._list_agenda(context)
                 if method == "POST":
                     return self._create_agenda(self._object_body(body), context)
+            if path == "/admin/important-days":
+                if method == "GET":
+                    return self._list_important_days(context)
+                if method == "POST":
+                    return self._create_important_day(
+                        self._object_body(body),
+                        context,
+                    )
             if path.startswith("/admin/agenda/") and path.endswith("/exceptions"):
                 parts = path.strip("/").split("/")
                 if method == "POST" and len(parts) == 4:
@@ -1126,6 +1138,81 @@ class AdminAPI:
             )
         return AdminResponse(200, [self._agenda_json(item) for item in items])
 
+    def _list_important_days(self, context: CommandContext) -> AdminResponse:
+        items = self.services.query_bus().execute(ListAnniversaries(), context)
+        return AdminResponse(
+            200,
+            [
+                self._important_day_json(
+                    item,
+                    now=context.now or self.clock.now(),
+                )
+                for item in items
+            ],
+        )
+
+    def _create_important_day(
+        self,
+        data: dict[str, object],
+        context: CommandContext,
+    ) -> AdminResponse:
+        self._fields(
+            data,
+            required={"title", "anchor_date", "timezone", "kind", "calendar"},
+            optional={
+                "lunar_month",
+                "lunar_day",
+                "lunar_leap",
+                "advance_days",
+                "classification",
+                "private",
+            },
+        )
+        try:
+            kind = ImportantDayKind(self._string(data, "kind", maximum=40))
+            calendar = CalendarSystem(self._string(data, "calendar", maximum=40))
+        except ValueError as exc:
+            raise ValidationError("invalid important day kind or calendar") from exc
+        item = self.services.create_anniversary(
+            CreateAnniversary(
+                title=self._string(data, "title", maximum=500),
+                anchor_date=self._date(data, "anchor_date"),
+                timezone=self._string(data, "timezone", maximum=80),
+                kind=kind,
+                calendar=calendar,
+                lunar_month=self._nullable_integer(
+                    data,
+                    "lunar_month",
+                    minimum=1,
+                    maximum=12,
+                ),
+                lunar_day=self._nullable_integer(
+                    data,
+                    "lunar_day",
+                    minimum=1,
+                    maximum=30,
+                ),
+                lunar_leap=self._boolean(data, "lunar_leap", default=False),
+                advance_days=self._integer_tuple(
+                    data,
+                    "advance_days",
+                    minimum=1,
+                    maximum=366,
+                    maximum_items=8,
+                ),
+                classification=self._classification(data),
+                private=self._boolean(data, "private", default=True),
+            ),
+            context,
+        )
+        return AdminResponse(
+            201,
+            self._important_day_json(
+                item,
+                now=context.now or self.clock.now(),
+            ),
+        )
+
     def _create_agenda(
         self,
         data: dict[str, object],
@@ -1482,6 +1569,26 @@ class AdminAPI:
         }
 
     @staticmethod
+    def _important_day_json(item: Any, *, now: datetime) -> dict[str, object]:
+        local_today = now.astimezone(ZoneInfo(item.timezone)).date()
+        occurrence = item.next_occurrence(local_today)
+        return {
+            "id": item.id,
+            "title": item.title,
+            "kind": item.kind.value,
+            "calendar": item.calendar.value,
+            "anchor_date": item.anchor_date.isoformat(),
+            "lunar_month": item.lunar_month,
+            "lunar_day": item.lunar_day,
+            "lunar_leap": item.lunar_leap,
+            "timezone": item.timezone,
+            "advance_days": list(item.advance_days),
+            "next_occurrence": occurrence.isoformat() if occurrence else None,
+            "classification": int(item.classification),
+            "created_at": item.created_at.isoformat() if item.created_at else None,
+        }
+
+    @staticmethod
     def _task_json(item: Any) -> dict[str, object]:
         return {
             "id": item.id,
@@ -1648,6 +1755,61 @@ class AdminAPI:
         if value < minimum or (maximum is not None and value > maximum):
             raise ValidationError(f"{key} is outside the allowed range")
         return value
+
+    @classmethod
+    def _nullable_integer(
+        cls,
+        data: Mapping[str, object],
+        key: str,
+        *,
+        minimum: int,
+        maximum: int | None = None,
+    ) -> int | None:
+        if key not in data or data[key] is None:
+            return None
+        return cls._integer(
+            data,
+            key,
+            minimum=minimum,
+            maximum=maximum,
+        )
+
+    @staticmethod
+    def _integer_tuple(
+        data: Mapping[str, object],
+        key: str,
+        *,
+        minimum: int,
+        maximum: int,
+        maximum_items: int,
+    ) -> tuple[int, ...] | None:
+        if key not in data:
+            return None
+        value = data[key]
+        if not isinstance(value, list) or len(value) > maximum_items:
+            raise ValidationError(f"{key} must be a bounded list")
+        result: list[int] = []
+        for item in value:
+            if (
+                not isinstance(item, int)
+                or isinstance(item, bool)
+                or not minimum <= item <= maximum
+            ):
+                raise ValidationError(f"{key} contains an invalid value")
+            result.append(item)
+        if len(result) != len(set(result)):
+            raise ValidationError(f"{key} must not contain duplicates")
+        return tuple(result)
+
+    @staticmethod
+    def _date(data: Mapping[str, object], key: str) -> date:
+        value = data.get(key)
+        if not isinstance(value, str):
+            raise ValidationError(f"{key} must be an ISO date")
+        try:
+            return date.fromisoformat(value)
+        except ValueError as exc:
+            raise ValidationError(f"{key} must be an ISO date") from exc
 
     @staticmethod
     def _datetime(data: Mapping[str, object], key: str) -> datetime:

@@ -28,6 +28,7 @@ const state = {
   llm: [],
   importantDays: [],
   importantDaysEndpoint: "",
+  editorItem: null,
 };
 
 const viewTitles = {
@@ -135,7 +136,10 @@ function includesSearch(...values) {
 
 function localDate(value) {
   if (!value) return null;
-  const result = new Date(value);
+  const dateOnly = typeof value === "string" && /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  const result = dateOnly
+    ? new Date(Number(dateOnly[1]), Number(dateOnly[2]) - 1, Number(dateOnly[3]))
+    : new Date(value);
   return Number.isNaN(result.getTime()) ? null : result;
 }
 
@@ -313,6 +317,7 @@ function renderAgenda() {
     main.append(node("h3", "", item.title), node("p", "", item.description || (item.recurrence_rule ? `循环 · ${item.recurrence_rule}` : "单次日程")));
     const actions = node("div", "resource-actions");
     if (item.recurrence_rule) actions.append(tag("循环", "lime"));
+    actions.append(miniButton("编辑", () => openEditor("agenda", item)));
     actions.append(miniButton("删除", () => removeResource("agenda", item), "danger"));
     row.append(time, main, actions);
     return row;
@@ -362,7 +367,11 @@ function renderTasks() {
       if (item.description) card.append(node("p", "", item.description));
       const meta = node("div", "task-meta");
       meta.append(node("small", "", item.due_at ? formatDate(item.due_at) : `优先级 ${item.priority}`));
-      if (status !== "done") meta.append(miniButton(status === "doing" ? "完成" : "开始", () => transitionTask(item, status === "doing" ? "done" : "doing")));
+      const actions = node("div", "resource-actions");
+      actions.append(miniButton("编辑", () => openEditor("task", item)));
+      if (status !== "done") actions.append(miniButton(status === "doing" ? "完成" : "开始", () => transitionTask(item, status === "doing" ? "done" : "doing")));
+      actions.append(miniButton("删除", () => removeResource("tasks", item), "danger"));
+      meta.append(actions);
       card.append(meta);
       column.append(card);
     });
@@ -380,7 +389,9 @@ function renderNotes() {
     const footer = node("footer");
     const tags = node("div", "tags");
     (item.tags || []).slice(0, 3).forEach((value) => tags.append(tag(value)));
-    footer.append(tags, miniButton("删除", () => removeResource("notes", item), "danger"));
+    const actions = node("div", "resource-actions");
+    actions.append(miniButton("编辑", () => openEditor("note", item)), miniButton("删除", () => removeResource("notes", item), "danger"));
+    footer.append(tags, actions);
     card.append(footer);
     return card;
   }));
@@ -397,10 +408,17 @@ function renderImportantDays() {
   list.replaceChildren(...items.map((item) => {
     const card = node("article", "day-card");
     const next = item.next_occurrence || item.next_at || item.anchor_date || item.date;
-    const remaining = next ? Math.max(0, Math.ceil((new Date(next).setHours(0,0,0,0) - new Date().setHours(0,0,0,0)) / 86400000)) : "—";
+    const nextDate = localDate(next);
+    const remaining = nextDate ? Math.max(0, Math.ceil((nextDate.setHours(0,0,0,0) - new Date().setHours(0,0,0,0)) / 86400000)) : "—";
     card.append(node("div", "countdown", remaining), node("p", "eyebrow", remaining === 0 ? "TODAY" : "DAYS TO GO"), node("h3", "", item.title || item.name || "重要日子"));
-    const detail = [item.kind === "birthday" ? "生日" : "纪念日", next ? formatDate(next, { dateOnly: true }) : "日期待定", item.calendar === "lunar" ? "农历" : "公历"].join(" · ");
+    const recordedDate = item.calendar === "lunar"
+      ? `农历 ${item.lunar_month || "—"} 月 ${item.lunar_day || "—"} 日`
+      : (next ? formatDate(next, { dateOnly: true }) : "日期待定");
+    const detail = [item.kind === "birthday" ? "生日" : "纪念日", recordedDate, item.calendar === "lunar" ? "农历" : "公历"].join(" · ");
     card.append(node("p", "", detail));
+    if (Array.isArray(item.advance_days) && item.advance_days.length) {
+      card.append(node("small", "day-leads", `提前 ${item.advance_days.join(" / ")} 天通知`));
+    }
     return card;
   }));
 }
@@ -509,7 +527,7 @@ function confirmAction(title, message) {
 }
 
 async function removeResource(kind, item) {
-  const labels = { agenda: "日程", reminders: "提醒", notes: "备忘" };
+  const labels = { agenda: "日程", reminders: "提醒", tasks: "待办", notes: "备忘" };
   if (!await confirmAction(`删除${labels[kind]}`, `“${item.title || "无标题"}”将不再保留。`)) return;
   setBusy(true);
   try {
@@ -542,6 +560,15 @@ const editorDefinitions = {
     title: "新建备忘", kicker: "NOTE",
     fields: [["title", "标题", "text", false], ["body", "内容", "textarea", true], ["tags", "标签（逗号分隔）", "text", false]],
   },
+  "important-day": {
+    title: "添加重要日子", kicker: "IMPORTANT DAY",
+    fields: [
+      ["title", "名称", "text", true], ["kind", "类型", "important-kind", true],
+      ["calendar", "历法", "calendar-system", true], ["event_year", "年份（生日不知道可留空）", "number", false],
+      ["event_month", "月份", "number", true], ["event_day", "日期", "number", true],
+      ["advance_days", "提前通知（天，逗号分隔）", "text", false], ["lunar_leap", "农历闰月", "checkbox", false],
+    ],
+  },
 };
 
 function inputField([name, label, type, required]) {
@@ -555,22 +582,29 @@ function inputField([name, label, type, required]) {
   } else if (type === "priority") {
     input = node("select");
     [[0, "普通"], [1, "较低"], [2, "重要"], [3, "紧急"], [4, "最高"]].forEach(([value, text]) => { const option = node("option", "", text); option.value = value; input.append(option); });
+  } else if (type === "important-kind") {
+    input = node("select");
+    [["birthday", "生日"], ["anniversary", "纪念日"]].forEach(([value, text]) => { const option = node("option", "", text); option.value = value; input.append(option); });
+  } else if (type === "calendar-system") {
+    input = node("select");
+    [["solar", "公历"], ["lunar", "农历"]].forEach(([value, text]) => { const option = node("option", "", text); option.value = value; input.append(option); });
   } else { input = node("input"); input.type = type; }
   input.name = name;
   input.required = required;
+  if (name === "event_year") { input.min = "1"; input.max = "9999"; input.placeholder = "不知道可留空"; }
+  if (name === "event_month") { input.min = "1"; input.max = "12"; }
+  if (name === "event_day") { input.min = "1"; input.max = "31"; }
+  if (name === "advance_days") input.placeholder = "例如：7, 3, 1";
   if (type === "checkbox") wrapper.append(input, caption); else wrapper.append(caption, input);
   return wrapper;
 }
 
-function openEditor(kind) {
-  if (kind === "important-day") {
-    toast(state.importantDaysEndpoint ? "重要日子创建接口正在完成适配" : "生日功能正在同步", "error");
-    return;
-  }
+function openEditor(kind, item = null) {
   const definition = editorDefinitions[kind];
   if (!definition) return;
+  state.editorItem = item;
   qs("#editor-kicker").textContent = definition.kicker;
-  qs("#editor-title").textContent = definition.title;
+  qs("#editor-title").textContent = item ? definition.title.replace("新建", "编辑") : definition.title;
   qs("#editor-form").dataset.kind = kind;
   qs("#editor-fields").replaceChildren(...definition.fields.map(inputField));
   if (kind === "agenda") {
@@ -579,7 +613,31 @@ function openEditor(kind) {
     start.value = toLocalInput(base); end.value = toLocalInput(new Date(base.getTime() + 3600000));
   }
   if (kind === "reminder") qs('[name="fire_at"]').value = toLocalInput(new Date(Date.now() + 3600000));
+  if (kind === "important-day") qs('[name="advance_days"]').value = "7, 3, 1";
+  if (item) fillEditor(kind, item);
   qs("#editor-dialog").showModal();
+}
+
+function fillEditor(kind, item) {
+  const values = {
+    title: item.title || "",
+    description: item.description || "",
+    priority: item.priority ?? 0,
+    body: item.body || "",
+    tags: (item.tags || []).join(", "),
+    recurrence_rule: item.recurrence_rule || "",
+    all_day: Boolean(item.all_day),
+    start_at: item.start_at ? toLocalInput(new Date(item.start_at)) : "",
+    end_at: item.end_at ? toLocalInput(new Date(item.end_at)) : "",
+    due_at: item.due_at ? toLocalInput(new Date(item.due_at)) : "",
+  };
+  Object.entries(values).forEach(([name, value]) => {
+    const input = qs(`[name="${name}"]`);
+    if (!input) return;
+    if (input.type === "checkbox") input.checked = Boolean(value);
+    else input.value = String(value);
+  });
+  if (kind === "note") qs('[name="body"]').focus();
 }
 
 function toLocalInput(date) {
@@ -596,23 +654,50 @@ async function submitEditor(event) {
   const form = event.currentTarget;
   const kind = form.dataset.kind;
   const values = Object.fromEntries(new FormData(form));
+  const editing = state.editorItem;
   let endpoint; let body;
   if (kind === "agenda") {
-    endpoint = "/admin/agenda";
+    endpoint = editing ? `/admin/agenda/${encodeURIComponent(editing.id)}` : "/admin/agenda";
     body = { title: values.title, start_at: isoOrNull(values.start_at), end_at: isoOrNull(values.end_at), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Shanghai", description: values.description || "", all_day: values.all_day === "on", recurrence_rule: values.recurrence_rule || null };
+    if (editing) body.expected_version = editing.version;
   } else if (kind === "reminder") {
     if (!values.target_ref) return toast("请先绑定一个消息身份", "error");
     endpoint = "/admin/reminders"; body = { title: values.title, fire_at: isoOrNull(values.fire_at), target_ref: values.target_ref };
   } else if (kind === "task") {
-    endpoint = "/admin/tasks"; body = { title: values.title, description: values.description || "", priority: Number(values.priority || 0), due_at: isoOrNull(values.due_at) };
+    endpoint = editing ? `/admin/tasks/${encodeURIComponent(editing.id)}` : "/admin/tasks";
+    body = { title: values.title, description: values.description || "", priority: Number(values.priority || 0), due_at: isoOrNull(values.due_at) };
+    if (editing) body.expected_version = editing.version;
+  } else if (kind === "important-day") {
+    const year = values.event_year ? Number(values.event_year) : 1;
+    const month = Number(values.event_month);
+    const day = Number(values.event_day);
+    if (values.kind === "anniversary" && !values.event_year) return toast("纪念日需要填写开始年份", "error");
+    if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return toast("请填写有效日期", "error");
+    const padded = (value, width = 2) => String(value).padStart(width, "0");
+    const leads = String(values.advance_days || "").split(/[,，]/).map((item) => Number(item.trim())).filter((item) => Number.isInteger(item));
+    endpoint = state.importantDaysEndpoint || "/admin/important-days";
+    body = {
+      title: values.title,
+      anchor_date: values.calendar === "lunar" ? `${padded(year, 4)}-01-01` : `${padded(year, 4)}-${padded(month)}-${padded(day)}`,
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Shanghai",
+      kind: values.kind,
+      calendar: values.calendar,
+      lunar_leap: values.lunar_leap === "on",
+      private: true,
+    };
+    if (values.calendar === "lunar") { body.lunar_month = month; body.lunar_day = day; }
+    if (String(values.advance_days || "").trim()) body.advance_days = leads;
   } else {
-    endpoint = "/admin/notes"; body = { title: values.title || "", body: values.body, tags: String(values.tags || "").split(/[,，]/).map((item) => item.trim()).filter(Boolean), attachments: [] };
+    endpoint = editing ? `/admin/notes/${encodeURIComponent(editing.id)}` : "/admin/notes";
+    body = { title: values.title || "", body: values.body, tags: String(values.tags || "").split(/[,，]/).map((item) => item.trim()).filter(Boolean), attachments: editing?.attachments || [] };
+    if (editing) body.expected_version = editing.version;
   }
   setBusy(true);
   try {
-    await api(endpoint, { method: "POST", body });
+    await api(endpoint, { method: editing ? "PUT" : "POST", body });
     qs("#editor-dialog").close();
-    toast("已保存");
+    state.editorItem = null;
+    toast(editing ? "修改已保存" : "已保存");
     await loadData({ quiet: true });
   } catch (error) { toast(error.message, "error"); }
   finally { setBusy(false); }

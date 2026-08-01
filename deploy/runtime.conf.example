@@ -6,10 +6,14 @@ ZHIXU_QQ_ACCOUNT=qq-primary
 ZHIXU_QQ_BOT_DISPLAY_NAME=SyntheticBotName
 ZHIXU_ADMIN_WEB_ENABLED=false
 
-# Enabling the browser administration API requires a private HTTPS origin.
+# Enabling the browser administration API requires a private HTTPS origin, or
+# the exact localhost origin shown below when access is carried by an SSH
+# local-forward tunnel. Plain HTTP to any non-localhost origin is rejected.
 # ZHIXU_ADMIN_WEB_ENABLED=true
 # ZHIXU_PASSKEY_RP_ID=assistant.example.invalid
 # ZHIXU_PASSKEY_ORIGIN=https://assistant.example.invalid
+# ZHIXU_PASSKEY_RP_ID=localhost
+# ZHIXU_PASSKEY_ORIGIN=http://localhost:8840
 
 # External DeepSeek access is isolated behind a fixed local proxy.
 ZHIXU_LLM_BASE_URL=http://127.0.0.1:8841/v1
