@@ -32,6 +32,7 @@ from zhixu.adapters.storage.sqlite import (
     GrantRepository,
     IdentityLinkStore,
     NoteRepository,
+    NotificationLeadRepository,
     PendingPlanStore,
     ReminderRepository,
     SQLiteLLMUsage,
@@ -39,6 +40,7 @@ from zhixu.adapters.storage.sqlite import (
     UserRepository,
 )
 from zhixu.adapters.web import AdminAPI, AdminResponse, HealthRegistry
+from zhixu.adapters.web.admin_ui import ui_response
 from zhixu.adapters.web.internal_channel import InternalChannelAPI
 from zhixu.application import (
     AssistantEngine,
@@ -102,6 +104,9 @@ class CompositePrivateAPI:
                     }
                 },
             )
+        asset = ui_response(method, target, headers=headers)
+        if asset is not None:
+            return asset
         return self.admin.dispatch(method, target, headers=headers, body=body)
 
 
@@ -120,6 +125,9 @@ class PrivateRequestHandler(BaseHTTPRequestHandler):
     sys_version = ""
 
     def do_GET(self) -> None:
+        self._dispatch()
+
+    def do_HEAD(self) -> None:
         self._dispatch()
 
     def do_POST(self) -> None:
@@ -167,24 +175,39 @@ class PrivateRequestHandler(BaseHTTPRequestHandler):
             headers={key: value for key, value in self.headers.items()},
             body=body,
         )
-        self._send(response)
+        self._send(response, omit_body=self.command == "HEAD")
 
-    def _send(self, response: AdminResponse) -> None:
-        payload = json.dumps(
-            response.body,
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode()
+    def _send(self, response: AdminResponse, *, omit_body: bool = False) -> None:
+        response_headers = {key.lower(): value for key, value in response.headers}
+        if isinstance(response.body, bytes):
+            payload = response.body
+            content_type = response_headers.get(
+                "content-type",
+                "application/octet-stream",
+            )
+        else:
+            payload = json.dumps(
+                response.body,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode()
+            content_type = "application/json; charset=utf-8"
         self.send_response(response.status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+        if "content-security-policy" not in response_headers:
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'none'; frame-ancestors 'none'",
+            )
         for key, value in response.headers:
-            self.send_header(key, value)
+            if key.lower() != "content-type":
+                self.send_header(key, value)
         self.end_headers()
-        self.wfile.write(payload)
+        if not omit_body:
+            self.wfile.write(payload)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -256,6 +279,7 @@ def create_api(args: argparse.Namespace) -> CompositePrivateAPI:
         anniversaries=AnniversaryRepository(database),
         daily_briefings=DailyBriefingRepository(database),
         agenda_notifications=AgendaNotificationRepository(database),
+        notification_leads=NotificationLeadRepository(database),
         policy=policy,
         clock=clock,
     )

@@ -100,6 +100,47 @@ to group queries:
 
 Confidential records remain unavailable in all group chats regardless of group mode.
 
+## Important days
+
+```text
+/纪念日
+/纪念日 结婚 2020-05-20
+/生日 张三 1995-08-20
+/生日 奶奶 农历 7-25
+/生日 李四 农历 1960-7-25
+```
+
+An anniversary keeps a running day count in the daily briefing and gains an extra line as
+its yearly return approaches, 30, 15 and 7 days ahead by default, and on the day itself.
+
+A birthday marks a date rather than accumulating a count, so it says nothing until it is
+near: 7, 3 and 1 days ahead by default, then on the day, with an age when the birth year is
+known. Omit the year when it is not.
+
+`农历` records the date on the Chinese lunisolar calendar, whose Gregorian day moves every
+year; the conversion uses a vendored snapshot of the Hong Kong Observatory tables, which
+agree with the mainland calculation published under GB/T 33661-2017. Supporting the
+lunisolar calendar does not change the default: a date without `农历` is an ordinary
+Gregorian one.
+
+## Advance notification of calendar events
+
+```text
+/提前提醒 24小时 6小时 1小时 30分钟 1分钟 准点
+/提前提醒 3天 2小时
+```
+
+Timed calendar events are announced ahead of time. The default is 24 hours, 6 hours, 1
+hour, 30 minutes, 1 minute before, and at the moment the event starts. `/提前提醒` replaces
+that default for everything the owner has; a single event can carry its own set instead,
+and an empty set silences that event alone.
+
+All-day events are deliberately excluded. They start at local midnight, so a lead time
+would fire in the small hours to announce something the daily briefing already carries.
+
+Announcements are delivered wherever the owner's daily briefing goes, so an owner without a
+briefing configured receives none.
+
 ## Reminders
 
 ```text

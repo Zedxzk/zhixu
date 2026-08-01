@@ -1,0 +1,9 @@
+{
+  "name": "知序 · 私人事务台",
+  "short_name": "知序",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0d1717",
+  "theme_color": "#0d1717",
+  "icons": [{"src": "/assets/mark.svg", "sizes": "any", "type": "image/svg+xml"}]
+}

@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError as PydanticValidationError
 
-from zhixu.domain import ActionLink, DataClassification
+from zhixu.domain import (
+    UNKNOWN_YEAR,
+    ActionLink,
+    DataClassification,
+    normalise_lead_minutes,
+)
 from zhixu.domain.errors import InvalidModelOutput, LLMUnavailable, ValidationError
 from zhixu.ports import Clock, LLMCallReason, LLMRequest
 
@@ -70,6 +75,40 @@ def _fallback_link_label(url: str) -> str:
     return "打开链接"
 
 
+_LEAD_UNITS = {
+    "分钟": 1, "分": 1, "min": 1, "m": 1,
+    "小时": 60, "时": 60, "h": 60, "hour": 60,
+    "天": 1440, "日": 1440, "d": 1440, "day": 1440,
+}
+
+
+def _parse_lead_minutes(value: str) -> tuple[int, ...] | None:
+    """Read a lead-time list such as "24小时 6小时 30分钟 准点"."""
+
+    parts = [part for part in re.split(r"[\s,，、]+", value.strip()) if part]
+    if not parts:
+        return None
+    minutes: list[int] = []
+    for part in parts:
+        if part in {"准点", "开始时", "0"}:
+            minutes.append(0)
+            continue
+        match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([^\d\s]+)", part)
+        if match is None:
+            return None
+        unit = _LEAD_UNITS.get(match.group(2).lower())
+        if unit is None:
+            return None
+        scaled = float(match.group(1)) * unit
+        if scaled != int(scaled):
+            return None
+        minutes.append(int(scaled))
+    try:
+        return normalise_lead_minutes(minutes)
+    except ValidationError:
+        return None
+
+
 class RuleIntentRouter:
     def __init__(self, clock: Clock, *, timezone: str = "Asia/Shanghai") -> None:
         self.clock = clock
@@ -118,6 +157,40 @@ class RuleIntentRouter:
             return ParsedIntent(
                 IntentAction.CREATE_ANNIVERSARY,
                 {"title": anniversary.group(1).strip(), "anchor_date": anchor_date},
+            )
+        birthday = re.fullmatch(
+            r"/生日\s+(.+?)\s+(?:(农历)\s+)?(?:(\d{4})-)?(\d{1,2})-(\d{1,2})",
+            value,
+        )
+        if birthday:
+            lunar = birthday.group(2) is not None
+            year = int(birthday.group(3)) if birthday.group(3) else UNKNOWN_YEAR
+            month, day = int(birthday.group(4)), int(birthday.group(5))
+            arguments: dict[str, object] = {
+                "title": birthday.group(1).strip(),
+                "kind": "birthday",
+            }
+            if lunar:
+                if not 1 <= month <= 12 or not 1 <= day <= 30:
+                    return None
+                arguments["calendar"] = "lunar"
+                arguments["lunar_month"] = month
+                arguments["lunar_day"] = day
+                arguments["anchor_date"] = date(year, 1, 1)
+            else:
+                try:
+                    arguments["anchor_date"] = date(year, month, day)
+                except ValueError:
+                    return None
+            return ParsedIntent(IntentAction.CREATE_ANNIVERSARY, arguments)
+        leads = re.fullmatch(r"/提前提醒\s+(.+)", value)
+        if leads:
+            minutes = _parse_lead_minutes(leads.group(1))
+            if minutes is None:
+                return None
+            return ParsedIntent(
+                IntentAction.SET_NOTIFICATION_LEADS,
+                {"lead_minutes": minutes},
             )
         if value == "/每日简报":
             return ParsedIntent(IntentAction.LIST_DAILY_BRIEFINGS)
@@ -436,8 +509,18 @@ class ModelIntentClassifier:
                 "in the daily briefing is not a notification rule: set "
                 "include_in_daily_briefing=true and leave notifications empty unless the "
                 "user separately asks for a reminder, notification, or push. "
-                "For an anniversary use "
-                "action=create_anniversary with title and anchor_date. For a daily morning "
+                "For an anniversary use action=create_anniversary with title and "
+                "anchor_date, and set important_day_kind=anniversary. For a birthday use "
+                "the same action with important_day_kind=birthday; anchor_date carries the "
+                "birth date, or 0001-01-01 when the year is unknown. When the user states "
+                "the date on the Chinese lunisolar calendar, set calendar_system=lunar with "
+                "lunar_month, lunar_day and lunar_leap, and never convert it yourself. "
+                "Otherwise leave calendar_system=solar. Put any requested advance notice in "
+                "advance_days as whole days before the date. "
+                "When the user is changing how far ahead calendar events are announced, use "
+                "action=set_notification_leads and put every requested lead in lead_minutes "
+                "as minutes before the event starts, where 0 means the moment it starts. "
+                "For a daily morning "
                 "briefing use action=create_daily_briefing and briefing_time; use 08:00 only "
                 "when the user says morning without a precise time. Return only JSON."
                 f"{temporal_context}{revision_instruction}"
@@ -488,6 +571,13 @@ class ModelIntentClassifier:
                     else notifications or None
                 ),
                 "links": action_links or None,
+                "kind": proposal.important_day_kind or "anniversary",
+                "calendar": proposal.calendar_system or "solar",
+                "lunar_month": proposal.lunar_month,
+                "lunar_day": proposal.lunar_day,
+                "lunar_leap": proposal.lunar_leap,
+                "advance_days": tuple(proposal.advance_days),
+                "lead_minutes": tuple(proposal.lead_minutes),
                 "include_in_daily_briefing": (
                     proposal.include_in_daily_briefing or briefing_inclusion
                 ),

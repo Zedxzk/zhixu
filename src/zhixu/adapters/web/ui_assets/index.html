@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#0d1717">
+  <meta name="description" content="知序 · 私有日程、备忘与提醒管理">
+  <title>知序 · 私人事务台</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+  <div class="ambient ambient-a" aria-hidden="true"></div>
+  <div class="ambient ambient-b" aria-hidden="true"></div>
+
+  <main id="login-view" class="login-shell">
+    <section class="login-story" aria-label="知序介绍">
+      <a class="brand brand-large" href="/" aria-label="知序首页">
+        <img src="/assets/mark.svg" alt="" width="52" height="52">
+        <span>知序</span>
+      </a>
+      <div class="story-copy">
+        <p class="eyebrow">PRIVATE LIFE OS</p>
+        <h1>让日子有迹可循，<br><em>也留一点从容。</em></h1>
+        <p class="story-lead">日程、提醒、备忘与重要日子，收拢在只属于你的私有空间。</p>
+      </div>
+      <div class="privacy-note">
+        <span class="pulse-dot"></span>
+        <div>
+          <strong>仅通过私有 tunnel 访问</strong>
+          <p>页面不加载第三方资源，不向外部发送分析数据。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="login-panel">
+      <div class="login-card">
+        <div class="login-heading">
+          <p class="eyebrow">WELCOME BACK</p>
+          <h2>进入私人事务台</h2>
+          <p>使用管理账户登录。凭据仅用于本次会话。</p>
+        </div>
+        <form id="login-form" autocomplete="on">
+          <label class="field">
+            <span>账户</span>
+            <input id="login-user" name="username" autocomplete="username" required maxlength="160" placeholder="管理账户">
+          </label>
+          <label class="field">
+            <span>密码</span>
+            <input id="login-password" name="password" type="password" autocomplete="current-password" required maxlength="1024" placeholder="至少 12 位">
+          </label>
+          <button class="button button-primary button-block" type="submit">
+            <span>安全登录</span><span aria-hidden="true">→</span>
+          </button>
+          <p id="login-error" class="form-error" role="alert"></p>
+        </form>
+        <div class="login-foot">
+          <span class="lock-icon" aria-hidden="true">⌁</span>
+          <span>访问令牌只保存在当前标签页，关闭后自动清除。</span>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="app-view" class="app-shell" hidden>
+    <aside class="sidebar">
+      <a class="brand" href="#dashboard" data-nav="dashboard">
+        <img src="/assets/mark.svg" alt="" width="38" height="38">
+        <span>知序</span>
+      </a>
+
+      <nav class="primary-nav" aria-label="主导航">
+        <button class="nav-item active" data-view="dashboard"><span class="nav-icon">⌂</span><span>总览</span></button>
+        <button class="nav-item" data-view="agenda"><span class="nav-icon">◇</span><span>日程</span></button>
+        <button class="nav-item" data-view="reminders"><span class="nav-icon">◷</span><span>提醒</span></button>
+        <button class="nav-item" data-view="tasks"><span class="nav-icon">✓</span><span>待办</span></button>
+        <button class="nav-item" data-view="notes"><span class="nav-icon">▱</span><span>备忘</span></button>
+        <button class="nav-item" data-view="important-days"><span class="nav-icon">✦</span><span>重要日子</span></button>
+        <div class="nav-divider"></div>
+        <button class="nav-item" data-view="connections"><span class="nav-icon">⌘</span><span>连接</span></button>
+        <button class="nav-item" data-view="system"><span class="nav-icon">◎</span><span>系统</span></button>
+      </nav>
+
+      <div class="sidebar-foot">
+        <div class="privacy-state"><span class="pulse-dot"></span><span>私有连接</span></div>
+        <button id="logout-button" class="quiet-button" type="button">退出</button>
+      </div>
+    </aside>
+
+    <header class="mobile-header">
+      <a class="brand" href="#dashboard" data-nav="dashboard">
+        <img src="/assets/mark.svg" alt="" width="34" height="34"><span>知序</span>
+      </a>
+      <button id="mobile-menu-button" class="icon-button" aria-label="打开菜单" aria-expanded="false">☰</button>
+    </header>
+
+    <section class="workspace">
+      <header class="topbar">
+        <div>
+          <p id="date-kicker" class="eyebrow"></p>
+          <h1 id="view-title">今天，一切有序</h1>
+        </div>
+        <div class="topbar-actions">
+          <label class="search-box">
+            <span aria-hidden="true">⌕</span>
+            <input id="global-search" type="search" placeholder="搜索当前页面" aria-label="搜索当前页面">
+          </label>
+          <button id="theme-button" class="icon-button" aria-label="切换主题">◐</button>
+          <button class="button button-primary" data-create="agenda"><span>＋</span><span>新建</span></button>
+        </div>
+      </header>
+
+      <div id="loading-bar" class="loading-bar" hidden><span></span></div>
+
+      <section id="view-dashboard" class="view active" data-view-panel="dashboard">
+        <div class="hero-grid">
+          <article class="today-card card">
+            <div class="today-date">
+              <span id="today-day" class="giant-number">—</span>
+              <div><strong id="today-weekday">—</strong><span id="today-month">—</span></div>
+            </div>
+            <div class="today-orbit" aria-hidden="true"><span></span><i></i></div>
+            <div class="today-copy">
+              <p id="today-summary">正在整理今天的安排…</p>
+              <button class="text-button" data-view-jump="agenda">查看完整日程 <span>→</span></button>
+            </div>
+          </article>
+
+          <article class="next-card card accent-card">
+            <div class="card-label"><span class="status-dot"></span> NEXT UP</div>
+            <div id="next-event" class="next-event empty-state compact">今天暂时没有安排</div>
+          </article>
+        </div>
+
+        <div id="metric-grid" class="metric-grid" aria-label="数据摘要"></div>
+
+        <div class="content-grid">
+          <article class="card section-card timeline-card">
+            <header class="section-header"><div><p class="eyebrow">TODAY</p><h2>今日脉络</h2></div><button class="quiet-button" data-view-jump="agenda">全部日程</button></header>
+            <div id="today-timeline" class="timeline"></div>
+          </article>
+          <article class="card section-card focus-card">
+            <header class="section-header"><div><p class="eyebrow">FOCUS</p><h2>待办聚焦</h2></div><button class="quiet-button" data-create="task">添加</button></header>
+            <div id="focus-tasks" class="stack-list"></div>
+          </article>
+        </div>
+
+        <article class="quick-strip">
+          <div><p class="eyebrow">QUICK CAPTURE</p><h2>想到什么，先记下来</h2></div>
+          <div class="quick-actions">
+            <button data-create="note"><span>▱</span> 写备忘</button>
+            <button data-create="reminder"><span>◷</span> 设提醒</button>
+            <button data-create="agenda"><span>◇</span> 排日程</button>
+          </div>
+        </article>
+      </section>
+
+      <section id="view-agenda" class="view" data-view-panel="agenda">
+        <div class="view-toolbar"><div class="segmented"><button class="active" data-agenda-filter="future">未来</button><button data-agenda-filter="all">全部</button></div><button class="button button-primary" data-create="agenda">＋ 新建日程</button></div>
+        <div id="agenda-list" class="resource-list"></div>
+      </section>
+
+      <section id="view-reminders" class="view" data-view-panel="reminders">
+        <div class="view-toolbar"><p class="muted">所有提醒按触发时间排列</p><button class="button button-primary" data-create="reminder">＋ 新建提醒</button></div>
+        <div id="reminder-list" class="resource-list"></div>
+      </section>
+
+      <section id="view-tasks" class="view" data-view-panel="tasks">
+        <div class="view-toolbar"><div class="segmented"><button class="active" data-task-filter="open">进行中</button><button data-task-filter="done">已完成</button><button data-task-filter="all">全部</button></div><button class="button button-primary" data-create="task">＋ 新建待办</button></div>
+        <div id="task-board" class="task-board"></div>
+      </section>
+
+      <section id="view-notes" class="view" data-view-panel="notes">
+        <div class="view-toolbar"><p class="muted">你的想法与资料，只在私人数据库中</p><button class="button button-primary" data-create="note">＋ 新建备忘</button></div>
+        <div id="note-grid" class="note-grid"></div>
+      </section>
+
+      <section id="view-important-days" class="view" data-view-panel="important-days">
+        <div class="view-toolbar"><p class="muted">生日、纪念日与每年都值得记住的时刻</p><button id="important-day-create" class="button button-primary" data-create="important-day">＋ 添加重要日子</button></div>
+        <div id="important-day-list" class="important-day-grid"></div>
+      </section>
+
+      <section id="view-connections" class="view" data-view-panel="connections">
+        <div class="content-grid wide-left">
+          <article class="card section-card"><header class="section-header"><div><p class="eyebrow">CHANNELS</p><h2>消息渠道</h2></div></header><div id="channel-list" class="stack-list"></div></article>
+          <article class="card section-card"><header class="section-header"><div><p class="eyebrow">IDENTITIES</p><h2>已绑定身份</h2></div></header><div id="identity-list" class="stack-list"></div></article>
+        </div>
+        <article class="card section-card route-card"><header class="section-header"><div><p class="eyebrow">ROUTES</p><h2>会话与群组</h2></div></header><div id="route-list" class="table-list"></div></article>
+      </section>
+
+      <section id="view-system" class="view" data-view-panel="system">
+        <div id="health-grid" class="metric-grid"></div>
+        <div class="content-grid">
+          <article class="card section-card"><header class="section-header"><div><p class="eyebrow">DELIVERY</p><h2>最近投递</h2></div></header><div id="outbox-list" class="table-list"></div></article>
+          <article class="card section-card"><header class="section-header"><div><p class="eyebrow">LLM</p><h2>模型调用</h2></div></header><div id="llm-list" class="table-list"></div></article>
+        </div>
+        <article class="card section-card"><header class="section-header"><div><p class="eyebrow">AUDIT</p><h2>操作审计</h2></div></header><div id="audit-list" class="table-list"></div></article>
+        <article class="security-card card">
+          <div><p class="eyebrow">STEP-UP SECURITY</p><h2>Passkey 安全验证</h2><p>高敏感操作需要临时提升认证等级。验证结果不会离开当前会话。</p></div>
+          <div class="security-actions"><button id="passkey-register" class="button button-secondary">登记此设备</button><button id="passkey-verify" class="button button-primary">进行安全验证</button></div>
+        </article>
+      </section>
+    </section>
+
+    <nav class="mobile-nav" aria-label="移动端导航">
+      <button class="active" data-view="dashboard"><span>⌂</span>总览</button>
+      <button data-view="agenda"><span>◇</span>日程</button>
+      <button class="mobile-create" data-create="note"><span>＋</span></button>
+      <button data-view="tasks"><span>✓</span>待办</button>
+      <button data-view="notes"><span>▱</span>备忘</button>
+    </nav>
+  </div>
+
+  <dialog id="editor-dialog" class="dialog">
+    <form id="editor-form" method="dialog">
+      <header><div><p id="editor-kicker" class="eyebrow">CREATE</p><h2 id="editor-title">新建</h2></div><button class="icon-button" value="cancel" aria-label="关闭">×</button></header>
+      <div id="editor-fields" class="dialog-fields"></div>
+      <footer><button class="button button-secondary" value="cancel">取消</button><button id="editor-submit" class="button button-primary" type="submit" value="submit">保存</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="confirm-dialog" class="dialog confirm-dialog">
+    <form method="dialog">
+      <div class="confirm-symbol">!</div>
+      <h2 id="confirm-title">确认操作</h2>
+      <p id="confirm-message">此操作无法撤销。</p>
+      <footer><button class="button button-secondary" value="cancel">返回</button><button class="button button-danger" value="confirm">确认</button></footer>
+    </form>
+  </dialog>
+
+  <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+  <script src="/assets/app.js" defer></script>
+</body>
+</html>

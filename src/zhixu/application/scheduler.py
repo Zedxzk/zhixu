@@ -13,8 +13,10 @@ from zhixu.channels import DailyAgendaPreview, MessageButton, MessageKind, Outbo
 from zhixu.domain import (
     Action,
     AgendaNotificationRule,
+    Anniversary,
     AuthorizedAction,
     DataClassification,
+    ImportantDayKind,
     Reminder,
     ReminderStatus,
     ResourceRef,
@@ -26,6 +28,7 @@ from zhixu.ports import (
     AnniversaryRepositoryPort,
     Clock,
     DailyBriefingRepositoryPort,
+    NotificationLeadRepositoryPort,
     ReminderRepositoryPort,
 )
 
@@ -48,6 +51,47 @@ class OutboxPort(Protocol):
 def _escape_markdown_text(value: str) -> str:
     compact = re.sub(r"\s+", " ", value).strip()
     return re.sub(r"([\\`*_{}\[\]()#+\-.!>|])", r"\\\1", compact)
+
+
+def _important_day_lines(anniversary: Anniversary, today) -> list[str]:
+    """Render one important day for a single briefing.
+
+    A birthday marks a date, so it says nothing until the date is near. An
+    anniversary keeps its running day count on ordinary days and gains a line
+    when the yearly occurrence is approaching or has arrived.
+    """
+
+    title = _escape_markdown_text(anniversary.title)
+    occurrence = anniversary.occurrence_in(today.year)
+    lines: list[str] = []
+    if occurrence == today:
+        years = anniversary.elapsed_years(occurrence)
+        if anniversary.kind is ImportantDayKind.BIRTHDAY:
+            age = f"（{years} 岁）" if years > 0 else ""
+            lines.append(f"🎂 今天是 {title} 的生日{age}。")
+        elif years > 0:
+            lines.append(f"🎉 今天是 {title} 的 **{years}** 周年。")
+        else:
+            lines.append(f"🎉 今天是 {title}。")
+    else:
+        upcoming = anniversary.advance_notice_for(today)
+        if upcoming is not None:
+            when, remaining = upcoming
+            years = anniversary.elapsed_years(when)
+            if anniversary.kind is ImportantDayKind.BIRTHDAY:
+                lines.append(f"🎂 {title} 的生日还有 **{remaining}** 天（{when:%m月%d日}）。")
+            elif years > 0:
+                lines.append(
+                    f"🎉 {title} 的 {years} 周年还有 **{remaining}** 天"
+                    f"（{when:%m月%d日}）。"
+                )
+            else:
+                lines.append(f"🎉 {title} 还有 **{remaining}** 天（{when:%m月%d日}）。")
+    if anniversary.counts_elapsed_days() and anniversary.anchor_date <= today:
+        lines.append(
+            f"今天是 {title}的第 **{anniversary.day_number(today)}** 天。"
+        )
+    return lines
 
 
 def _minute(value: datetime, timezone: ZoneInfo) -> int:
@@ -163,6 +207,116 @@ class AgendaNotificationScheduler:
 
 
 @dataclass(slots=True)
+class NotificationLeadScheduler:
+    """Materialises reminders a fixed time before each agenda occurrence.
+
+    All-day items are skipped: they start at midnight, so a lead time would
+    fire in the small hours to announce something the daily briefing already
+    carries.
+    """
+
+    leads: NotificationLeadRepositoryPort
+    agenda: AgendaRepositoryPort
+    reminders: ReminderRepositoryPort
+    briefings: DailyBriefingRepositoryPort
+    clock: Clock
+    horizon_days: int = 2
+
+    def tick(self) -> int:
+        now = self.clock.now()
+        created = 0
+        window_end = now + timedelta(days=self.horizon_days)
+        for item in self.agenda.list_scheduled(now, window_end):
+            if item.all_day:
+                continue
+            lead_minutes = self.leads.resolve(item.id, item.owner_user_id)
+            if not lead_minutes:
+                continue
+            # A lead reminder is a push, so it needs somewhere to go. The
+            # owner's briefing target is where they already receive them.
+            target_ref = self.briefings.default_target_for(item.owner_user_id)
+            if not target_ref:
+                continue
+            for occurrence in self.agenda.occurrences(
+                item.owner_user_id,
+                now,
+                window_end,
+            ):
+                if occurrence.agenda_item_id != item.id:
+                    continue
+                created += self._materialize(
+                    item,
+                    occurrence,
+                    lead_minutes,
+                    target_ref,
+                    now,
+                )
+        return created
+
+    def _materialize(
+        self,
+        item,
+        occurrence,
+        lead_minutes,
+        target_ref: str,
+        now: datetime,
+    ) -> int:
+        materialized = 0
+        for minutes in lead_minutes:
+            fire_at = occurrence.start_at - timedelta(minutes=minutes)
+            if fire_at < now:
+                # Never resurrect a lead time the occurrence has already passed.
+                continue
+            identity = (
+                f"lead:{item.id}:"
+                f"{occurrence.start_at.astimezone(ZoneInfo('UTC')).isoformat()}:{minutes}"
+            )
+            reminder_id = "reminder_" + hashlib.sha256(
+                identity.encode("utf-8")
+            ).hexdigest()[:32]
+            if self.reminders.get(reminder_id) is not None:
+                continue
+            reminder = Reminder(
+                id=reminder_id,
+                owner_user_id=item.owner_user_id,
+                creator_user_id=item.creator_user_id or item.owner_user_id,
+                title=_lead_text(occurrence.title or item.title, minutes),
+                fire_at=fire_at,
+                target_ref=target_ref,
+                classification=item.classification,
+                related_kind="agenda",
+                related_id=item.id,
+            )
+            authorization = AuthorizedAction(
+                actor_user_id="service:agenda-notification",
+                action=Action.CREATE,
+                resource=ResourceRef(
+                    "reminder",
+                    reminder.id,
+                    reminder.owner_user_id,
+                    reminder.classification,
+                ),
+                authorized_at=now,
+            )
+            try:
+                self.reminders.create(reminder, authorization)
+            except ConflictError:
+                continue
+            materialized += 1
+        return materialized
+
+
+def _lead_text(title: str, minutes: int) -> str:
+    if minutes == 0:
+        return f"{title} 现在开始"
+    if minutes % (24 * 60) == 0:
+        return f"{title} 还有 {minutes // (24 * 60)} 天开始"
+    if minutes % 60 == 0:
+        return f"{title} 还有 {minutes // 60} 小时开始"
+    return f"{title} 还有 {minutes} 分钟开始"
+
+
+@dataclass(slots=True)
 class DailyBriefingScheduler:
     briefings: DailyBriefingRepositoryPort
     anniversaries: AnniversaryRepositoryPort
@@ -198,8 +352,7 @@ class DailyBriefingScheduler:
                 for anniversary in self.anniversaries.list_for_owner(
                     briefing.owner_user_id
                 )
-                if anniversary.anchor_date <= local_date
-                and anniversary.classification < DataClassification.CONFIDENTIAL
+                if anniversary.classification < DataClassification.CONFIDENTIAL
             ]
             safe_occurrences = [
                 occurrence
@@ -210,15 +363,8 @@ class DailyBriefingScheduler:
 
             lines = [f"# {local_date:%Y年%m月%d日} · 每日简报"]
             for anniversary in anniversaries:
-                lines.extend(
-                    [
-                        "",
-                        (
-                            f"今天是 {_escape_markdown_text(anniversary.title)}的"
-                            f"第 **{anniversary.day_number(local_date)}** 天。"
-                        ),
-                    ]
-                )
+                for line in _important_day_lines(anniversary, local_date):
+                    lines.extend(["", line])
             lines.extend(["", "## 今日日程"])
             schedule_lines: list[tuple[datetime, str]] = []
             for occurrence in safe_occurrences:

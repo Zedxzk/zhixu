@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, time
 from enum import StrEnum
@@ -18,6 +19,23 @@ from .hong_kong_calendar import monthly_business_day
 _HK_BUSINESS_RULE = re.compile(
     r"^X-BUSINESS-DAY;CALENDAR=HK_GENERAL_HOLIDAYS;BYSETPOS=(-?\d{1,2})$"
 )
+
+# Minutes before an occurrence starts. Zero is the start itself.
+DEFAULT_NOTIFICATION_LEAD_MINUTES = (1440, 360, 60, 30, 1, 0)
+_MAXIMUM_LEAD_ENTRIES = 12
+_MAXIMUM_LEAD_MINUTES = 366 * 24 * 60
+
+
+def normalise_lead_minutes(values: Sequence[int]) -> tuple[int, ...]:
+    """Order lead times furthest-first and reject nonsense."""
+
+    unique = sorted({int(value) for value in values}, reverse=True)
+    if len(unique) > _MAXIMUM_LEAD_ENTRIES:
+        raise ValidationError("notification lead time limit exceeded")
+    if any(not 0 <= value <= _MAXIMUM_LEAD_MINUTES for value in unique):
+        raise ValidationError("notification lead time is out of range")
+    return tuple(unique)
+
 
 
 def require_aware(value: datetime, field: str) -> None:

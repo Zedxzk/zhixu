@@ -80,7 +80,7 @@ MAX_BODY_BYTES = 1_048_576
 @dataclass(frozen=True, slots=True)
 class AdminResponse:
     status: int
-    body: dict[str, object] | list[object]
+    body: dict[str, object] | list[object] | bytes
     headers: tuple[tuple[str, str], ...] = ()
 
 

@@ -15,11 +15,13 @@ from zhixu.adapters.storage.sqlite import (
     AnniversaryRepository,
     DailyBriefingRepository,
     Database,
+    NotificationLeadRepository,
     ReminderRepository,
 )
 from zhixu.application import (
     AgendaNotificationScheduler,
     DailyBriefingScheduler,
+    NotificationLeadScheduler,
     ReminderScheduler,
 )
 from zhixu.delivery import OutboxStore
@@ -69,6 +71,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         reminders,
         scheduler.clock,
     )
+    lead_scheduler = NotificationLeadScheduler(
+        NotificationLeadRepository(database),
+        AgendaRepository(database),
+        reminders,
+        DailyBriefingRepository(database),
+        scheduler.clock,
+    )
     stop = threading.Event()
 
     def request_stop(_signum: int, _frame: object) -> None:
@@ -80,6 +89,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         materialized = notification_scheduler.tick()
         if materialized:
             logger.info("agenda_notifications_materialized count=%d", materialized)
+        leads = lead_scheduler.tick()
+        if leads:
+            logger.info("agenda_lead_reminders_materialized count=%d", leads)
         inserted = scheduler.tick()
         if inserted:
             logger.info("reminders_enqueued count=%d", inserted)

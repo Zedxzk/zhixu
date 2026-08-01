@@ -12,10 +12,18 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from zhixu.channels import ButtonActionKind, CalendarPreview, MessageButton
-from zhixu.domain import ActionLink, CommandContext, DataClassification, TaskStatus
+from zhixu.domain import (
+    ActionLink,
+    CalendarSystem,
+    CommandContext,
+    DataClassification,
+    ImportantDayKind,
+    TaskStatus,
+)
 from zhixu.domain.errors import (
     InvalidModelOutput,
     LLMUnavailable,
+    NotFoundError,
     PermissionDenied,
     ValidationError,
 )
@@ -35,6 +43,7 @@ from .commands import (
     CreateTask,
     DeleteAgenda,
     PostponeTask,
+    SetNotificationLeads,
     SnoozeReminder,
     TransitionTask,
 )
@@ -260,6 +269,44 @@ _INTERNAL_GROUP_HELP_TEXT = """# 知序 · 内部群帮助
 - `/绑定私聊 绑定码` — 为机器人私聊完成身份绑定
 
 > 私人数据只能在与机器人的私聊中查询。"""
+
+
+def _optional_int(value: object) -> int | None:
+    return int(value) if isinstance(value, (int, str)) and str(value).strip() else None
+
+
+def _format_lead_minutes(values: tuple[int, ...]) -> str:
+    parts = []
+    for minutes in values:
+        if minutes == 0:
+            parts.append("准点")
+        elif minutes % 1440 == 0:
+            parts.append(f"{minutes // 1440}天")
+        elif minutes % 60 == 0:
+            parts.append(f"{minutes // 60}小时")
+        else:
+            parts.append(f"{minutes}分钟")
+    return "、".join(parts)
+
+
+def _important_day_created_text(anniversary, today: date) -> str:
+    label = "生日" if anniversary.kind is ImportantDayKind.BIRTHDAY else "纪念日"
+    if anniversary.calendar is CalendarSystem.LUNAR:
+        when = f"农历{anniversary.lunar_month}月{anniversary.lunar_day}日"
+        # A lunisolar date means nothing to most readers until it is grounded
+        # in the Gregorian day it next lands on.
+        upcoming = anniversary.next_occurrence(today)
+    else:
+        when = f"{anniversary.anchor_date:%Y-%m-%d}"
+        upcoming = None
+    text = f"已创建{label}：{anniversary.title}（{when}）"
+    if anniversary.advance_days:
+        text += "，提前 " + "、".join(
+            f"{day}天" for day in anniversary.advance_days
+        ) + " 预告"
+    if upcoming is not None:
+        text += f"，下次 {upcoming:%Y-%m-%d}"
+    return text
 
 
 class AssistantEngine:
@@ -823,18 +870,72 @@ class AssistantEngine:
                     "invalid_intent",
                     intent.source,
                 )
-            anniversary = self.services.command_bus().execute(
-                CreateAnniversary(
-                    title=title,
-                    anchor_date=anchor_date,
-                    timezone=self.router.timezone.key,
-                    private=bool(arguments.get("private")),
-                ),
-                context,
-            )
+            try:
+                kind = ImportantDayKind(str(arguments.get("kind") or "anniversary"))
+                calendar = CalendarSystem(str(arguments.get("calendar") or "solar"))
+            except ValueError:
+                return AssistantReply(
+                    "重要日子的类型或历法无法识别。",
+                    "invalid_intent",
+                    intent.source,
+                )
+            advance = arguments.get("advance_days")
+            try:
+                anniversary = self.services.command_bus().execute(
+                    CreateAnniversary(
+                        title=title,
+                        anchor_date=anchor_date,
+                        timezone=self.router.timezone.key,
+                        kind=kind,
+                        calendar=calendar,
+                        lunar_month=_optional_int(arguments.get("lunar_month")),
+                        lunar_day=_optional_int(arguments.get("lunar_day")),
+                        lunar_leap=bool(arguments.get("lunar_leap")),
+                        advance_days=(
+                            tuple(int(value) for value in advance)
+                            if isinstance(advance, (list, tuple))
+                            else None
+                        ),
+                        private=bool(arguments.get("private")),
+                    ),
+                    context,
+                )
+            except ValidationError as error:
+                return AssistantReply(str(error), "invalid_intent", intent.source)
             return AssistantReply(
-                f"已创建纪念日：{anniversary.title}（{anniversary.anchor_date:%Y-%m-%d}）",
+                _important_day_created_text(
+                    anniversary,
+                    self.services.clock.now().astimezone(self.router.timezone).date(),
+                ),
                 "created",
+                intent.source,
+            )
+        if intent.action is IntentAction.SET_NOTIFICATION_LEADS:
+            raw = arguments.get("lead_minutes")
+            if not isinstance(raw, (list, tuple)) or not raw:
+                return AssistantReply(
+                    "提前提醒缺少有效的时间档位。",
+                    "invalid_intent",
+                    intent.source,
+                )
+            try:
+                applied = self.services.command_bus().execute(
+                    SetNotificationLeads(
+                        lead_minutes=tuple(int(value) for value in raw),
+                        agenda_item_id=(
+                            str(arguments["agenda_item_id"])
+                            if arguments.get("agenda_item_id")
+                            else None
+                        ),
+                    ),
+                    context,
+                )
+            except (ValidationError, NotFoundError) as error:
+                return AssistantReply(str(error), "invalid_intent", intent.source)
+            scope = "该日程" if arguments.get("agenda_item_id") else "默认"
+            return AssistantReply(
+                f"已设置{scope}提前提醒：{_format_lead_minutes(applied)}。",
+                "updated",
                 intent.source,
             )
         if intent.action is IntentAction.CREATE_DAILY_BRIEFING:

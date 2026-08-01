@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -19,6 +19,7 @@ class IntentAction(StrEnum):
     VIEW_CALENDAR = "view_calendar"
     CREATE_AGENDA = "create_agenda"
     CREATE_ANNIVERSARY = "create_anniversary"
+    SET_NOTIFICATION_LEADS = "set_notification_leads"
     CREATE_DAILY_BRIEFING = "create_daily_briefing"
     CONFIRM_PLAN = "confirm_plan"
     REJECT_PLAN = "reject_plan"
@@ -74,6 +75,13 @@ class ModelIntentProposal(BaseModel):
     recurrence_rule: str | None = Field(default=None, max_length=500)
     anchor_date: date | None = None
     briefing_time: time | None = None
+    important_day_kind: Literal["anniversary", "birthday"] | None = None
+    calendar_system: Literal["solar", "lunar"] | None = None
+    lunar_month: int | None = Field(default=None, ge=1, le=12)
+    lunar_day: int | None = Field(default=None, ge=1, le=30)
+    lunar_leap: bool = False
+    advance_days: list[int] = Field(default_factory=list, max_length=8)
+    lead_minutes: list[int] = Field(default_factory=list, max_length=12)
     notifications: list[ModelNotificationProposal] = Field(
         default_factory=list,
         max_length=8,

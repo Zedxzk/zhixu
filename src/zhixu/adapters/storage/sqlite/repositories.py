@@ -6,11 +6,13 @@ import hashlib
 import json
 import re
 import sqlite3
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, date, datetime, time
 from zoneinfo import ZoneInfo
 
 from zhixu.domain import (
+    DEFAULT_NOTIFICATION_LEAD_MINUTES,
     Action,
     ActionLink,
     AgendaItem,
@@ -18,11 +20,13 @@ from zhixu.domain import (
     AgendaOccurrence,
     Anniversary,
     AuthorizedAction,
+    CalendarSystem,
     DailyBriefing,
     DataClassification,
     EncryptedIdentifier,
     ExceptionAction,
     ExternalIdentity,
+    ImportantDayKind,
     JobRun,
     JobRunStatus,
     MissedReminderPolicy,
@@ -38,6 +42,7 @@ from zhixu.domain import (
     TaskStatus,
     User,
     UserStatus,
+    normalise_lead_minutes,
     occurrences_between,
 )
 from zhixu.domain.agenda import require_aware
@@ -614,6 +619,33 @@ class AgendaRepository:
                 ORDER BY start_at,id
                 """,
                 (owner_user_id,),
+            ).fetchall()
+            return [self._from_row(connection, row) for row in rows]
+
+    def list_scheduled(
+        self,
+        window_start: datetime,
+        window_end: datetime,
+    ) -> list[AgendaItem]:
+        """Items that could occur in the window, across every owner.
+
+        A recurring item starts once and repeats indefinitely, so anything
+        beginning before the window ends is a candidate and the caller expands
+        the recurrence to find the occurrences that actually land inside it.
+        """
+
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM agenda_items
+                WHERE start_at<=?
+                  AND (id IN (SELECT agenda_item_id FROM recurrence_rules) OR end_at>=?)
+                ORDER BY start_at,id
+                """,
+                (
+                    _dump_datetime(window_end),
+                    _dump_datetime(window_start),
+                ),
             ).fetchall()
             return [self._from_row(connection, row) for row in rows]
 
@@ -1727,6 +1759,16 @@ class AnniversaryRepository:
             title=str(row["title"]),
             anchor_date=date.fromisoformat(str(row["anchor_date"])),
             timezone=str(row["timezone"]),
+            kind=ImportantDayKind(str(row["kind"])),
+            calendar=CalendarSystem(str(row["calendar"])),
+            lunar_month=(
+                int(row["lunar_month"]) if row["lunar_month"] is not None else None
+            ),
+            lunar_day=(
+                int(row["lunar_day"]) if row["lunar_day"] is not None else None
+            ),
+            lunar_leap=bool(row["lunar_leap"]),
+            advance_days=_load_advance_days(str(row["advance_days"])),
             classification=DataClassification(int(row["classification"])),
             created_at=created_at,
         )
@@ -1751,8 +1793,9 @@ class AnniversaryRepository:
                     """
                     INSERT INTO anniversaries(
                         id,owner_user_id,creator_user_id,title,anchor_date,
-                        timezone,classification,created_at
-                    ) VALUES(?,?,?,?,?,?,?,?)
+                        timezone,classification,created_at,kind,calendar,
+                        lunar_month,lunar_day,lunar_leap,advance_days
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         stored.id,
@@ -1763,6 +1806,12 @@ class AnniversaryRepository:
                         stored.timezone,
                         int(stored.classification),
                         _dump_datetime(stored.created_at),
+                        str(stored.kind),
+                        str(stored.calendar),
+                        stored.lunar_month,
+                        stored.lunar_day,
+                        int(stored.lunar_leap),
+                        ",".join(str(value) for value in stored.advance_days),
                     ),
                 )
                 _audit(connection, authorization)
@@ -1887,6 +1936,20 @@ class DailyBriefingRepository:
                 """,
                 (sent_on.isoformat(), _dump_datetime(now), briefing_id),
             )
+
+    def default_target_for(self, owner_user_id: str) -> str | None:
+        """Where this owner already receives scheduled pushes."""
+
+        with self.database.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT target_ref FROM daily_briefings
+                WHERE owner_user_id=? AND enabled=1
+                ORDER BY time_of_day,id LIMIT 1
+                """,
+                (owner_user_id,),
+            ).fetchone()
+        return None if row is None else str(row["target_ref"])
 
     def target_channel(self, target_ref: str) -> tuple[str, str] | None:
         with self.database.connect() as connection:
@@ -2049,3 +2112,101 @@ class OutboxRepository:
                 """
             ).fetchall()
         return [dict(row) for row in rows]
+
+
+def _load_advance_days(value: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in value.split(",") if part.strip())
+
+
+def _dump_lead_minutes(value: Sequence[int]) -> str:
+    return ",".join(str(entry) for entry in value)
+
+
+class NotificationLeadRepository:
+    """Lead times in minutes before an occurrence starts.
+
+    An owner keeps one default set. An agenda item may carry its own, and an
+    item row storing an empty set means notifications were deliberately turned
+    off for it rather than never configured.
+    """
+
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def default_for(self, owner_user_id: str) -> tuple[int, ...] | None:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT lead_minutes FROM notification_lead_defaults WHERE owner_user_id=?",
+                (owner_user_id,),
+            ).fetchone()
+        return None if row is None else _load_advance_days(str(row["lead_minutes"]))
+
+    def set_default(
+        self,
+        owner_user_id: str,
+        lead_minutes: Sequence[int],
+        *,
+        now: datetime,
+    ) -> tuple[int, ...]:
+        normalised = normalise_lead_minutes(lead_minutes)
+        with self.database.transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO notification_lead_defaults(
+                    owner_user_id,lead_minutes,updated_at
+                ) VALUES(?,?,?)
+                ON CONFLICT(owner_user_id) DO UPDATE SET
+                    lead_minutes=excluded.lead_minutes,updated_at=excluded.updated_at
+                """,
+                (owner_user_id, _dump_lead_minutes(normalised), _dump_datetime(now)),
+            )
+        return normalised
+
+    def override_for(self, agenda_item_id: str) -> tuple[int, ...] | None:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT lead_minutes FROM agenda_notification_leads WHERE agenda_item_id=?",
+                (agenda_item_id,),
+            ).fetchone()
+        return None if row is None else _load_advance_days(str(row["lead_minutes"]))
+
+    def set_override(
+        self,
+        agenda_item_id: str,
+        owner_user_id: str,
+        lead_minutes: Sequence[int],
+        *,
+        now: datetime,
+    ) -> tuple[int, ...]:
+        normalised = normalise_lead_minutes(lead_minutes)
+        with self.database.transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO agenda_notification_leads(
+                    agenda_item_id,owner_user_id,lead_minutes,updated_at
+                ) VALUES(?,?,?,?)
+                ON CONFLICT(agenda_item_id) DO UPDATE SET
+                    lead_minutes=excluded.lead_minutes,updated_at=excluded.updated_at
+                """,
+                (
+                    agenda_item_id,
+                    owner_user_id,
+                    _dump_lead_minutes(normalised),
+                    _dump_datetime(now),
+                ),
+            )
+        return normalised
+
+    def clear_override(self, agenda_item_id: str) -> None:
+        with self.database.transaction() as connection:
+            connection.execute(
+                "DELETE FROM agenda_notification_leads WHERE agenda_item_id=?",
+                (agenda_item_id,),
+            )
+
+    def resolve(self, agenda_item_id: str, owner_user_id: str) -> tuple[int, ...]:
+        override = self.override_for(agenda_item_id)
+        if override is not None:
+            return override
+        default = self.default_for(owner_user_id)
+        return DEFAULT_NOTIFICATION_LEAD_MINUTES if default is None else default

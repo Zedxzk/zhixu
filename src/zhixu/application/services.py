@@ -7,6 +7,8 @@ from collections.abc import Callable
 from dataclasses import replace
 
 from zhixu.domain import (
+    DEFAULT_ANNIVERSARY_ADVANCE_DAYS,
+    DEFAULT_BIRTHDAY_ADVANCE_DAYS,
     Action,
     AgendaItem,
     AgendaNotificationRule,
@@ -14,6 +16,7 @@ from zhixu.domain import (
     CommandContext,
     DailyBriefing,
     DataClassification,
+    ImportantDayKind,
     Note,
     PolicyEngine,
     RecurrenceException,
@@ -36,6 +39,7 @@ from zhixu.ports import (
     Clock,
     DailyBriefingRepositoryPort,
     NoteRepositoryPort,
+    NotificationLeadRepositoryPort,
     ReminderRepositoryPort,
     TaskRepositoryPort,
 )
@@ -56,6 +60,7 @@ from .commands import (
     DeleteTask,
     PostponeTask,
     SetAgendaException,
+    SetNotificationLeads,
     SnoozeReminder,
     TransitionTask,
     UpdateAgenda,
@@ -80,6 +85,12 @@ def random_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}"
 
 
+def _default_advance_days(kind: ImportantDayKind) -> tuple[int, ...]:
+    if kind is ImportantDayKind.BIRTHDAY:
+        return DEFAULT_BIRTHDAY_ADVANCE_DAYS
+    return DEFAULT_ANNIVERSARY_ADVANCE_DAYS
+
+
 class ZhixuServices:
     def __init__(
         self,
@@ -94,6 +105,7 @@ class ZhixuServices:
         anniversaries: AnniversaryRepositoryPort | None = None,
         daily_briefings: DailyBriefingRepositoryPort | None = None,
         agenda_notifications: AgendaNotificationRepositoryPort | None = None,
+        notification_leads: NotificationLeadRepositoryPort | None = None,
     ) -> None:
         self.agenda = agenda
         self.tasks = tasks
@@ -105,6 +117,7 @@ class ZhixuServices:
         self.anniversaries = anniversaries
         self.daily_briefings = daily_briefings
         self.agenda_notifications = agenda_notifications
+        self.notification_leads = notification_leads
 
     def _context(self, context: CommandContext) -> CommandContext:
         return replace(context, now=self.clock.now())
@@ -189,6 +202,16 @@ class ZhixuServices:
             title=command.title,
             anchor_date=command.anchor_date,
             timezone=command.timezone,
+            kind=command.kind,
+            calendar=command.calendar,
+            lunar_month=command.lunar_month,
+            lunar_day=command.lunar_day,
+            lunar_leap=command.lunar_leap,
+            advance_days=(
+                command.advance_days
+                if command.advance_days is not None
+                else _default_advance_days(command.kind)
+            ),
             classification=command.classification,
         )
         authorization = self.policy.require(
@@ -238,6 +261,49 @@ class ZhixuServices:
             ),
         )
         return self.agenda_notifications.create(rule, authorization)
+
+    def set_notification_leads(
+        self,
+        command: SetNotificationLeads,
+        context: CommandContext,
+    ) -> tuple[int, ...]:
+        if self.notification_leads is None:
+            raise ValidationError("notification lead repository is unavailable")
+        current = self._context(context)
+        owner = self._create_owner(current, private=False)
+        if command.agenda_item_id is None:
+            self.policy.require(
+                current,
+                Action.UPDATE,
+                self._ref(
+                    "notification_lead",
+                    owner,
+                    owner,
+                    DataClassification.PERSONAL,
+                ),
+            )
+            return self.notification_leads.set_default(
+                owner,
+                command.lead_minutes,
+                now=current.now or self.clock.now(),
+            )
+        if self.agenda is None:
+            raise ValidationError("agenda repository is unavailable")
+        item = self.agenda.get(command.agenda_item_id)
+        if item is None:
+            raise NotFoundError("agenda item was not found")
+        self.policy.require(
+            current,
+            Action.UPDATE,
+            self._ref("agenda", item.id, item.owner_user_id, item.classification),
+        )
+        return self.notification_leads.set_override(
+            item.id,
+            item.owner_user_id,
+            command.lead_minutes,
+            now=current.now or self.clock.now(),
+        )
+
 
     def create_daily_briefing(
         self,
@@ -848,6 +914,7 @@ class ZhixuServices:
         bus.register(CreateAgenda, self.create_agenda)
         bus.register(CreateAgendaNotification, self.create_agenda_notification)
         bus.register(CreateAnniversary, self.create_anniversary)
+        bus.register(SetNotificationLeads, self.set_notification_leads)
         bus.register(CreateDailyBriefing, self.create_daily_briefing)
         bus.register(UpdateAgenda, self.update_agenda)
         bus.register(DeleteAgenda, self.delete_agenda)

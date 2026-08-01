@@ -9,8 +9,10 @@ from typing import Any, TypeVar
 
 from zhixu.domain import (
     ActionLink,
+    CalendarSystem,
     DataClassification,
     ExceptionAction,
+    ImportantDayKind,
     MissedReminderPolicy,
     NoteAttachment,
     TaskStatus,
@@ -50,8 +52,20 @@ class CreateAnniversary:
     title: str
     anchor_date: date
     timezone: str
+    kind: ImportantDayKind = ImportantDayKind.ANNIVERSARY
+    calendar: CalendarSystem = CalendarSystem.SOLAR
+    lunar_month: int | None = None
+    lunar_day: int | None = None
+    lunar_leap: bool = False
+    advance_days: tuple[int, ...] | None = None
     classification: DataClassification = DataClassification.PERSONAL
     private: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class SetNotificationLeads:
+    lead_minutes: tuple[int, ...]
+    agenda_item_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,6 +206,7 @@ Command = (
     | CreateAgendaNotification
     | CreateAnniversary
     | CreateDailyBriefing
+    | SetNotificationLeads
     | UpdateAgenda
     | DeleteAgenda
     | SetAgendaException

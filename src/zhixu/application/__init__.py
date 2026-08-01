@@ -9,6 +9,7 @@ from .queries import QueryBus
 from .scheduler import (
     AgendaNotificationScheduler,
     DailyBriefingScheduler,
+    NotificationLeadScheduler,
     ReminderScheduler,
 )
 from .services import ZhixuServices
@@ -19,6 +20,7 @@ __all__ = [
     "AgendaNotificationScheduler",
     "CommandBus",
     "DailyBriefingScheduler",
+    "NotificationLeadScheduler",
     "IntentAction",
     "LLMGateway",
     "ModelIntentClassifier",

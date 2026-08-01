@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date, datetime
 from typing import Protocol
 
@@ -35,12 +36,45 @@ class UserRepositoryPort(Protocol):
     ) -> ExternalIdentity: ...
 
 
+class NotificationLeadRepositoryPort(Protocol):
+    def resolve(self, agenda_item_id: str, owner_user_id: str) -> tuple[int, ...]: ...
+
+    def default_for(self, owner_user_id: str) -> tuple[int, ...] | None: ...
+
+    def set_default(
+        self,
+        owner_user_id: str,
+        lead_minutes: Sequence[int],
+        *,
+        now: datetime,
+    ) -> tuple[int, ...]: ...
+
+    def override_for(self, agenda_item_id: str) -> tuple[int, ...] | None: ...
+
+    def set_override(
+        self,
+        agenda_item_id: str,
+        owner_user_id: str,
+        lead_minutes: Sequence[int],
+        *,
+        now: datetime,
+    ) -> tuple[int, ...]: ...
+
+    def clear_override(self, agenda_item_id: str) -> None: ...
+
+
 class AgendaRepositoryPort(Protocol):
     def create(self, item: AgendaItem, authorization: AuthorizedAction) -> AgendaItem: ...
 
     def get(self, item_id: str) -> AgendaItem | None: ...
 
     def list_for_owner(self, owner_user_id: str) -> list[AgendaItem]: ...
+
+    def list_scheduled(
+        self,
+        window_start: datetime,
+        window_end: datetime,
+    ) -> list[AgendaItem]: ...
 
     def update(
         self,
@@ -193,5 +227,7 @@ class DailyBriefingRepositoryPort(Protocol):
     def due(self, now: datetime) -> list[tuple[DailyBriefing, date]]: ...
 
     def mark_sent(self, briefing_id: str, sent_on: date, now: datetime) -> None: ...
+
+    def default_target_for(self, owner_user_id: str) -> str | None: ...
 
     def target_channel(self, target_ref: str) -> tuple[str, str] | None: ...
