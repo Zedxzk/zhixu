@@ -162,8 +162,10 @@ class QQEventMapper:
             or data.get("content")
             or ""
         ).strip()
+        bot_mention_pattern = rf"^\s*<@!?{re.escape(self.channel_account)}>\s*"
+        bot_mentioned_in_content = bool(re.match(bot_mention_pattern, text))
         text = re.sub(
-            rf"^\s*<@!?{re.escape(self.channel_account)}>\s*",
+            bot_mention_pattern,
             "",
             text,
             count=1,
@@ -265,7 +267,9 @@ class QQEventMapper:
                 now=received_at,
             )
             mentioned = (
-                event_type == "GROUP_AT_MESSAGE_CREATE" or display_mentioned_command
+                event_type == "GROUP_AT_MESSAGE_CREATE"
+                or bot_mentioned_in_content
+                or display_mentioned_command
             )
         elif event_type in {"AT_MESSAGE_CREATE", "DIRECT_MESSAGE_CREATE"}:
             actor = str(author.get("id") or "")

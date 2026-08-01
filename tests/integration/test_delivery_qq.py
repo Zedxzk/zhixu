@@ -1477,6 +1477,27 @@ def test_gateway_accepts_a_display_mentioned_command_from_plain_group_delivery(
     assert event.text == "/日历"
 
 
+def test_gateway_preserves_a_real_bot_mention_from_plain_group_delivery(
+    database: Database,
+    privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
+) -> None:
+    contacts = register_account(database, privacy_primitives)
+    event = QQEventMapper("bot_test_a", contacts).map(
+        "GROUP_MESSAGE_CREATE",
+        {
+            "id": "synthetic-plain-real-mention-event",
+            "group_openid": "synthetic-group",
+            "content": "<@!bot_test_a> create a synthetic recurring event",
+            "author": {"member_openid": "synthetic-member"},
+        },
+        received_at=NOW,
+    )
+
+    assert event is not None
+    assert event.metadata["mentioned"] is True
+    assert event.text == "create a synthetic recurring event"
+
+
 def test_gateway_maps_full_group_message_without_marking_it_mentioned(
     database: Database,
     privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
