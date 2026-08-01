@@ -28,6 +28,7 @@ from zhixu.adapters.storage.sqlite import (
 )
 from zhixu.adapters.web import AdminAPI, AdminResponse, HealthRegistry
 from zhixu.application import ZhixuServices
+from zhixu.application.commands import CreateAgenda, CreateNote, CreateTask
 from zhixu.delivery import OutboxStore
 from zhixu.domain import (
     Action,
@@ -68,7 +69,9 @@ class AdminParts:
 @pytest.fixture
 def admin(tmp_path: Path) -> AdminParts:
     database = Database(tmp_path / "zhixu.sqlite3")
-    assert database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+    assert database.migrate() == [
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17
+    ]
     clock = FrozenClock(NOW)
     grants = GrantRepository(database)
     policy = PolicyEngine(grants.has_grant)
@@ -97,7 +100,9 @@ def admin(tmp_path: Path) -> AdminParts:
     )
     reads = AdminReadStore(database)
     outbound_database = Database(tmp_path / "outbound-targets.sqlite3")
-    assert outbound_database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+    assert outbound_database.migrate() == [
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17
+    ]
     outbound_targets = OutboundTargetStore(
         outbound_database,
         FieldCipher(b"o" * 32),
@@ -311,6 +316,92 @@ def test_group_route_configuration_sets_mode_members_and_owner(admin: AdminParts
         ),
     )
     assert denied.status == 403
+
+
+def test_admin_lists_only_authorized_private_and_group_workspaces(
+    admin: AdminParts,
+) -> None:
+    opaque_ref = "qqc_synthetic_shared_workspace"
+    admin.routes.observe(
+        channel="qq",
+        channel_account="account_synthetic",
+        opaque_ref=opaque_ref,
+        kind="group",
+        now=NOW,
+    )
+    assert admin.api.dispatch(
+        "PATCH",
+        "/admin/channel-routes",
+        headers=admin.headers,
+        body=_json(
+            {
+                "channel": "qq",
+                "channel_account": "account_synthetic",
+                "opaque_ref": opaque_ref,
+                "commands_enabled": True,
+                "group_mode": "internal",
+                "member_user_ids": ["user_owner"],
+            }
+        ),
+    ).status == 200
+    route = admin.routes.get("qq", "account_synthetic", opaque_ref)
+    assert route is not None
+    assert route.shared_owner_user_id is not None
+    shared_context = CommandContext(
+        actor_user_id="user_owner",
+        roles=frozenset({"shared_workspace_member"}),
+        shared_owner_user_id=route.shared_owner_user_id,
+        readable_shared_owner_user_ids=(route.shared_owner_user_id,),
+        authentication=AuthenticationStrength.STEP_UP,
+        now=NOW,
+    )
+    admin.api.services.create_agenda(
+        CreateAgenda(
+            "Synthetic shared agenda",
+            NOW + timedelta(hours=1),
+            NOW + timedelta(hours=2),
+            "UTC",
+        ),
+        shared_context,
+    )
+    admin.api.services.create_task(
+        CreateTask("Synthetic shared task"),
+        shared_context,
+    )
+    admin.api.services.create_note(
+        CreateNote("Synthetic shared note", "Synthetic shared body"),
+        shared_context,
+    )
+
+    workspaces = admin.api.dispatch(
+        "GET",
+        "/admin/workspaces",
+        headers=admin.headers,
+    )
+    assert workspaces.status == 200
+    assert [item["kind"] for item in workspaces.body] == ["private", "group"]
+    assert all("owner_user_id" not in item for item in workspaces.body)
+    for endpoint in ("agenda", "tasks", "notes"):
+        listed = admin.api.dispatch(
+            "GET",
+            f"/admin/{endpoint}",
+            headers=admin.headers,
+        )
+        assert listed.status == 200
+        assert len(listed.body) == 1
+        assert listed.body[0]["workspace"]["kind"] == "group"
+        assert "owner_user_id" not in listed.body[0]
+
+    other_token = admin.sessions.create(
+        user_id="user_other",
+        authentication=AuthenticationStrength.STEP_UP,
+        now=NOW,
+    )
+    other_headers = {"Authorization": f"Bearer {other_token.value}"}
+    assert admin.api.dispatch(
+        "GET", "/admin/workspaces", headers=other_headers
+    ).body == [{"id": "private", "kind": "private", "label": "私人空间"}]
+    assert admin.api.dispatch("GET", "/admin/agenda", headers=other_headers).body == []
 
 
 def test_health_and_admin_status_are_minimal_and_redacted(admin: AdminParts) -> None:

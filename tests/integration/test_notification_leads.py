@@ -236,3 +236,61 @@ def test_a_recurring_item_only_covers_the_horizon(database: Database) -> None:
         datetime(2026, 8, 1, 14, 0, tzinfo=SHANGHAI),
         datetime(2026, 8, 2, 14, 0, tzinfo=SHANGHAI),
     ]
+
+
+def test_the_notification_states_when_the_event_starts(database: Database) -> None:
+    from zhixu.adapters.storage.sqlite.repositories import (
+        _reminder_notification_text,
+    )
+
+    start = datetime(2026, 8, 2, 9, 0, tzinfo=SHANGHAI)
+    _agenda(database, start=start)
+    leads = NotificationLeadRepository(database)
+    leads.set_override("agenda_test", "user_test", [120, 1440], now=NOW)
+    reminders = ReminderRepository(database)
+    NotificationLeadScheduler(
+        leads,
+        AgendaRepository(database),
+        reminders,
+        DailyBriefingRepository(database),
+        FrozenClock(NOW),
+    ).tick()
+
+    stored = sorted(
+        reminders.list_for_owner("user_test"), key=lambda r: r.fire_at
+    )
+    # The title is the event's own name; the lead lives in the rendered card.
+    assert [r.title for r in stored] == ["部门会议", "部门会议"]
+    assert all(r.related_start_at == start for r in stored)
+
+    day_ahead, two_hours = stored
+    early = _reminder_notification_text(day_ahead)
+    assert "**事项：** 部门会议" in early
+    assert "2026-08-02 09:00" in early
+    assert "周日" in early
+    assert "还有 1 天" in early
+    assert "（今天）" not in early
+
+    late = _reminder_notification_text(two_hours)
+    # Same calendar day, so the date is redundant but the weekday is not.
+    assert "09:00" in late
+    assert "（今天）" in late
+    assert "还有 2 小时" in late
+
+
+def test_a_plain_reminder_keeps_its_own_time(database: Database) -> None:
+    from zhixu.adapters.storage.sqlite.repositories import (
+        _reminder_notification_text,
+    )
+    from zhixu.domain import Reminder
+
+    plain = Reminder(
+        id="reminder_plain",
+        owner_user_id="user_test",
+        title="喝水",
+        fire_at=datetime(2026, 8, 1, 15, 0, tzinfo=SHANGHAI),
+        target_ref="qqc_target_test",
+    )
+    text = _reminder_notification_text(plain)
+    assert "**时间：** 2026-08-01 15:00" in text
+    assert "距开始" not in text

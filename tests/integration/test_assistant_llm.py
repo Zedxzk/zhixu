@@ -93,7 +93,7 @@ def assistant_parts(
     tmp_path: Path,
 ) -> tuple[ZhixuServices, FrozenClock, Database, CommandContext]:
     database = Database(tmp_path / "zhixu.sqlite3")
-    assert database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+    assert database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
     clock = FrozenClock(NOW)
     users = UserRepository(database)
     policy = PolicyEngine()

@@ -193,12 +193,9 @@ class AdminAPI:
                 return self._login(self._object_body(body))
 
             principal = self._authenticate(headers)
-            context = CommandContext(
-                actor_user_id=principal.user_id,
-                authentication=principal.authentication,
-                request_channel=RequestChannel.ADMIN_WEB,
+            context = self._admin_context(
+                principal,
                 confirmed=headers.get("x-zhixu-confirm", "").lower() == "true",
-                now=self.clock.now(),
             )
 
             if method == "GET" and path == "/admin/status":
@@ -208,6 +205,11 @@ class AdminAPI:
                         "health": self.health.snapshot(),
                         "application": self.reads.status(),
                     },
+                )
+            if method == "GET" and path == "/admin/workspaces":
+                return AdminResponse(
+                    200,
+                    [item for _owner, item in self._workspace_records(context)],
                 )
             if method == "DELETE" and path == "/admin/session":
                 raw_token = headers["authorization"].partition(" ")[2]
@@ -425,6 +427,84 @@ class AdminAPI:
             return self._error(404, "not_found", "route was not found")
         except Exception as exc:
             return self._exception_response(exc)
+
+    def _admin_context(self, principal: Any, *, confirmed: bool) -> CommandContext:
+        shared_owners = (
+            self.channel_routes.shared_owners_for_member(principal.user_id)
+            if self.channel_routes is not None
+            else ()
+        )
+        roles: set[str] = set()
+        if shared_owners:
+            roles.add("shared_workspace_member")
+        if self.users.has_role(principal.user_id, "project_admin"):
+            roles.add("project_admin")
+        return CommandContext(
+            actor_user_id=principal.user_id,
+            roles=frozenset(roles),
+            readable_shared_owner_user_ids=shared_owners,
+            authentication=principal.authentication,
+            request_channel=RequestChannel.ADMIN_WEB,
+            confirmed=confirmed,
+            now=self.clock.now(),
+        )
+
+    def _workspace_records(
+        self,
+        context: CommandContext,
+    ) -> list[tuple[str, dict[str, object]]]:
+        records: list[tuple[str, dict[str, object]]] = [
+            (
+                context.actor_user_id,
+                {"id": "private", "kind": "private", "label": "私人空间"},
+            )
+        ]
+        if self.channel_routes is None:
+            return records
+        readable = set(context.readable_shared_owner_user_ids)
+        routes = sorted(
+            (
+                route
+                for route in self.channel_routes.list()
+                if route.commands_enabled
+                and route.group_mode is GroupMode.INTERNAL
+                and route.shared_owner_user_id in readable
+                and context.actor_user_id in route.member_user_ids
+            ),
+            key=lambda route: (route.channel, route.channel_account, route.opaque_ref),
+        )
+        seen: set[str] = set()
+        for route in routes:
+            owner = route.shared_owner_user_id
+            if owner is None or owner in seen:
+                continue
+            seen.add(owner)
+            records.append(
+                (
+                    owner,
+                    {
+                        "id": f"group:{route.opaque_ref}",
+                        "kind": "group",
+                        "label": f"内部群 {len(records)}",
+                        "channel": route.channel,
+                    },
+                )
+            )
+        return records
+
+    def _workspace_for_owner(
+        self,
+        context: CommandContext,
+        owner_user_id: str,
+    ) -> dict[str, object]:
+        for owner, workspace in self._workspace_records(context):
+            if owner == owner_user_id:
+                return workspace
+        raise PermissionDenied("workspace is not readable by the current administrator")
+
+    @staticmethod
+    def _read_owner_ids(context: CommandContext) -> tuple[str, ...]:
+        return (context.actor_user_id, *context.readable_shared_owner_user_ids)
 
     async def __call__(
         self,
@@ -1129,14 +1209,22 @@ class AdminAPI:
         return AdminResponse(201, {"granted": True})
 
     def _list_agenda(self, context: CommandContext) -> AdminResponse:
-        items = self.services.agenda.list_for_owner(context.actor_user_id)
+        items = [
+            item
+            for owner_user_id in self._read_owner_ids(context)
+            for item in self.services.agenda.list_for_owner(owner_user_id)
+        ]
         for item in items:
             self.policy.require(
                 context,
                 Action.READ,
                 ResourceRef("agenda", item.id, item.owner_user_id, item.classification),
             )
-        return AdminResponse(200, [self._agenda_json(item) for item in items])
+        items.sort(key=lambda item: (item.start_at, item.id))
+        return AdminResponse(
+            200,
+            [self._agenda_json(item, context) for item in items],
+        )
 
     def _list_important_days(self, context: CommandContext) -> AdminResponse:
         items = self.services.query_bus().execute(ListAnniversaries(), context)
@@ -1145,6 +1233,7 @@ class AdminAPI:
             [
                 self._important_day_json(
                     item,
+                    context,
                     now=context.now or self.clock.now(),
                 )
                 for item in items
@@ -1209,6 +1298,7 @@ class AdminAPI:
             201,
             self._important_day_json(
                 item,
+                context,
                 now=context.now or self.clock.now(),
             ),
         )
@@ -1245,7 +1335,7 @@ class AdminAPI:
             ),
             context,
         )
-        return AdminResponse(201, self._agenda_json(item))
+        return AdminResponse(201, self._agenda_json(item, context))
 
     def _update_agenda(
         self,
@@ -1282,7 +1372,7 @@ class AdminAPI:
             ),
             context,
         )
-        return AdminResponse(200, self._agenda_json(item))
+        return AdminResponse(200, self._agenda_json(item, context))
 
     def _set_agenda_exception(
         self,
@@ -1327,14 +1417,21 @@ class AdminAPI:
         )
 
     def _list_tasks(self, context: CommandContext) -> AdminResponse:
-        items = self.services.tasks.list_for_owner(context.actor_user_id)
+        items = [
+            item
+            for owner_user_id in self._read_owner_ids(context)
+            for item in self.services.tasks.list_for_owner(owner_user_id)
+        ]
         for item in items:
             self.policy.require(
                 context,
                 Action.READ,
                 ResourceRef("task", item.id, item.owner_user_id, item.classification),
             )
-        return AdminResponse(200, [self._task_json(item) for item in items])
+        return AdminResponse(
+            200,
+            [self._task_json(item, context) for item in items],
+        )
 
     def _create_task(
         self,
@@ -1356,7 +1453,7 @@ class AdminAPI:
             ),
             context,
         )
-        return AdminResponse(201, self._task_json(task))
+        return AdminResponse(201, self._task_json(task, context))
 
     def _transition_task(
         self,
@@ -1377,7 +1474,7 @@ class AdminAPI:
             ),
             context,
         )
-        return AdminResponse(200, self._task_json(task))
+        return AdminResponse(200, self._task_json(task, context))
 
     def _update_task(
         self,
@@ -1402,7 +1499,7 @@ class AdminAPI:
             ),
             context,
         )
-        return AdminResponse(200, self._task_json(task))
+        return AdminResponse(200, self._task_json(task, context))
 
     def _postpone_task(
         self,
@@ -1419,17 +1516,24 @@ class AdminAPI:
             ),
             context,
         )
-        return AdminResponse(200, self._task_json(task))
+        return AdminResponse(200, self._task_json(task, context))
 
     def _list_notes(self, context: CommandContext) -> AdminResponse:
-        notes = self.services.notes.list_for_owner(context.actor_user_id)
+        notes = [
+            note
+            for owner_user_id in self._read_owner_ids(context)
+            for note in self.services.notes.list_for_owner(owner_user_id)
+        ]
         for note in notes:
             self.policy.require(
                 context,
                 Action.READ,
                 ResourceRef("note", note.id, note.owner_user_id, note.classification),
             )
-        return AdminResponse(200, [self._note_json(note) for note in notes])
+        return AdminResponse(
+            200,
+            [self._note_json(note, context) for note in notes],
+        )
 
     def _create_note(
         self,
@@ -1451,7 +1555,7 @@ class AdminAPI:
             ),
             context,
         )
-        return AdminResponse(201, self._note_json(note))
+        return AdminResponse(201, self._note_json(note, context))
 
     def _update_note(
         self,
@@ -1476,7 +1580,7 @@ class AdminAPI:
             ),
             context,
         )
-        return AdminResponse(200, self._note_json(note))
+        return AdminResponse(200, self._note_json(note, context))
 
     def _list_reminders(self, context: CommandContext) -> AdminResponse:
         reminders = self.services.query_bus().execute(
@@ -1485,7 +1589,7 @@ class AdminAPI:
         )
         return AdminResponse(
             200,
-            [self._reminder_json(reminder) for reminder in reminders],
+            [self._reminder_json(reminder, context) for reminder in reminders],
         )
 
     def _create_reminder(
@@ -1540,7 +1644,7 @@ class AdminAPI:
             ),
             context,
         )
-        return AdminResponse(201, self._reminder_json(reminder))
+        return AdminResponse(201, self._reminder_json(reminder, context))
 
     def _cancel_reminder(
         self,
@@ -1551,10 +1655,13 @@ class AdminAPI:
             CancelReminder(reminder_id),
             context,
         )
-        return AdminResponse(200, self._reminder_json(reminder))
+        return AdminResponse(200, self._reminder_json(reminder, context))
 
-    @staticmethod
-    def _agenda_json(item: Any) -> dict[str, object]:
+    def _agenda_json(
+        self,
+        item: Any,
+        context: CommandContext,
+    ) -> dict[str, object]:
         return {
             "id": item.id,
             "title": item.title,
@@ -1566,10 +1673,16 @@ class AdminAPI:
             "classification": int(item.classification),
             "recurrence_rule": item.recurrence.value if item.recurrence else None,
             "version": item.version,
+            "workspace": self._workspace_for_owner(context, item.owner_user_id),
         }
 
-    @staticmethod
-    def _important_day_json(item: Any, *, now: datetime) -> dict[str, object]:
+    def _important_day_json(
+        self,
+        item: Any,
+        context: CommandContext,
+        *,
+        now: datetime,
+    ) -> dict[str, object]:
         local_today = now.astimezone(ZoneInfo(item.timezone)).date()
         occurrence = item.next_occurrence(local_today)
         return {
@@ -1586,10 +1699,14 @@ class AdminAPI:
             "next_occurrence": occurrence.isoformat() if occurrence else None,
             "classification": int(item.classification),
             "created_at": item.created_at.isoformat() if item.created_at else None,
+            "workspace": self._workspace_for_owner(context, item.owner_user_id),
         }
 
-    @staticmethod
-    def _task_json(item: Any) -> dict[str, object]:
+    def _task_json(
+        self,
+        item: Any,
+        context: CommandContext,
+    ) -> dict[str, object]:
         return {
             "id": item.id,
             "title": item.title,
@@ -1599,10 +1716,14 @@ class AdminAPI:
             "due_at": item.due_at.isoformat() if item.due_at else None,
             "classification": int(item.classification),
             "version": item.version,
+            "workspace": self._workspace_for_owner(context, item.owner_user_id),
         }
 
-    @staticmethod
-    def _note_json(item: Any) -> dict[str, object]:
+    def _note_json(
+        self,
+        item: Any,
+        context: CommandContext,
+    ) -> dict[str, object]:
         return {
             "id": item.id,
             "title": item.title,
@@ -1620,10 +1741,14 @@ class AdminAPI:
             ],
             "classification": int(item.classification),
             "version": item.version,
+            "workspace": self._workspace_for_owner(context, item.owner_user_id),
         }
 
-    @staticmethod
-    def _reminder_json(item: Any) -> dict[str, object]:
+    def _reminder_json(
+        self,
+        item: Any,
+        context: CommandContext,
+    ) -> dict[str, object]:
         return {
             "id": item.id,
             "title": item.title,
@@ -1635,6 +1760,7 @@ class AdminAPI:
             "related_kind": item.related_kind,
             "related_id": item.related_id,
             "version": item.version,
+            "workspace": self._workspace_for_owner(context, item.owner_user_id),
         }
 
     @staticmethod

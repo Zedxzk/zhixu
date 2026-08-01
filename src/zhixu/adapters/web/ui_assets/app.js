@@ -15,6 +15,8 @@ const state = {
   search: "",
   agendaFilter: "future",
   taskFilter: "open",
+  workspaceFilter: "all",
+  workspaces: [],
   status: null,
   agenda: [],
   reminders: [],
@@ -134,6 +136,32 @@ function includesSearch(...values) {
   return values.some((value) => String(value || "").toLocaleLowerCase().includes(state.search));
 }
 
+function inSelectedWorkspace(item) {
+  return state.workspaceFilter === "all" || item.workspace?.id === state.workspaceFilter;
+}
+
+function scoped(items) {
+  return items.filter(inSelectedWorkspace);
+}
+
+function workspaceTag(item) {
+  const workspace = item.workspace || { kind: "private", label: "私人空间" };
+  return tag(workspace.label, workspace.kind === "group" ? "lime" : "");
+}
+
+function renderWorkspaceSelector() {
+  const select = qs("#workspace-scope");
+  const selected = state.workspaceFilter;
+  const options = [{ id: "all", label: "全部空间" }, ...state.workspaces];
+  select.replaceChildren(...options.map((workspace) => {
+    const option = node("option", "", workspace.label);
+    option.value = workspace.id;
+    return option;
+  }));
+  state.workspaceFilter = options.some((item) => item.id === selected) ? selected : "all";
+  select.value = state.workspaceFilter;
+}
+
 function localDate(value) {
   if (!value) return null;
   const dateOnly = typeof value === "string" && /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
@@ -184,8 +212,9 @@ async function loadData({ quiet = false } = {}) {
   if (!quiet) setBusy(true);
   try {
     const importantPromise = optionalApi(["/admin/important-days", "/admin/anniversaries"]);
-    const [status, agenda, reminders, tasks, notes, identities, channels, routes, outbox, audit, llm, important] = await Promise.all([
+    const [status, workspaces, agenda, reminders, tasks, notes, identities, channels, routes, outbox, audit, llm, important] = await Promise.all([
       api("/admin/status"),
+      api("/admin/workspaces"),
       api("/admin/agenda"),
       api("/admin/reminders"),
       api("/admin/tasks"),
@@ -198,9 +227,10 @@ async function loadData({ quiet = false } = {}) {
       api("/admin/llm-usage?limit=30"),
       importantPromise,
     ]);
-    Object.assign(state, { status, agenda, reminders, tasks, notes, identities, channels, routes, outbox, audit, llm });
+    Object.assign(state, { status, workspaces, agenda, reminders, tasks, notes, identities, channels, routes, outbox, audit, llm });
     state.importantDays = Array.isArray(important.value) ? important.value : [];
     state.importantDaysEndpoint = important.path;
+    renderWorkspaceSelector();
     renderAll();
   } catch (error) {
     if (error.status === 403) {
@@ -228,38 +258,42 @@ function renderAll() {
 
 function renderDashboard() {
   const now = new Date();
+  const agenda = scoped(state.agenda);
+  const reminders = scoped(state.reminders);
+  const tasks = scoped(state.tasks);
+  const notes = scoped(state.notes);
   qs("#today-day").textContent = String(now.getDate()).padStart(2, "0");
   qs("#today-weekday").textContent = new Intl.DateTimeFormat("zh-CN", { weekday: "long" }).format(now);
   qs("#today-month").textContent = new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long" }).format(now);
   qs("#date-kicker").textContent = new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric" }).format(now);
 
-  const todayAgenda = state.agenda.filter((item) => sameDay(item.start_at));
-  const todayReminders = state.reminders.filter((item) => sameDay(item.fire_at) && item.status === "pending");
+  const todayAgenda = agenda.filter((item) => sameDay(item.start_at));
+  const todayReminders = reminders.filter((item) => sameDay(item.fire_at) && item.status === "pending");
   qs("#today-summary").textContent = todayAgenda.length || todayReminders.length
     ? `今天有 ${todayAgenda.length} 项日程、${todayReminders.length} 个待触发提醒。`
     : "今天没有必须赶赴的安排，按自己的节奏来。";
 
   const upcoming = [
-    ...state.agenda.map((item) => ({ ...item, when: item.start_at, kind: "日程" })),
-    ...state.reminders.filter((item) => item.status === "pending").map((item) => ({ ...item, when: item.fire_at, kind: "提醒" })),
+    ...agenda.map((item) => ({ ...item, when: item.start_at, kind: "日程" })),
+    ...reminders.filter((item) => item.status === "pending").map((item) => ({ ...item, when: item.fire_at, kind: "提醒" })),
   ].filter((item) => future(item.when)).sort((a, b) => new Date(a.when) - new Date(b.when));
   const nextBox = qs("#next-event");
   nextBox.replaceChildren();
   if (upcoming.length) {
     const item = upcoming[0];
     nextBox.className = "next-event";
-    nextBox.append(node("time", "", formatDate(item.when, { weekday: true })), node("h3", "", item.title), node("p", "", item.kind));
+    nextBox.append(node("time", "", formatDate(item.when, { weekday: true })), node("h3", "", item.title), node("p", "", `${item.kind} · ${item.workspace?.label || "私人空间"}`));
   } else {
     nextBox.className = "next-event empty-state compact";
     nextBox.textContent = "未来暂时没有安排";
   }
 
-  const openTasks = state.tasks.filter((item) => !["done", "cancelled"].includes(item.status));
+  const openTasks = tasks.filter((item) => !["done", "cancelled"].includes(item.status));
   const metrics = [
     ["今日日程", todayAgenda.length, "◇", "按开始时间排列"],
-    ["待触发提醒", state.reminders.filter((item) => item.status === "pending").length, "◷", "未来提醒"],
+    ["待触发提醒", reminders.filter((item) => item.status === "pending").length, "◷", "未来提醒"],
     ["进行中待办", openTasks.length, "✓", "尚未完成"],
-    ["私人备忘", state.notes.length, "▱", "已安全保存"],
+    ["备忘", notes.length, "▱", state.workspaceFilter === "private" ? "私人保存" : "按空间隔离"],
   ];
   const metricGrid = qs("#metric-grid");
   metricGrid.replaceChildren(...metrics.map(([label, count, icon, hint]) => {
@@ -272,8 +306,8 @@ function renderDashboard() {
 
   const timeline = qs("#today-timeline");
   const dayItems = [
-    ...todayAgenda.map((item) => ({ title: item.title, when: item.start_at, detail: item.description || "日程", kind: "agenda" })),
-    ...todayReminders.map((item) => ({ title: item.title, when: item.fire_at, detail: "提醒", kind: "reminder" })),
+    ...todayAgenda.map((item) => ({ title: item.title, when: item.start_at, detail: `${item.description || "日程"} · ${item.workspace?.label || "私人空间"}`, kind: "agenda" })),
+    ...todayReminders.map((item) => ({ title: item.title, when: item.fire_at, detail: `提醒 · ${item.workspace?.label || "私人空间"}`, kind: "reminder" })),
   ].sort((a, b) => new Date(a.when) - new Date(b.when));
   if (!dayItems.length) empty(timeline, "今天没有安排");
   else timeline.replaceChildren(...dayItems.map((item) => {
@@ -298,14 +332,14 @@ function taskStackItem(item) {
   complete.setAttribute("aria-label", `完成 ${item.title}`);
   complete.addEventListener("click", () => transitionTask(item, "done"));
   const main = node("div", "stack-item-main");
-  main.append(node("strong", "", item.title), node("small", "", item.due_at ? `截止 ${formatDate(item.due_at)}` : "未设置截止时间"));
+  main.append(node("strong", "", item.title), node("small", "", `${item.due_at ? `截止 ${formatDate(item.due_at)}` : "未设置截止时间"} · ${item.workspace?.label || "私人空间"}`));
   row.append(complete, node("span", `priority priority-${item.priority}`), main);
   return row;
 }
 
 function renderAgenda() {
   const list = qs("#agenda-list");
-  const items = state.agenda
+  const items = scoped(state.agenda)
     .filter((item) => state.agendaFilter === "all" || future(item.end_at))
     .filter((item) => includesSearch(item.title, item.description, item.recurrence_rule))
     .sort((a, b) => new Date(a.start_at) - new Date(b.start_at));
@@ -316,6 +350,7 @@ function renderAgenda() {
     const main = node("div", "resource-main");
     main.append(node("h3", "", item.title), node("p", "", item.description || (item.recurrence_rule ? `循环 · ${item.recurrence_rule}` : "单次日程")));
     const actions = node("div", "resource-actions");
+    actions.append(workspaceTag(item));
     if (item.recurrence_rule) actions.append(tag("循环", "lime"));
     actions.append(miniButton("编辑", () => openEditor("agenda", item)));
     actions.append(miniButton("删除", () => removeResource("agenda", item), "danger"));
@@ -326,7 +361,7 @@ function renderAgenda() {
 
 function renderReminders() {
   const list = qs("#reminder-list");
-  const items = state.reminders.filter((item) => includesSearch(item.title, item.status)).sort((a, b) => new Date(a.fire_at) - new Date(b.fire_at));
+  const items = scoped(state.reminders).filter((item) => includesSearch(item.title, item.status, item.workspace?.label)).sort((a, b) => new Date(a.fire_at) - new Date(b.fire_at));
   if (!items.length) return empty(list, "还没有提醒");
   list.replaceChildren(...items.map((item) => {
     const row = node("article", "resource-item");
@@ -334,6 +369,7 @@ function renderReminders() {
     main.append(node("h3", "", item.title), node("p", "", item.related_kind ? `关联 ${item.related_kind}` : "独立提醒"));
     const actions = node("div", "resource-actions");
     const statusClass = item.status === "pending" ? "lime" : "";
+    actions.append(workspaceTag(item));
     actions.append(tag(reminderStatus(item.status), statusClass));
     if (item.status === "pending") actions.append(miniButton("取消", () => removeResource("reminders", item), "danger"));
     row.append(node("div", "resource-time", formatDate(item.fire_at)), main, actions);
@@ -347,7 +383,7 @@ function reminderStatus(status) {
 
 function renderTasks() {
   const board = qs("#task-board");
-  let items = state.tasks.filter((item) => includesSearch(item.title, item.description, item.status));
+  let items = scoped(state.tasks).filter((item) => includesSearch(item.title, item.description, item.status, item.workspace?.label));
   if (state.taskFilter === "open") items = items.filter((item) => !["done", "cancelled"].includes(item.status));
   if (state.taskFilter === "done") items = items.filter((item) => item.status === "done");
   const columns = [
@@ -366,7 +402,9 @@ function renderTasks() {
       card.append(node("h3", "", item.title));
       if (item.description) card.append(node("p", "", item.description));
       const meta = node("div", "task-meta");
-      meta.append(node("small", "", item.due_at ? formatDate(item.due_at) : `优先级 ${item.priority}`));
+      const taskDetails = node("div", "tags");
+      taskDetails.append(workspaceTag(item), node("small", "", item.due_at ? formatDate(item.due_at) : `优先级 ${item.priority}`));
+      meta.append(taskDetails);
       const actions = node("div", "resource-actions");
       actions.append(miniButton("编辑", () => openEditor("task", item)));
       if (status !== "done") actions.append(miniButton(status === "doing" ? "完成" : "开始", () => transitionTask(item, status === "doing" ? "done" : "doing")));
@@ -381,13 +419,14 @@ function renderTasks() {
 
 function renderNotes() {
   const grid = qs("#note-grid");
-  const items = state.notes.filter((item) => includesSearch(item.title, item.body, ...(item.tags || [])));
+  const items = scoped(state.notes).filter((item) => includesSearch(item.title, item.body, item.workspace?.label, ...(item.tags || [])));
   if (!items.length) return empty(grid, "还没有备忘，随手记下第一条吧");
   grid.replaceChildren(...items.map((item) => {
     const card = node("article", "note-card");
     card.append(node("h3", "", item.title || "无标题"), node("p", "", item.body || "空白备忘"));
     const footer = node("footer");
     const tags = node("div", "tags");
+    tags.append(workspaceTag(item));
     (item.tags || []).slice(0, 3).forEach((value) => tags.append(tag(value)));
     const actions = node("div", "resource-actions");
     actions.append(miniButton("编辑", () => openEditor("note", item)), miniButton("删除", () => removeResource("notes", item), "danger"));
@@ -402,7 +441,7 @@ function renderImportantDays() {
   const create = qs("#important-day-create");
   create.disabled = !state.importantDaysEndpoint;
   create.title = state.importantDaysEndpoint ? "添加重要日子" : "生日功能正在同步";
-  const items = state.importantDays.filter((item) => includesSearch(item.title, item.name, item.kind));
+  const items = scoped(state.importantDays).filter((item) => includesSearch(item.title, item.name, item.kind, item.workspace?.label));
   if (!state.importantDaysEndpoint) return empty(list, "生日与重要日子的后端正在同步，UI 已预留入口。同步完成后会自动显示。");
   if (!items.length) return empty(list, "还没有重要日子");
   list.replaceChildren(...items.map((item) => {
@@ -419,6 +458,7 @@ function renderImportantDays() {
     if (Array.isArray(item.advance_days) && item.advance_days.length) {
       card.append(node("small", "day-leads", `提前 ${item.advance_days.join(" / ")} 天通知`));
     }
+    card.append(workspaceTag(item));
     return card;
   }));
 }
@@ -782,6 +822,7 @@ function bindEvents() {
   qsa("[data-agenda-filter]").forEach((button) => button.addEventListener("click", () => { state.agendaFilter = button.dataset.agendaFilter; qsa("[data-agenda-filter]").forEach((item) => item.classList.toggle("active", item === button)); renderAgenda(); }));
   qsa("[data-task-filter]").forEach((button) => button.addEventListener("click", () => { state.taskFilter = button.dataset.taskFilter; qsa("[data-task-filter]").forEach((item) => item.classList.toggle("active", item === button)); renderTasks(); }));
   qs("#global-search").addEventListener("input", (event) => { state.search = event.target.value.trim().toLocaleLowerCase(); renderCurrentView(); });
+  qs("#workspace-scope").addEventListener("change", (event) => { state.workspaceFilter = event.target.value; renderAll(); });
   qs("#theme-button").addEventListener("click", () => { const theme = document.documentElement.dataset.theme === "dark" ? "light" : "dark"; document.documentElement.dataset.theme = theme; localStorage.setItem("zhixu.theme", theme); });
   qs("#mobile-menu-button").addEventListener("click", () => { const sidebar = qs(".sidebar"); const open = sidebar.classList.toggle("open"); qs("#mobile-menu-button").setAttribute("aria-expanded", String(open)); });
   qs("#passkey-register").addEventListener("click", () => passkey("registration"));

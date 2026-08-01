@@ -103,6 +103,13 @@
           <h1 id="view-title">今天，一切有序</h1>
         </div>
         <div class="topbar-actions">
+          <label class="workspace-switcher">
+            <span>查看范围</span>
+            <select id="workspace-scope" aria-label="选择私人或群共享数据范围">
+              <option value="all">全部空间</option>
+              <option value="private">私人空间</option>
+            </select>
+          </label>
           <label class="search-box">
             <span aria-hidden="true">⌕</span>
             <input id="global-search" type="search" placeholder="搜索当前页面" aria-label="搜索当前页面">
@@ -173,7 +180,7 @@
       </section>
 
       <section id="view-notes" class="view" data-view-panel="notes">
-        <div class="view-toolbar"><p class="muted">你的想法与资料，只在私人数据库中</p><button class="button button-primary" data-create="note">＋ 新建备忘</button></div>
+        <div class="view-toolbar"><p class="muted">私人备忘与获授权的内部群共享资料</p><button class="button button-primary" data-create="note">＋ 新建备忘</button></div>
         <div id="note-grid" class="note-grid"></div>
       </section>
 

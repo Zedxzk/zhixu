@@ -42,6 +42,9 @@ def test_ui_is_packaged_and_contains_no_remote_dependencies() -> None:
     assert "innerHTML" not in script
     assert 'sessionStorage.getItem("zhixu.session")' in script
     assert 'localStorage.getItem("zhixu.session")' not in script
+    assert 'id="workspace-scope"' in index
+    assert 'api("/admin/workspaces")' in script
+    assert "workspaceTag(item)" in script
 
 
 def test_ui_response_has_strict_browser_security_headers() -> None:

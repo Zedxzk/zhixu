@@ -280,12 +280,15 @@ class NotificationLeadScheduler:
                 id=reminder_id,
                 owner_user_id=item.owner_user_id,
                 creator_user_id=item.creator_user_id or item.owner_user_id,
-                title=_lead_text(occurrence.title or item.title, minutes),
+                # The title stays the event's own name; how far ahead this is
+                # belongs in the notification, which knows both moments.
+                title=occurrence.title or item.title,
                 fire_at=fire_at,
                 target_ref=target_ref,
                 classification=item.classification,
                 related_kind="agenda",
                 related_id=item.id,
+                related_start_at=occurrence.start_at,
             )
             authorization = AuthorizedAction(
                 actor_user_id="service:agenda-notification",
@@ -305,15 +308,6 @@ class NotificationLeadScheduler:
             materialized += 1
         return materialized
 
-
-def _lead_text(title: str, minutes: int) -> str:
-    if minutes == 0:
-        return f"{title} 现在开始"
-    if minutes % (24 * 60) == 0:
-        return f"{title} 还有 {minutes // (24 * 60)} 天开始"
-    if minutes % 60 == 0:
-        return f"{title} 还有 {minutes // 60} 小时开始"
-    return f"{title} 还有 {minutes} 分钟开始"
 
 
 @dataclass(slots=True)

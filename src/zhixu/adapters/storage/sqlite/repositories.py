@@ -80,14 +80,52 @@ def _escape_markdown_text(value: str) -> str:
     return re.sub(r"([\\`*_{}\[\]()#+\-.!>|])", r"\\\1", compact)
 
 
+_WEEKDAYS = ("一", "二", "三", "四", "五", "六", "日")
+
+
+def _humanise_gap(seconds: float) -> str:
+    minutes = int(seconds // 60)
+    if minutes <= 0:
+        return "现在开始"
+    if minutes < 60:
+        return f"还有 {minutes} 分钟"
+    if minutes < 24 * 60:
+        hours, rest = divmod(minutes, 60)
+        return f"还有 {hours} 小时" + (f" {rest} 分钟" if rest else "")
+    days, rest = divmod(minutes, 24 * 60)
+    hours = rest // 60
+    return f"还有 {days} 天" + (f" {hours} 小时" if hours else "")
+
+
 def _reminder_notification_text(reminder: Reminder) -> str:
     local_fire_at = reminder.fire_at.astimezone(_REMINDER_NOTIFICATION_TIMEZONE)
     title = _escape_markdown_text(reminder.title)
-    return (
-        "# ⏰ 日程提醒\n\n"
-        f"**事项：** {title}\n\n"
-        f"**时间：** {local_fire_at:%Y-%m-%d %H:%M}（北京时间）"
-    )
+    lines = ["# ⏰ 日程提醒", "", f"**事项：** {title}"]
+    if reminder.related_start_at is not None:
+        # This reminder speaks before the thing it announces, so the moment the
+        # reader needs is when that thing starts, not when the reminder fired.
+        starts_at = reminder.related_start_at.astimezone(
+            _REMINDER_NOTIFICATION_TIMEZONE
+        )
+        gap = (reminder.related_start_at - reminder.fire_at).total_seconds()
+        weekday = _WEEKDAYS[starts_at.weekday()]
+        same_day = starts_at.date() == local_fire_at.date()
+        when = f"{starts_at:%H:%M}" if same_day else f"{starts_at:%Y-%m-%d %H:%M}"
+        lines.extend(
+            [
+                "",
+                f"**开始：** {when} 周{weekday}"
+                + ("（今天）" if same_day else "")
+                + "（北京时间）",
+                "",
+                f"**距开始：** {_humanise_gap(gap)}",
+            ]
+        )
+    else:
+        lines.extend(
+            ["", f"**时间：** {local_fire_at:%Y-%m-%d %H:%M}（北京时间）"]
+        )
+    return "\n".join(lines)
 
 
 def _dump_action_links(links: tuple[ActionLink, ...]) -> str:
@@ -1449,6 +1487,7 @@ class ReminderRepository:
             classification=DataClassification(int(row["classification"])),
             related_kind=row["related_kind"],
             related_id=row["related_id"],
+            related_start_at=_load_datetime(row["related_start_at"]),
             version=int(row["version"]),
             created_at=_load_datetime(str(row["created_at"])),
             updated_at=_load_datetime(str(row["updated_at"])),
@@ -1479,9 +1518,10 @@ class ReminderRepository:
                     """
                     INSERT INTO reminders(
                         id,owner_user_id,creator_user_id,title,fire_at,target_ref,status,missed_policy,
-                        classification,related_kind,related_id,action_links_json,
+                        classification,related_kind,related_id,related_start_at,
+                        action_links_json,
                         version,created_at,updated_at
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         stored.id,
@@ -1495,6 +1535,11 @@ class ReminderRepository:
                         int(stored.classification),
                         stored.related_kind,
                         stored.related_id,
+                        (
+                            _dump_datetime(stored.related_start_at)
+                            if stored.related_start_at is not None
+                            else None
+                        ),
                         _dump_action_links(stored.action_links),
                         stored.version,
                         _dump_datetime(stored.created_at),
