@@ -8,7 +8,7 @@ import random
 import re
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -130,12 +130,25 @@ class QQEventMapper:
         contacts: QQContactStore,
         *,
         bot_identifier: str | None = None,
+        display_names: Sequence[str] = (),
     ) -> None:
         self.channel_account = channel_account
         self.contacts = contacts
         self.bot_identifier = (bot_identifier or channel_account).strip()
         if not self.bot_identifier:
             raise ValueError("QQ bot mention identifier is required")
+        self.display_names = tuple(
+            name.strip() for name in display_names if name and name.strip()
+        )
+        self._display_mention = (
+            re.compile(
+                r"^\s*@(?:"
+                + "|".join(re.escape(name) for name in self.display_names)
+                + r")(?=\s|$)\s*"
+            )
+            if self.display_names
+            else None
+        )
 
     def map(
         self,
@@ -179,18 +192,42 @@ class QQEventMapper:
             text,
             count=1,
         ).strip()
-        display_mentioned_command = bool(
-            event_type in {"GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE"}
-            and re.match(r"^\s*@\S+\s+/\S", text)
+        group_event = event_type in {"GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE"}
+        # A group mention does not always arrive as GROUP_AT_MESSAGE_CREATE: once
+        # the bot may receive every group message, QQ reclassifies mentions as
+        # plain GROUP_MESSAGE_CREATE and leaves the bot's display name in the
+        # content as ordinary text, with no <@app-id> marker in the payload.
+        # Matching the configured display name is what distinguishes that from a
+        # member mentioning another member, which must stay unaddressed.
+        addressed_by_display_name = bool(
+            group_event
+            and self._display_mention is not None
+            and self._display_mention.match(text)
         )
-        if event_type in {"GROUP_AT_MESSAGE_CREATE", "AT_MESSAGE_CREATE"} or (
+        # A slash command behind any display-name mention is unambiguous intent,
+        # so it still works when no display name has been configured.
+        display_mentioned_command = bool(
+            group_event and re.match(r"^\s*@\S+\s+/\S", text)
+        )
+        if addressed_by_display_name and self._display_mention is not None:
+            text = self._display_mention.sub("", text, count=1).strip()
+        elif event_type in {"GROUP_AT_MESSAGE_CREATE", "AT_MESSAGE_CREATE"} or (
             display_mentioned_command
         ):
-            # Some QQ clients expose the addressed bot as a display-name mention
-            # instead of the documented <@app-id> form. The event type already
-            # proves natural-language mentions; plain group events are accepted
-            # only when the mention is followed by an explicit slash command.
             text = re.sub(r"^\s*@\S+\s+", "", text, count=1).strip()
+        if group_event:
+            # Which mention form a group message arrives in is not observable
+            # from the receipt, and getting it wrong makes the bot look mute.
+            # Record the form only; the message body is never logged.
+            logger.info(
+                "qq_group_event type=%s app_mention=%s display_mention=%s "
+                "command_mention=%s lead=%s",
+                event_type,
+                bot_mentioned_in_content,
+                addressed_by_display_name,
+                display_mentioned_command,
+                "slash" if text.startswith("/") else "at" if text.startswith("@") else "text",
+            )
         if not event_id or not text:
             return None
         if event_type == "INTERACTION_CREATE":
@@ -278,6 +315,7 @@ class QQEventMapper:
             mentioned = (
                 event_type == "GROUP_AT_MESSAGE_CREATE"
                 or bot_mentioned_in_content
+                or addressed_by_display_name
                 or display_mentioned_command
             )
         elif event_type in {"AT_MESSAGE_CREATE", "DIRECT_MESSAGE_CREATE"}:

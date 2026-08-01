@@ -1,5 +1,9 @@
 # Non-secret runtime configuration. Install as /etc/zhixu/runtime.conf (0640).
 ZHIXU_QQ_ACCOUNT=qq-primary
+# Group display name of the bot. QQ delivers a group mention as ordinary text
+# rather than an <@app-id> marker, so without this a mention that is not
+# followed by a slash command is not recognised as addressing the bot.
+ZHIXU_QQ_BOT_DISPLAY_NAME=SyntheticBotName
 ZHIXU_ADMIN_WEB_ENABLED=false
 
 # Enabling the browser administration API requires a private HTTPS origin.

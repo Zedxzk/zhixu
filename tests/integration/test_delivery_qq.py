@@ -1506,6 +1506,97 @@ def test_gateway_preserves_a_real_bot_mention_from_plain_group_delivery(
     assert event.text == "create a synthetic recurring event"
 
 
+def test_gateway_accepts_a_display_named_natural_language_group_mention(
+    database: Database,
+    privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
+) -> None:
+    # QQ delivers a group mention of the bot as a plain GROUP_MESSAGE_CREATE
+    # whose content carries the display name as ordinary text and no <@app-id>.
+    contacts = register_account(
+        database,
+        privacy_primitives,
+        account_id="logical_account_test",
+    )
+    event = QQEventMapper(
+        "logical_account_test",
+        contacts,
+        bot_identifier="actual_app_id_test",
+        display_names=("SyntheticBotName",),
+    ).map(
+        "GROUP_MESSAGE_CREATE",
+        {
+            "id": "synthetic-display-natural-event",
+            "group_openid": "synthetic-group",
+            "content": "@SyntheticBotName create a synthetic recurring event",
+            "author": {"member_openid": "synthetic-member"},
+        },
+        received_at=NOW,
+    )
+
+    assert event is not None
+    assert event.metadata["mentioned"] is True
+    assert event.text == "create a synthetic recurring event"
+
+
+def test_gateway_ignores_a_group_mention_of_another_member(
+    database: Database,
+    privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
+) -> None:
+    contacts = register_account(
+        database,
+        privacy_primitives,
+        account_id="logical_account_test",
+    )
+    event = QQEventMapper(
+        "logical_account_test",
+        contacts,
+        bot_identifier="actual_app_id_test",
+        display_names=("SyntheticBotName",),
+    ).map(
+        "GROUP_MESSAGE_CREATE",
+        {
+            "id": "synthetic-other-member-mention-event",
+            "group_openid": "synthetic-group",
+            "content": "@SyntheticMember create a synthetic recurring event",
+            "author": {"member_openid": "synthetic-member"},
+        },
+        received_at=NOW,
+    )
+
+    assert event is not None
+    assert event.metadata["mentioned"] is False
+    assert event.text == "@SyntheticMember create a synthetic recurring event"
+
+
+def test_gateway_does_not_treat_a_display_name_prefix_as_a_mention(
+    database: Database,
+    privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
+) -> None:
+    contacts = register_account(
+        database,
+        privacy_primitives,
+        account_id="logical_account_test",
+    )
+    event = QQEventMapper(
+        "logical_account_test",
+        contacts,
+        bot_identifier="actual_app_id_test",
+        display_names=("SyntheticBot",),
+    ).map(
+        "GROUP_MESSAGE_CREATE",
+        {
+            "id": "synthetic-display-prefix-event",
+            "group_openid": "synthetic-group",
+            "content": "@SyntheticBotOther create a synthetic recurring event",
+            "author": {"member_openid": "synthetic-member"},
+        },
+        received_at=NOW,
+    )
+
+    assert event is not None
+    assert event.metadata["mentioned"] is False
+
+
 def test_gateway_maps_full_group_message_without_marking_it_mentioned(
     database: Database,
     privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],

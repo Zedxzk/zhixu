@@ -64,7 +64,7 @@ class InternalChannelClient:
         )
 
     def event(self, event: InboundEvent) -> None:
-        self._post(
+        response = self._post(
             "/internal/channel/event",
             {
                 "event_id": event.event_id,
@@ -82,6 +82,15 @@ class InternalChannelClient:
                 ),
             },
         )
+        if not response.get("accepted"):
+            # A refused inbound message produces no reply at all, so without
+            # this the bot is indistinguishable from a dead process.
+            logger.info(
+                "qq_inbound_refused reason=%s kind=%s mentioned=%s",
+                str(response.get("reason_code") or "unknown"),
+                event.conversation_kind.value,
+                bool(event.metadata.get("mentioned")),
+            )
 
     def claim(self, *, channel_account: str) -> dict[str, object] | None:
         response = self._post(
@@ -163,6 +172,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--field-key-file", required=True)
     parser.add_argument("--reference-key-file", required=True)
     parser.add_argument("--channel-service-token-file", required=True)
+    parser.add_argument(
+        "--bot-display-name",
+        action="append",
+        default=[],
+        help=(
+            "group display name of this bot; QQ delivers a group mention as "
+            "plain text, so this is what marks such a message as addressed. "
+            "Repeat for each name the bot is shown under."
+        ),
+    )
     parser.add_argument("--api-url", default="http://127.0.0.1:8840")
     parser.add_argument("--delivery-interval", type=float, default=0.25)
     parser.add_argument("--log-level", default="INFO")
@@ -204,7 +223,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     protocol = QQGatewayProtocol(
         channel_account=args.account,
-        mapper=QQEventMapper(args.account, contacts, bot_identifier=app_id),
+        mapper=QQEventMapper(
+            args.account,
+            contacts,
+            bot_identifier=app_id,
+            display_names=tuple(args.bot_display_name),
+        ),
         session_store=QQGatewaySessionStore(database, cipher),
         on_event=on_event,
     )
