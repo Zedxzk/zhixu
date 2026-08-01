@@ -216,17 +216,21 @@ class QQEventMapper:
         ):
             text = re.sub(r"^\s*@\S+\s+", "", text, count=1).strip()
         if group_event:
-            # Which mention form a group message arrives in is not observable
-            # from the receipt, and getting it wrong makes the bot look mute.
-            # Record the form only; the message body is never logged.
+            # TEMPORARY DIAGNOSTIC: dumps the raw group payload, message body
+            # included, to settle which mention form QQ actually delivers.
+            # Remove once the mention handling is confirmed.
+            try:
+                serialised = json.dumps(data, ensure_ascii=False)
+            except (TypeError, ValueError):
+                serialised = repr(data)
             logger.info(
-                "qq_group_event type=%s app_mention=%s display_mention=%s "
-                "command_mention=%s lead=%s",
+                "qq_group_event_raw type=%s app_mention=%s display_mention=%s "
+                "command_mention=%s payload=%s",
                 event_type,
                 bot_mentioned_in_content,
                 addressed_by_display_name,
                 display_mentioned_command,
-                "slash" if text.startswith("/") else "at" if text.startswith("@") else "text",
+                serialised,
             )
         if not event_id or not text:
             return None
