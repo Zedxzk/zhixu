@@ -442,8 +442,7 @@ def test_general_answer_and_summary_use_strict_json(
     )
     explicit_answer = json.dumps(
         {
-            "action": "answer",
-            "confidence": 0.96,
+            "capability": "model_knowledge",
             "answer": "Synthetic explicit answer.",
         }
     )
@@ -492,6 +491,12 @@ def test_explicit_question_uses_controlled_web_search_with_sources(
         [
             json.dumps(
                 {
+                    "capability": "web_search",
+                    "search_query": "current synthetic fact",
+                }
+            ),
+            json.dumps(
+                {
                     "answer": "Synthetic current answer.",
                     "sources": [
                         {
@@ -518,9 +523,87 @@ def test_explicit_question_uses_controlled_web_search_with_sources(
     assert reply.rich_text is True
     assert "Synthetic current answer." in reply.text
     assert "https://example.com/current" in reply.text
-    assert client.requests[0].web_search is True
-    assert client.requests[0].user_prompt == "current synthetic fact"
-    assert "备忘" not in client.requests[0].user_prompt
+    assert client.requests[0].web_search is False
+    assert "信息来源规划器" in client.requests[0].system_prompt
+    assert client.requests[1].web_search is True
+    assert client.requests[1].user_prompt == "current synthetic fact"
+    assert "备忘" not in client.requests[1].user_prompt
+
+
+def test_runtime_datetime_questions_use_trusted_clock_without_web_search(
+    assistant_parts: tuple[ZhixuServices, FrozenClock, Database, CommandContext],
+) -> None:
+    services, clock, database, context = assistant_parts
+    client = FakeLLM(
+        [
+            json.dumps({"capability": "runtime_datetime"}),
+            json.dumps({"capability": "runtime_datetime"}),
+            json.dumps({"capability": "runtime_datetime"}),
+        ]
+    )
+    engine = AssistantEngine(
+        services=services,
+        router=RuleIntentRouter(clock),
+        llm_gateway=gateway(client, database, clock),
+        llm_model="fake-model",
+        web_search_enabled=True,
+    )
+
+    replies = [
+        engine.handle(question, context)
+        for question in ("/问 今天几号", "/问 此刻是什么时间", "/问 当前是哪一天")
+    ]
+
+    assert all(reply.source == "runtime" for reply in replies)
+    assert all("2026年06月01日 16:00" in reply.text for reply in replies)
+    assert all("星期一（Asia/Shanghai）" in reply.text for reply in replies)
+    assert all(not request.web_search for request in client.requests)
+
+
+def test_question_planner_can_delegate_to_read_only_zhixu_data_capability(
+    assistant_parts: tuple[ZhixuServices, FrozenClock, Database, CommandContext],
+) -> None:
+    services, clock, database, context = assistant_parts
+    client = FakeLLM(
+        [
+            json.dumps({"capability": "zhixu_data"}),
+            json.dumps({"action": "list_tasks", "confidence": 0.99}),
+        ]
+    )
+    engine = engine_with(services, clock, database, client)
+    created = engine.handle("/任务 Synthetic planned task", context)
+
+    reply = engine.handle("/问 我目前有哪些待办事项", context)
+
+    assert created.code == "created"
+    assert "Synthetic planned task" in reply.text
+    assert client.calls == 2
+    assert all(not request.web_search for request in client.requests)
+
+
+def test_question_planner_cannot_turn_data_read_capability_into_a_write(
+    assistant_parts: tuple[ZhixuServices, FrozenClock, Database, CommandContext],
+) -> None:
+    services, clock, database, context = assistant_parts
+    client = FakeLLM(
+        [
+            json.dumps({"capability": "zhixu_data"}),
+            json.dumps(
+                {
+                    "action": "create_task",
+                    "confidence": 0.99,
+                    "title": "Synthetic forbidden planned write",
+                }
+            ),
+        ]
+    )
+    engine = engine_with(services, clock, database, client)
+
+    reply = engine.handle("/问 帮我写一个待办", context)
+
+    assert reply.code == "dangerous_action_blocked"
+    assert "只允许读取" in reply.text
+    assert engine.handle("/待办", context).text == "目前没有待办。"
 
 
 def test_explicit_web_search_blocks_likely_secret_before_llm_egress(

@@ -125,13 +125,18 @@ bound to the current internal user.
 /问 Why does the sky appear blue?
 ```
 
-An explicit `/问` may use the configured model provider's web-search tool. Only the literal
-question is sent: note bodies, private records, shared-group records, platform identifiers,
-and conversation history are never added to the search prompt. The reply lists up to five
-provider-returned public sources in a Markdown message; a keyboard is not required. Likely
-credentials, account numbers, email addresses,
+An explicit `/问` first asks the model for a strictly typed capability plan. The available
+capabilities are trusted runtime date/time, authorized read-only Zhixu data, stable model
+knowledge, and public web search.
+Runtime answers are formatted from the application clock in the configured timezone; the
+model cannot replace that value. Web search runs only when the plan selects it. Only the
+literal question is sent: note bodies, private records, shared-group records, platform
+identifiers, and conversation history are never added to the prompt. A web reply lists up to
+five provider-returned public sources in a Markdown message. Likely credentials, account
+numbers, email addresses,
 network addresses, and other token-shaped values are rejected before egress. Operators can
-disable this path with `ZHIXU_LLM_WEB_SEARCH=false`.
+disable the web capability with `ZHIXU_LLM_WEB_SEARCH=false` without disabling runtime or
+stable-knowledge answers.
 
 Before consulting a model, unrecognized text is searched against the notes eligible in the
 current scope. Public-group questions skip note search entirely. Unprefixed text does not
