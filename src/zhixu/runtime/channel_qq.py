@@ -185,10 +185,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         config_ref="systemd-credentials",
         now=datetime.now(UTC),
     )
+    app_id = read_text_credential(args.app_id_file)
     adapter = QQHttpAdapter(
         QQBotCredentials(
             args.account,
-            read_text_credential(args.app_id_file),
+            app_id,
             read_text_credential(args.client_secret_file),
         ),
         contacts,
@@ -203,7 +204,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     protocol = QQGatewayProtocol(
         channel_account=args.account,
-        mapper=QQEventMapper(args.account, contacts),
+        mapper=QQEventMapper(args.account, contacts, bot_identifier=app_id),
         session_store=QQGatewaySessionStore(database, cipher),
         on_event=on_event,
     )

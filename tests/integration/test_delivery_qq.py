@@ -1481,13 +1481,21 @@ def test_gateway_preserves_a_real_bot_mention_from_plain_group_delivery(
     database: Database,
     privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
 ) -> None:
-    contacts = register_account(database, privacy_primitives)
-    event = QQEventMapper("bot_test_a", contacts).map(
+    contacts = register_account(
+        database,
+        privacy_primitives,
+        account_id="logical_account_test",
+    )
+    event = QQEventMapper(
+        "logical_account_test",
+        contacts,
+        bot_identifier="actual_app_id_test",
+    ).map(
         "GROUP_MESSAGE_CREATE",
         {
             "id": "synthetic-plain-real-mention-event",
             "group_openid": "synthetic-group",
-            "content": "<@!bot_test_a> create a synthetic recurring event",
+            "content": "<@!actual_app_id_test> create a synthetic recurring event",
             "author": {"member_openid": "synthetic-member"},
         },
         received_at=NOW,

@@ -124,9 +124,18 @@ class QQGatewaySessionStore:
 
 
 class QQEventMapper:
-    def __init__(self, channel_account: str, contacts: QQContactStore) -> None:
+    def __init__(
+        self,
+        channel_account: str,
+        contacts: QQContactStore,
+        *,
+        bot_identifier: str | None = None,
+    ) -> None:
         self.channel_account = channel_account
         self.contacts = contacts
+        self.bot_identifier = (bot_identifier or channel_account).strip()
+        if not self.bot_identifier:
+            raise ValueError("QQ bot mention identifier is required")
 
     def map(
         self,
@@ -162,7 +171,7 @@ class QQEventMapper:
             or data.get("content")
             or ""
         ).strip()
-        bot_mention_pattern = rf"^\s*<@!?{re.escape(self.channel_account)}>\s*"
+        bot_mention_pattern = rf"^\s*<@!?{re.escape(self.bot_identifier)}>\s*"
         bot_mentioned_in_content = bool(re.match(bot_mention_pattern, text))
         text = re.sub(
             bot_mention_pattern,
