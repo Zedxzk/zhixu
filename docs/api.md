@@ -65,6 +65,7 @@ GET|POST             /admin/notes
 PUT|DELETE           /admin/notes/{id}
 GET|POST             /admin/reminders
 DELETE               /admin/reminders/{id}
+GET                  /admin/workspaces
 GET|POST|DELETE      /admin/acl
 GET                  /admin/channels
 GET|PATCH            /admin/channel-routes
@@ -73,6 +74,13 @@ GET                  /admin/audit
 GET                  /admin/llm-usage
 GET                  /admin/status
 ```
+
+`GET /admin/workspaces` returns the authenticated user's private workspace plus only the
+enabled internal-group workspaces where that user is an active member. Ordinary list
+responses include a redacted `workspace` object (`id`, `kind`, and display `label`) and
+combine those authorized workspaces. Raw platform group identifiers and internal owner IDs
+are never returned. The administration UI uses this metadata to filter between all data,
+private data, and each authorized internal group.
 
 `GET /admin/channel-routes` returns opaque observed routes, group mode, and internal member
 IDs. Group commands are disabled by default. Configure a synthetic observed group with a
