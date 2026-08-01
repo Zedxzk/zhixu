@@ -168,6 +168,11 @@ class QQEventMapper:
             text,
             count=1,
         ).strip()
+        if event_type in {"GROUP_AT_MESSAGE_CREATE", "AT_MESSAGE_CREATE"}:
+            # Some QQ clients expose the addressed bot as a display-name mention
+            # instead of the documented <@app-id> form. The event type already
+            # proves that this leading mention targets the bot.
+            text = re.sub(r"^\s*@\S+\s+", "", text, count=1).strip()
         if not event_id or not text:
             return None
         if event_type == "INTERACTION_CREATE":

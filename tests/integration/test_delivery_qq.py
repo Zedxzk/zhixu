@@ -508,6 +508,136 @@ def test_qq_http_classifies_permanent_and_retryable_provider_failures(
     assert result.provider_code == f"http_{status}"
 
 
+def test_qq_http_falls_back_to_plain_text_when_rich_success_has_no_message_id(
+    database: Database,
+    privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
+) -> None:
+    contacts = register_account(database, privacy_primitives)
+    target_ref = contacts.record(
+        channel_account="bot_test_a",
+        kind="group",
+        external_identifier="group-openid-rich-fallback-test",
+        now=NOW,
+    )
+    reply_ref = contacts.record_reply_context(
+        channel_account="bot_test_a",
+        target_ref=target_ref,
+        external_context="synthetic-source-message",
+        context_kind="msg_id",
+        now=NOW,
+    )
+
+    class MissingIdTransport(FakeTransport):
+        message_calls = 0
+
+        def request(
+            self,
+            url: str,
+            *,
+            method: str = "GET",
+            payload: dict[str, Any] | None = None,
+            headers: dict[str, str] | None = None,
+            timeout: float = 10,
+        ) -> tuple[int, dict[str, Any]]:
+            if url.endswith("getAppAccessToken"):
+                return super().request(
+                    url,
+                    method=method,
+                    payload=payload,
+                    headers=headers,
+                    timeout=timeout,
+                )
+            self.requests.append((url, method, payload, headers))
+            self.message_calls += 1
+            if self.message_calls == 1:
+                return 200, {"code": 1, "message": "synthetic rich rejection"}
+            return 200, {"id": "provider-fallback-message-test"}
+
+    transport = MissingIdTransport()
+    adapter = QQHttpAdapter(
+        QQBotCredentials("bot_test_a", "synthetic-app", "synthetic-secret"),
+        contacts,
+        transport=transport,
+        clock=lambda: NOW,
+    )
+    result = adapter.send(
+        OutboundMessage(
+            channel="qq",
+            channel_account="bot_test_a",
+            target_ref=target_ref,
+            kind=MessageKind.BUTTON,
+            text="# Synthetic preview",
+            buttons=(MessageButton("Accept", "/synthetic-accept"),),
+            reply_context_ref=reply_ref,
+        )
+    )
+
+    assert result.ok
+    assert result.provider_message_id == "provider-fallback-message-test"
+    rich_payload = transport.requests[-2][2]
+    fallback_payload = transport.requests[-1][2]
+    assert rich_payload is not None
+    assert rich_payload["msg_type"] == 2
+    assert rich_payload["msg_id"] == "synthetic-source-message"
+    assert rich_payload["msg_seq"] == 1
+    assert fallback_payload is not None
+    assert fallback_payload["msg_type"] == 0
+    assert fallback_payload["msg_id"] == "synthetic-source-message"
+    assert fallback_payload["msg_seq"] == 2
+
+
+def test_qq_http_does_not_report_text_without_a_provider_message_id_as_sent(
+    database: Database,
+    privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
+) -> None:
+    contacts = register_account(database, privacy_primitives)
+    target_ref = contacts.record(
+        channel_account="bot_test_a",
+        kind="private",
+        external_identifier="private-openid-missing-provider-id-test",
+        now=NOW,
+    )
+
+    class MissingIdTransport(FakeTransport):
+        def request(
+            self,
+            url: str,
+            *,
+            method: str = "GET",
+            payload: dict[str, Any] | None = None,
+            headers: dict[str, str] | None = None,
+            timeout: float = 10,
+        ) -> tuple[int, dict[str, Any]]:
+            if url.endswith("getAppAccessToken"):
+                return super().request(
+                    url,
+                    method=method,
+                    payload=payload,
+                    headers=headers,
+                    timeout=timeout,
+                )
+            self.requests.append((url, method, payload, headers))
+            return 200, {"code": 1, "message": "synthetic rejection"}
+
+    result = QQHttpAdapter(
+        QQBotCredentials("bot_test_a", "synthetic-app", "synthetic-secret"),
+        contacts,
+        transport=MissingIdTransport(),
+    ).send(
+        OutboundMessage(
+            channel="qq",
+            channel_account="bot_test_a",
+            target_ref=target_ref,
+            kind=MessageKind.TEXT,
+            text="Synthetic provider response validation",
+        )
+    )
+
+    assert not result.ok
+    assert not result.retryable
+    assert result.provider_code == "invalid_provider_response"
+
+
 def test_qq_http_supports_image_upload(
     database: Database,
     privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
@@ -1303,6 +1433,27 @@ def test_gateway_strips_only_the_bot_mention_from_group_natural_language(
     assert event is not None
     assert event.metadata["mentioned"] is True
     assert event.text == "every month create a synthetic recurring event"
+
+
+def test_gateway_strips_a_display_name_mention_before_a_group_command(
+    database: Database,
+    privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
+) -> None:
+    contacts = register_account(database, privacy_primitives)
+    event = QQEventMapper("bot_test_a", contacts).map(
+        "GROUP_AT_MESSAGE_CREATE",
+        {
+            "id": "synthetic-display-mention-event",
+            "group_openid": "synthetic-group",
+            "content": "@SyntheticBot /日历",
+            "author": {"member_openid": "synthetic-member"},
+        },
+        received_at=NOW,
+    )
+
+    assert event is not None
+    assert event.metadata["mentioned"] is True
+    assert event.text == "/日历"
 
 
 def test_gateway_maps_full_group_message_without_marking_it_mentioned(

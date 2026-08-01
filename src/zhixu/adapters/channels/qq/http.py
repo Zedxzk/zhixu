@@ -299,8 +299,9 @@ class QQHttpAdapter:
             payload=payload,
             headers=self._headers(token),
         )
+        provider_message_id = str(value.get("id") or "").strip()
         if (
-            status in {400, 403}
+            (status in {400, 403} or (200 <= status < 300 and not provider_message_id))
             and (message.kind is MessageKind.MARKDOWN or message.buttons)
             and (
                 not message.attachment_url
@@ -318,7 +319,8 @@ class QQHttpAdapter:
                 payload=fallback,
                 headers=self._headers(token),
             )
-        if 200 <= status < 300:
+            provider_message_id = str(value.get("id") or "").strip()
+        if 200 <= status < 300 and provider_message_id:
             if message.reply_context_ref:
                 self.contacts.remove_reply_context(
                     message.channel_account,
@@ -327,7 +329,13 @@ class QQHttpAdapter:
             return ChannelDeliveryResult(
                 True,
                 provider_code="ok",
-                provider_message_id=str(value.get("id") or ""),
+                provider_message_id=provider_message_id,
+            )
+        if 200 <= status < 300:
+            return ChannelDeliveryResult(
+                False,
+                retryable=False,
+                provider_code="invalid_provider_response",
             )
         retryable = status == 429 or status >= 500
         if message.reply_context_ref and not retryable:

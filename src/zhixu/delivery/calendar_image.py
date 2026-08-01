@@ -5,7 +5,7 @@ from __future__ import annotations
 import binascii
 import struct
 import zlib
-from calendar import Calendar
+from datetime import date, timedelta
 
 from zhixu.channels import CalendarPreview, DailyAgendaPreview
 
@@ -125,13 +125,21 @@ def _chunk(kind: bytes, data: bytes) -> bytes:
     return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", checksum)
 
 
+def _calendar_grid(year: int, month: int) -> tuple[date, ...]:
+    """Return a stable six-week grid, including adjacent-month dates."""
+
+    first_day = date(year, month, 1)
+    grid_start = first_day - timedelta(days=first_day.weekday())
+    return tuple(grid_start + timedelta(days=offset) for offset in range(42))
+
+
 def render_calendar_png(preview: CalendarPreview) -> bytes:
     """Render a fixed-grid PNG; only dates and aggregate counts enter the image."""
 
     width, height = 1120, 820
     background = (15, 23, 42)
     panel = (30, 41, 59)
-    empty = (23, 32, 48)
+    adjacent_panel = (23, 32, 48)
     border = (51, 65, 85)
     primary = (241, 245, 249)
     muted = (148, 163, 184)
@@ -152,23 +160,25 @@ def render_calendar_png(preview: CalendarPreview) -> bytes:
         canvas.text(x + (cell_width - label_width) // 2, 151, label, 3, muted)
 
     busy_counts = dict(preview.busy_day_counts)
-    weeks = Calendar(firstweekday=0).monthdayscalendar(preview.year, preview.month)
-    while len(weeks) < 6:
-        weeks.append([0] * 7)
-    for row_index, week in enumerate(weeks):
-        for column_index, day in enumerate(week):
+    grid = _calendar_grid(preview.year, preview.month)
+    for row_index in range(6):
+        for column_index in range(7):
+            cell_date = grid[row_index * 7 + column_index]
+            day = cell_date.day
+            in_month = (
+                cell_date.year == preview.year and cell_date.month == preview.month
+            )
             x = grid_x + column_index * (cell_width + gap)
             y = grid_y + row_index * (cell_height + gap)
-            fill = empty if day == 0 else panel
-            if day != 0 and day == preview.today_day:
+            fill = panel if in_month else adjacent_panel
+            if in_month and day == preview.today_day:
                 fill = today
             canvas.rect(x, y, cell_width, cell_height, border)
             canvas.rect(x + 2, y + 2, cell_width - 4, cell_height - 4, fill)
-            if day == 0:
-                continue
             day_value = str(day)
-            canvas.text(x + 15, y + 15, day_value, 5, primary)
-            count = busy_counts.get(day)
+            day_color = primary if in_month else muted
+            canvas.text(x + 15, y + 15, day_value, 5, day_color)
+            count = busy_counts.get(day) if in_month else None
             if count is not None:
                 canvas.circle(x + cell_width - 25, y + cell_height - 24, 14, busy)
                 count_value = str(min(count, 99))

@@ -1619,7 +1619,7 @@ class AssistantEngine:
         body = [
             f"# {year} 年 {month} 月",
             "",
-            "> 月历已生成图片；蓝色为今天，圆点表示当天有安排。",
+            "> 月历已生成图片；蓝色为今天，圆点表示当天有安排，灰色日期来自相邻月份。",
         ]
         if entries:
             body.extend(["", "## 本月安排"])
