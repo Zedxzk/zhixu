@@ -184,7 +184,30 @@ class QQEventMapper:
             or data.get("content")
             or ""
         ).strip()
-        bot_mention_pattern = rf"^\s*<@!?{re.escape(self.bot_identifier)}>\s*"
+        # QQ marks the addressed bot in a "mentions" entry carrying is_you, and
+        # writes that mention into the content keyed by the bot's per-group
+        # openid rather than its application id. Both are needed: the entry is
+        # what proves the message is addressed, the identifiers are what strip
+        # the marker back out of the text.
+        mentions = data.get("mentions")
+        addressed_by_mentions = False
+        mention_identifiers = {self.bot_identifier}
+        if isinstance(mentions, list):
+            for mention in mentions:
+                if not isinstance(mention, dict) or not mention.get("is_you"):
+                    continue
+                addressed_by_mentions = True
+                mention_identifiers.update(
+                    str(mention.get(key) or "")
+                    for key in ("id", "member_openid", "user_openid")
+                )
+        bot_mention_pattern = (
+            r"^\s*<@!?(?:"
+            + "|".join(
+                re.escape(value) for value in sorted(mention_identifiers) if value
+            )
+            + r")>\s*"
+        )
         bot_mentioned_in_content = bool(re.match(bot_mention_pattern, text))
         text = re.sub(
             bot_mention_pattern,
@@ -193,12 +216,10 @@ class QQEventMapper:
             count=1,
         ).strip()
         group_event = event_type in {"GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE"}
-        # A group mention does not always arrive as GROUP_AT_MESSAGE_CREATE: once
-        # the bot may receive every group message, QQ reclassifies mentions as
-        # plain GROUP_MESSAGE_CREATE and leaves the bot's display name in the
-        # content as ordinary text, with no <@app-id> marker in the payload.
-        # Matching the configured display name is what distinguishes that from a
-        # member mentioning another member, which must stay unaddressed.
+        # Typing the bot's name by hand produces no mentions entry and no
+        # marker, only the display name as ordinary text. Matching the
+        # configured name is what separates that from a member mentioning
+        # another member, which must stay unaddressed.
         addressed_by_display_name = bool(
             group_event
             and self._display_mention is not None
@@ -216,21 +237,16 @@ class QQEventMapper:
         ):
             text = re.sub(r"^\s*@\S+\s+", "", text, count=1).strip()
         if group_event:
-            # TEMPORARY DIAGNOSTIC: dumps the raw group payload, message body
-            # included, to settle which mention form QQ actually delivers.
-            # Remove once the mention handling is confirmed.
-            try:
-                serialised = json.dumps(data, ensure_ascii=False)
-            except (TypeError, ValueError):
-                serialised = repr(data)
+            # Which mention form a group message arrives in is not observable
+            # from the receipt, and getting it wrong makes the bot look mute.
+            # Only the form is recorded; the message body never is.
             logger.info(
-                "qq_group_event_raw type=%s app_mention=%s display_mention=%s "
-                "command_mention=%s payload=%s",
+                "qq_group_event type=%s mentions=%s marker=%s display=%s command=%s",
                 event_type,
+                addressed_by_mentions,
                 bot_mentioned_in_content,
                 addressed_by_display_name,
                 display_mentioned_command,
-                serialised,
             )
         if not event_id or not text:
             return None
@@ -318,6 +334,7 @@ class QQEventMapper:
             )
             mentioned = (
                 event_type == "GROUP_AT_MESSAGE_CREATE"
+                or addressed_by_mentions
                 or bot_mentioned_in_content
                 or addressed_by_display_name
                 or display_mentioned_command
