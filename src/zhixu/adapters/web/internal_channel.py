@@ -852,7 +852,11 @@ class InternalChannelAPI:
                     "kind": rendered.kind.value,
                     "text": rendered.text,
                     "buttons": [
-                        {"label": button.label, "action": button.action}
+                        {
+                            "label": button.label,
+                            "action": button.action,
+                            "kind": button.kind.value,
+                        }
                         for button in rendered.buttons
                     ],
                     "attachment_url": rendered.attachment_url,

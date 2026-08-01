@@ -26,6 +26,7 @@ from zhixu.adapters.channels.qq.gateway import (
 )
 from zhixu.adapters.storage.sqlite import Database, UserRepository
 from zhixu.channels import (
+    ButtonActionKind,
     CalendarPreview,
     ChannelCapabilities,
     ChannelDeliveryResult,
@@ -64,7 +65,7 @@ NOW = datetime(2026, 6, 1, 8, tzinfo=UTC)
 @pytest.fixture
 def database(tmp_path: Path) -> Database:
     value = Database(tmp_path / "zhixu.sqlite3")
-    assert value.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+    assert value.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     return value
 
 
@@ -885,6 +886,49 @@ def test_qq_http_sends_official_callback_keyboard_and_acknowledges_interaction(
     assert acknowledgement[0].endswith("/interactions/synthetic-interaction")
     assert acknowledgement[1] == "PUT"
     assert acknowledgement[2] == {"code": 0}
+
+
+def test_qq_http_renders_generic_open_url_button(
+    database: Database,
+    privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
+) -> None:
+    contacts = register_account(database, privacy_primitives)
+    target_ref = contacts.record(
+        channel_account="bot_test_a",
+        kind="private",
+        external_identifier="private-openid-link-button-test",
+        now=NOW,
+    )
+    transport = FakeTransport()
+    adapter = QQHttpAdapter(
+        QQBotCredentials("bot_test_a", "synthetic-app", "synthetic-secret"),
+        contacts,
+        transport=transport,
+    )
+    link = "https://example.invalid/synthetic-meeting"
+
+    assert adapter.send(
+        OutboundMessage(
+            channel="qq",
+            channel_account="bot_test_a",
+            target_ref=target_ref,
+            kind=MessageKind.BUTTON,
+            text="Synthetic linked reminder",
+            buttons=(
+                MessageButton("Join", link, ButtonActionKind.OPEN_URL),
+            ),
+        )
+    ).ok
+
+    payload = transport.requests[-1][2]
+    assert payload is not None
+    action = payload["keyboard"]["content"]["rows"][0]["buttons"][0]["action"]
+    assert action == {
+        "type": 0,
+        "data": link,
+        "permission": {"type": 2},
+        "unsupport_tips": "请复制消息中的链接",
+    }
 
 
 def test_qq_http_sends_markdown_without_a_keyboard(

@@ -5,12 +5,13 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime, time, timedelta
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError as PydanticValidationError
 
-from zhixu.domain import DataClassification
-from zhixu.domain.errors import InvalidModelOutput, LLMUnavailable
+from zhixu.domain import ActionLink, DataClassification
+from zhixu.domain.errors import InvalidModelOutput, LLMUnavailable, ValidationError
 from zhixu.ports import Clock, LLMCallReason, LLMRequest
 
 from .intents import IntentAction, ModelIntentProposal, ParsedIntent
@@ -31,6 +32,43 @@ _MUTATING_MODEL_ACTIONS = {
     IntentAction.DELETE_RESOURCE,
 }
 
+_ACTION_URL_PATTERN = re.compile(r"https://[^\s]+", re.IGNORECASE)
+_ACTION_URL_TRAILING = ".,;!?，。；！？、）)]}>'\""
+_BRIEFING_INCLUSION_PATTERN = re.compile(
+    r"(?:并入|纳入|加入|放入|显示在|出现在).{0,8}(?:每日)?(?:早报|简报)(?:中|里)?"
+)
+_EXPLICIT_NOTIFICATION_PATTERN = re.compile(r"提醒|通知|推送|叫我|告诉我")
+
+
+def _redact_action_links(text: str) -> tuple[str, tuple[str, ...]]:
+    """Replace exact user URLs before sending scheduling text to an external model."""
+
+    urls: list[str] = []
+
+    def replace(match: re.Match[str]) -> str:
+        candidate = match.group(0)
+        url = candidate.rstrip(_ACTION_URL_TRAILING)
+        trailing = candidate[len(url) :]
+        if not url or len(urls) >= 8:
+            return candidate
+        try:
+            ActionLink("打开链接", url)
+        except ValidationError:
+            return f"<INVALID_LINK>{trailing}"
+        urls.append(url)
+        return f"<LINK_{len(urls)}>{trailing}"
+
+    return _ACTION_URL_PATTERN.sub(replace, text), tuple(urls)
+
+
+def _fallback_link_label(url: str) -> str:
+    hostname = (urlsplit(url).hostname or "").lower().rstrip(".")
+    if hostname == "meeting.tencent.com" or hostname.endswith(".meeting.tencent.com"):
+        return "加入会议"
+    if hostname == "docs.qq.com" or hostname.endswith(".docs.qq.com"):
+        return "打开文档"
+    return "打开链接"
+
 
 class RuleIntentRouter:
     def __init__(self, clock: Clock, *, timezone: str = "Asia/Shanghai") -> None:
@@ -43,16 +81,16 @@ class RuleIntentRouter:
         if value.lower() in {"/帮助", "/help", "帮助", "help", "/菜单", "菜单"}:
             return ParsedIntent(IntentAction.HELP)
         plan_confirmation = re.fullmatch(
-            r"/(确认|拒绝)计划\s+(plan_[A-Za-z0-9_-]{8,80})",
+            r"/(确认|拒绝|取消)计划\s+(plan_[A-Za-z0-9_-]{8,80})",
             value,
         )
         if plan_confirmation:
             return ParsedIntent(
-                (
-                    IntentAction.CONFIRM_PLAN
-                    if plan_confirmation.group(1) == "确认"
-                    else IntentAction.REJECT_PLAN
-                ),
+                {
+                    "确认": IntentAction.CONFIRM_PLAN,
+                    "拒绝": IntentAction.REJECT_PLAN,
+                    "取消": IntentAction.CANCEL_PLAN,
+                }[plan_confirmation.group(1)],
                 {"plan_id": plan_confirmation.group(2)},
             )
         if value in {"/今天", "/日程"} or compact in {
@@ -61,6 +99,12 @@ class RuleIntentRouter:
             "今日安排",
         }:
             return ParsedIntent(IntentAction.LIST_AGENDA)
+        if value in {"/全部日程", "/所有日程", "/未来日程"} or compact in {
+            "列出所有日程",
+            "所有未来日程",
+            "查看全部日程",
+        }:
+            return ParsedIntent(IntentAction.LIST_ALL_AGENDA)
         if value == "/纪念日":
             return ParsedIntent(IntentAction.LIST_ANNIVERSARIES)
         anniversary = re.fullmatch(r"/纪念日\s+(.+?)\s+(\d{4}-\d{1,2}-\d{1,2})", value)
@@ -198,6 +242,26 @@ class RuleIntentRouter:
                 IntentAction.CANCEL_REMINDER,
                 {"reminder_id": cancelled_reminder.group(1)},
             )
+        requested_cancel_reminder = re.fullmatch(
+            r"/请求取消提醒\s+([A-Za-z0-9_-]{1,160})",
+            value,
+        )
+        if requested_cancel_reminder:
+            return ParsedIntent(
+                IntentAction.CANCEL_REMINDER,
+                {"reminder_id": requested_cancel_reminder.group(1)},
+                requires_confirmation=True,
+            )
+        cancelled_agenda = re.fullmatch(
+            r"/取消日程\s+([A-Za-z0-9_-]{1,160})",
+            value,
+        )
+        if cancelled_agenda:
+            return ParsedIntent(
+                IntentAction.CANCEL_AGENDA,
+                {"agenda_id": cancelled_agenda.group(1)},
+                requires_confirmation=True,
+            )
         snoozed_reminder = re.fullmatch(
             r"/提醒稍后\s+([A-Za-z0-9_-]{1,160})(?:\s+(\d{1,4})分钟)?",
             value,
@@ -314,6 +378,13 @@ class ModelIntentClassifier:
         revision_context: str = "",
         required_action: IntentAction | None = None,
     ) -> ParsedIntent:
+        redacted_text, source_urls = _redact_action_links(text)
+        briefing_inclusion = bool(_BRIEFING_INCLUSION_PATTERN.search(redacted_text))
+        notification_requested = bool(
+            _EXPLICIT_NOTIFICATION_PATTERN.search(
+                _BRIEFING_INCLUSION_PATTERN.sub("", redacted_text)
+            )
+        )
         temporal_context = (
             f" Reference time: {reference_time.isoformat()}."
             if reference_time is not None
@@ -358,13 +429,20 @@ class ModelIntentClassifier:
                 "day_offset relative to the event date (0 means the same day, -1 means "
                 "one day before), and the exact requested notification text. Do not put "
                 "the notification wording into the calendar title. "
+                "URLs in the request are replaced by <LINK_N> placeholders and are never "
+                "available to you. For every link that belongs to the created resource, "
+                "return its source_index N and a short action label in links; never invent, "
+                "repeat, or reconstruct a URL. A phrase such as include/show/add the event "
+                "in the daily briefing is not a notification rule: set "
+                "include_in_daily_briefing=true and leave notifications empty unless the "
+                "user separately asks for a reminder, notification, or push. "
                 "For an anniversary use "
                 "action=create_anniversary with title and anchor_date. For a daily morning "
                 "briefing use action=create_daily_briefing and briefing_time; use 08:00 only "
                 "when the user says morning without a precise time. Return only JSON."
                 f"{temporal_context}{revision_instruction}"
             ),
-            user_prompt=text,
+            user_prompt=redacted_text,
             response_schema=ModelIntentProposal.model_json_schema(),
         )
         response = self.gateway.generate(
@@ -379,6 +457,18 @@ class ModelIntentClassifier:
             raise InvalidModelOutput("model intent did not match the schema") from exc
         if proposal.confidence < self.confidence_threshold:
             raise LLMUnavailable("model intent confidence is too low")
+        link_labels = {
+            link.source_index: link.label.strip()
+            for link in proposal.links
+            if link.source_index <= len(source_urls) and link.label.strip()
+        }
+        action_links = [
+            ActionLink(link_labels.get(index, _fallback_link_label(url)), url)
+            for index, url in enumerate(source_urls, start=1)
+        ]
+        notifications = proposal.notifications
+        if briefing_inclusion and not notification_requested:
+            notifications = []
         arguments = {
             key: value
             for key, value in {
@@ -392,7 +482,15 @@ class ModelIntentClassifier:
                 "recurrence_rule": proposal.recurrence_rule,
                 "anchor_date": proposal.anchor_date,
                 "briefing_time": proposal.briefing_time,
-                "notifications": proposal.notifications or None,
+                "notifications": (
+                    notifications
+                    if briefing_inclusion and not notification_requested
+                    else notifications or None
+                ),
+                "links": action_links or None,
+                "include_in_daily_briefing": (
+                    proposal.include_in_daily_briefing or briefing_inclusion
+                ),
                 "task_id": proposal.task_id,
                 "reminder_id": proposal.reminder_id,
                 "resource_id": proposal.resource_id,

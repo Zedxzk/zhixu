@@ -18,6 +18,11 @@ class AgendaBetween:
 
 
 @dataclass(frozen=True, slots=True)
+class ListAgendaItems:
+    pass
+
+
+@dataclass(frozen=True, slots=True)
 class ListTasks:
     include_archived: bool = False
 
@@ -45,6 +50,7 @@ class ListDailyBriefings:
 
 Query = (
     AgendaBetween
+    | ListAgendaItems
     | ListTasks
     | SearchNotes
     | ListReminders

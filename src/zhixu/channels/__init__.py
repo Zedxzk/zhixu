@@ -1,6 +1,7 @@
 """Messaging-channel contracts."""
 
 from .contracts import (
+    ButtonActionKind,
     CalendarPreview,
     ChannelCapabilities,
     ChannelDeliveryResult,
@@ -13,6 +14,7 @@ from .contracts import (
 )
 
 __all__ = [
+    "ButtonActionKind",
     "CalendarPreview",
     "ChannelCapabilities",
     "ChannelDeliveryResult",

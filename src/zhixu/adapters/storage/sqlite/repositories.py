@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 from zhixu.domain import (
     Action,
+    ActionLink,
     AgendaItem,
     AgendaNotificationRule,
     AgendaOccurrence,
@@ -81,6 +82,25 @@ def _reminder_notification_text(reminder: Reminder) -> str:
         "# ⏰ 日程提醒\n\n"
         f"**事项：** {title}\n\n"
         f"**时间：** {local_fire_at:%Y-%m-%d %H:%M}（北京时间）"
+    )
+
+
+def _dump_action_links(links: tuple[ActionLink, ...]) -> str:
+    return json.dumps(
+        [{"label": link.label, "url": link.url} for link in links],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _load_action_links(value: object) -> tuple[ActionLink, ...]:
+    decoded = json.loads(str(value or "[]"))
+    if not isinstance(decoded, list) or len(decoded) > 8:
+        raise ValidationError("stored action links are invalid")
+    return tuple(
+        ActionLink(str(item.get("label") or ""), str(item.get("url") or ""))
+        for item in decoded
+        if isinstance(item, dict)
     )
 
 
@@ -495,6 +515,7 @@ class AgendaRepository:
             ),
             title=str(row["title"]),
             description=str(row["description"]),
+            action_links=_load_action_links(row["action_links_json"]),
             start_at=start_at,
             end_at=end_at,
             timezone=timezone,
@@ -548,9 +569,10 @@ class AgendaRepository:
                 connection.execute(
                     """
                     INSERT INTO agenda_items(
-                        id,owner_user_id,creator_user_id,title,description,start_at,end_at,timezone,
+                        id,owner_user_id,creator_user_id,title,description,action_links_json,
+                        start_at,end_at,timezone,
                         all_day,classification,version,created_at,updated_at
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         stored.id,
@@ -558,6 +580,7 @@ class AgendaRepository:
                         stored.creator_user_id,
                         stored.title,
                         stored.description,
+                        _dump_action_links(stored.action_links),
                         _dump_datetime(stored.start_at),
                         _dump_datetime(stored.end_at),
                         stored.timezone,
@@ -616,13 +639,14 @@ class AgendaRepository:
             cursor = connection.execute(
                 """
                 UPDATE agenda_items SET
-                    title=?,description=?,start_at=?,end_at=?,timezone=?,all_day=?,
+                    title=?,description=?,action_links_json=?,start_at=?,end_at=?,timezone=?,all_day=?,
                     classification=?,version=?,updated_at=?
                 WHERE id=? AND owner_user_id=? AND version=?
                 """,
                 (
                     stored.title,
                     stored.description,
+                    _dump_action_links(stored.action_links),
                     _dump_datetime(stored.start_at),
                     _dump_datetime(stored.end_at),
                     stored.timezone,
@@ -798,6 +822,7 @@ class AgendaNotificationRepository:
             day_offset=int(row["day_offset"]),
             text=str(row["notification_text"]),
             timezone=str(row["timezone"]),
+            action_links=_load_action_links(row["action_links_json"]),
             classification=DataClassification(int(row["classification"])),
             enabled=bool(row["enabled"]),
             created_at=created_at,
@@ -831,9 +856,9 @@ class AgendaNotificationRepository:
                     """
                     INSERT INTO agenda_notification_rules(
                         id,agenda_item_id,owner_user_id,creator_user_id,target_ref,
-                        time_of_day,day_offset,notification_text,timezone,
+                        time_of_day,day_offset,notification_text,timezone,action_links_json,
                         classification,enabled,created_at
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         stored.id,
@@ -845,6 +870,7 @@ class AgendaNotificationRepository:
                         stored.day_offset,
                         stored.text,
                         stored.timezone,
+                        _dump_action_links(stored.action_links),
                         int(stored.classification),
                         int(stored.enabled),
                         _dump_datetime(stored.created_at),
@@ -1324,6 +1350,7 @@ class ReminderRepository:
             title=str(row["title"]),
             fire_at=fire_at,
             target_ref=str(row["target_ref"]),
+            action_links=_load_action_links(row["action_links_json"]),
             status=ReminderStatus(str(row["status"])),
             missed_policy=MissedReminderPolicy(str(row["missed_policy"])),
             classification=DataClassification(int(row["classification"])),
@@ -1359,8 +1386,9 @@ class ReminderRepository:
                     """
                     INSERT INTO reminders(
                         id,owner_user_id,creator_user_id,title,fire_at,target_ref,status,missed_policy,
-                        classification,related_kind,related_id,version,created_at,updated_at
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        classification,related_kind,related_id,action_links_json,
+                        version,created_at,updated_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         stored.id,
@@ -1374,6 +1402,7 @@ class ReminderRepository:
                         int(stored.classification),
                         stored.related_kind,
                         stored.related_id,
+                        _dump_action_links(stored.action_links),
                         stored.version,
                         _dump_datetime(stored.created_at),
                         _dump_datetime(stored.updated_at),
@@ -1584,10 +1613,19 @@ class ReminderRepository:
                         "reminder_id": reminder.id,
                         "buttons": [
                             {
+                                "label": link.label,
+                                "action": link.url,
+                                "kind": "open_url",
+                            }
+                            for link in reminder.action_links
+                        ]
+                        + [
+                            {
                                 "label": f"{minutes}分钟",
                                 "action": (
                                     f"/提醒稍后 {reminder.id} {minutes}分钟"
                                 ),
+                                "kind": "command",
                             }
                             for minutes in (5, 15, 30, 60)
                         ]
@@ -1595,10 +1633,12 @@ class ReminderRepository:
                             {
                                 "label": "完成",
                                 "action": f"/提醒完成 {reminder.id}",
+                                "kind": "command",
                             },
                             {
                                 "label": "取消",
                                 "action": f"/取消提醒 {reminder.id}",
+                                "kind": "command",
                             },
                         ],
                         "attachment_url": None,

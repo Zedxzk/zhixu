@@ -24,6 +24,7 @@ from zhixu.adapters.channels.webhook import (
 from zhixu.adapters.channels.wecom import WeComCredentials, WeComOutboundAdapter
 from zhixu.adapters.storage.sqlite import Database
 from zhixu.channels import (
+    ButtonActionKind,
     CalendarPreview,
     ChannelDeliveryResult,
     DailyAgendaPreview,
@@ -314,7 +315,11 @@ def _message(value: dict[str, object]) -> OutboundMessage:
     buttons_value = value.get("buttons")
     buttons = (
         tuple(
-            MessageButton(str(item["label"]), str(item["action"]))
+            MessageButton(
+                str(item["label"]),
+                str(item["action"]),
+                ButtonActionKind(str(item.get("kind") or "command")),
+            )
             for item in buttons_value
             if isinstance(item, dict)
         )

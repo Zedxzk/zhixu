@@ -138,6 +138,7 @@ class AgendaNotificationScheduler:
                 title=rule.text,
                 fire_at=fire_at,
                 target_ref=rule.target_ref,
+                action_links=rule.action_links,
                 classification=rule.classification,
                 related_kind="agenda",
                 related_id=rule.agenda_item_id,

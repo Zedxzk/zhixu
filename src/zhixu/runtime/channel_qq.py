@@ -24,6 +24,7 @@ from zhixu.adapters.channels.qq import (
 from zhixu.adapters.channels.qq.gateway import QQEventMapper, QQGatewaySessionStore
 from zhixu.adapters.storage.sqlite import Database
 from zhixu.channels import (
+    ButtonActionKind,
     CalendarPreview,
     ChannelDeliveryResult,
     DailyAgendaPreview,
@@ -249,7 +250,11 @@ def _message(value: dict[str, object]) -> OutboundMessage:
     buttons_value = value.get("buttons")
     buttons = (
         tuple(
-            MessageButton(str(item["label"]), str(item["action"]))
+            MessageButton(
+                str(item["label"]),
+                str(item["action"]),
+                ButtonActionKind(str(item.get("kind") or "command")),
+            )
             for item in buttons_value
             if isinstance(item, dict)
         )

@@ -29,7 +29,8 @@ from zhixu.application import (
     RuleIntentRouter,
     ZhixuServices,
 )
-from zhixu.application.commands import CreateAgenda, CreateNote
+from zhixu.application.commands import CreateAgenda, CreateNote, CreateReminder
+from zhixu.channels import ButtonActionKind
 from zhixu.domain import (
     Action,
     AuthenticationStrength,
@@ -92,7 +93,7 @@ def assistant_parts(
     tmp_path: Path,
 ) -> tuple[ZhixuServices, FrozenClock, Database, CommandContext]:
     database = Database(tmp_path / "zhixu.sqlite3")
-    assert database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+    assert database.migrate() == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     clock = FrozenClock(NOW)
     users = UserRepository(database)
     policy = PolicyEngine()
@@ -434,6 +435,209 @@ def test_natural_compound_schedule_is_previewed_revised_and_materialized(
     payload = json.loads(str(delivery["payload_json"]))
     assert payload["buttons"][3]["label"] == "60分钟"
     assert payload["buttons"][4]["label"] == "完成"
+
+
+def test_user_link_is_redacted_from_llm_and_reaches_reminder_card(
+    assistant_parts: tuple[ZhixuServices, FrozenClock, Database, CommandContext],
+) -> None:
+    services, clock, database, context = assistant_parts
+    response = json.dumps(
+        {
+            "action": "create_reminder",
+            "confidence": 0.99,
+            "title": "Synthetic video meeting",
+            "fire_at": "2026-06-01T16:00:30+08:00",
+            "links": [{"source_index": 1, "label": "Join meeting"}],
+        }
+    )
+    client = FakeLLM([response])
+    engine = engine_with(services, clock, database, client)
+    target = "qqc_synthetic_link_target"
+    original_url = "https://example.invalid/meeting?token=synthetic-value"
+
+    preview = engine.handle(
+        f"Remind me to join the synthetic meeting in 30 seconds: {original_url}",
+        context,
+        target_ref=target,
+    )
+
+    assert preview.code == "plan_preview"
+    assert original_url not in client.requests[0].user_prompt
+    assert "synthetic-value" not in client.requests[0].user_prompt
+    assert "<LINK_1>" in client.requests[0].user_prompt
+    assert preview.buttons[0].kind is ButtonActionKind.OPEN_URL
+    assert preview.buttons[0].action == original_url
+    accepted = engine.handle(
+        next(button.action for button in preview.buttons if button.label == "接受"),
+        context,
+        target_ref=target,
+    )
+    assert accepted.code == "created"
+    reminder = services.reminders.list_for_owner("user_test")[0]
+    assert reminder.action_links[0].url == original_url
+    ChannelRouteStore(database).observe(
+        channel="qq",
+        channel_account="bot_synthetic",
+        opaque_ref=target,
+        kind="private",
+        now=clock.now(),
+    )
+    clock.set(reminder.fire_at)
+    assert ReminderScheduler(services.reminders, clock).tick() == 1
+    with database.connect() as connection:
+        payload = json.loads(
+            str(
+                connection.execute(
+                    "SELECT payload_json FROM outbox_deliveries"
+                ).fetchone()["payload_json"]
+            )
+        )
+    assert payload["buttons"][0] == {
+        "label": "Join meeting",
+        "action": original_url,
+        "kind": "open_url",
+    }
+
+
+def test_daily_briefing_inclusion_is_not_misparsed_as_a_notification(
+    assistant_parts: tuple[ZhixuServices, FrozenClock, Database, CommandContext],
+) -> None:
+    services, clock, database, context = assistant_parts
+    incorrect_model_response = json.dumps(
+        {
+            "action": "create_agenda",
+            "confidence": 0.99,
+            "title": "Synthetic Thursday event",
+            "start_at": "2026-06-04T00:00:00+08:00",
+            "end_at": "2026-06-05T00:00:00+08:00",
+            "recurrence_rule": "FREQ=WEEKLY;BYDAY=TH",
+            "notifications": [
+                {
+                    "time_of_day": "08:00:00",
+                    "day_offset": 0,
+                    "text": "每日早报",
+                }
+            ],
+        }
+    )
+    engine = engine_with(
+        services,
+        clock,
+        database,
+        FakeLLM([incorrect_model_response]),
+    )
+    target = "qqc_synthetic_briefing_target"
+
+    preview = engine.handle(
+        "创建循环事件，每周四的合成活动并入每日早报中",
+        context,
+        target_ref=target,
+    )
+
+    assert preview.code == "plan_preview"
+    assert "每日早报：** 自动纳入" in preview.text
+    assert "通知 1" not in preview.text
+    assert [button.label for button in preview.buttons] == [
+        "接受",
+        "修改",
+        "取消创建",
+    ]
+    accepted = engine.handle(preview.buttons[0].action, context, target_ref=target)
+    assert accepted.code == "created"
+    assert services.agenda_notifications.list_enabled() == []
+
+
+def test_natural_cancel_terminates_current_plan_without_model_call(
+    assistant_parts: tuple[ZhixuServices, FrozenClock, Database, CommandContext],
+) -> None:
+    services, clock, database, context = assistant_parts
+    response = json.dumps(
+        {
+            "action": "create_reminder",
+            "confidence": 0.99,
+            "title": "Synthetic cancellation target",
+            "fire_at": "2026-06-01T16:01:00+08:00",
+        }
+    )
+    client = FakeLLM([response])
+    engine = engine_with(services, clock, database, client)
+    target = "qqc_synthetic_cancel_target"
+    assert engine.handle("Create a synthetic reminder", context, target_ref=target).code == (
+        "plan_preview"
+    )
+
+    cancelled = engine.handle("中断链接，取消创建", context, target_ref=target)
+
+    assert cancelled.code == "plan_cancelled"
+    assert "退出连续修改" in cancelled.text
+    assert client.calls == 1
+    assert (
+        PendingPlanStore(database).current(
+            actor_user_id="user_test",
+            target_ref=target,
+            now=clock.now(),
+        )
+        is None
+    )
+
+
+def test_all_future_schedule_list_provides_confirmed_cancellation_interfaces(
+    assistant_parts: tuple[ZhixuServices, FrozenClock, Database, CommandContext],
+) -> None:
+    services, clock, database, context = assistant_parts
+    target = "qqc_synthetic_schedule_management"
+    agenda = services.create_agenda(
+        CreateAgenda(
+            title="Synthetic recurring schedule",
+            start_at=NOW + timedelta(days=1),
+            end_at=NOW + timedelta(days=1, hours=1),
+            timezone="UTC",
+            recurrence_rule="FREQ=WEEKLY;BYDAY=TU",
+        ),
+        context,
+    )
+    reminder = services.create_reminder(
+        CreateReminder(
+            title="Synthetic future reminder",
+            fire_at=NOW + timedelta(hours=1),
+            target_ref=target,
+        ),
+        context,
+    )
+    engine = engine_with(services, clock, database, FakeLLM([]))
+
+    listing = engine.handle("/全部日程", context, target_ref=target)
+
+    assert listing.code == "ok"
+    assert agenda.id in listing.text
+    assert reminder.id in listing.text
+    agenda_button = next(
+        button for button in listing.buttons if button.action == f"/取消日程 {agenda.id}"
+    )
+    reminder_button = next(
+        button
+        for button in listing.buttons
+        if button.action == f"/请求取消提醒 {reminder.id}"
+    )
+    agenda_preview = engine.handle(agenda_button.action, context, target_ref=target)
+    assert agenda_preview.code == "plan_preview"
+    assert "取消该日程的所有未来安排" in agenda_preview.text
+    assert engine.handle(
+        agenda_preview.buttons[0].action,
+        context,
+        target_ref=target,
+    ).code == "updated"
+    assert services.agenda.get(agenda.id) is None
+
+    reminder_preview = engine.handle(reminder_button.action, context, target_ref=target)
+    assert reminder_preview.code == "plan_preview"
+    assert "取消未来提醒" in reminder_preview.text
+    assert engine.handle(
+        reminder_preview.buttons[0].action,
+        context,
+        target_ref=target,
+    ).code == "updated"
+    assert services.reminders.get(reminder.id).status.value == "cancelled"
 
 
 def test_revision_cannot_downgrade_recurring_agenda_to_one_off_reminder(

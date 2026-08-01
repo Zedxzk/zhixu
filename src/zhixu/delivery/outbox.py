@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 
 from zhixu.adapters.storage.sqlite.database import Database
 from zhixu.channels import (
+    ButtonActionKind,
     CalendarPreview,
     ChannelDeliveryResult,
     DailyAgendaPreview,
@@ -37,7 +38,11 @@ def _message_json(message: OutboundMessage) -> str:
         {
             "text": message.text,
             "buttons": [
-                {"label": button.label, "action": button.action}
+                {
+                    "label": button.label,
+                    "action": button.action,
+                    "kind": button.kind.value,
+                }
                 for button in message.buttons
             ],
             "attachment_url": message.attachment_url,
@@ -82,7 +87,11 @@ def _message_from_row(row: object) -> OutboundMessage:
         kind=MessageKind(str(row["message_kind"])),  # type: ignore[index]
         text=str(payload.get("text") or payload.get("title") or ""),
         buttons=tuple(
-            MessageButton(str(item["label"]), str(item["action"]))
+            MessageButton(
+                str(item["label"]),
+                str(item["action"]),
+                ButtonActionKind(str(item.get("kind") or "command")),
+            )
             for item in payload.get("buttons", [])
         ),
         attachment_url=payload.get("attachment_url"),

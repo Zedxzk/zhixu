@@ -15,12 +15,14 @@ from zhixu.channels import CalendarPreview, MessageButton
 class IntentAction(StrEnum):
     HELP = "help"
     LIST_AGENDA = "list_agenda"
+    LIST_ALL_AGENDA = "list_all_agenda"
     VIEW_CALENDAR = "view_calendar"
     CREATE_AGENDA = "create_agenda"
     CREATE_ANNIVERSARY = "create_anniversary"
     CREATE_DAILY_BRIEFING = "create_daily_briefing"
     CONFIRM_PLAN = "confirm_plan"
     REJECT_PLAN = "reject_plan"
+    CANCEL_PLAN = "cancel_plan"
     LIST_ANNIVERSARIES = "list_anniversaries"
     LIST_DAILY_BRIEFINGS = "list_daily_briefings"
     LIST_TASKS = "list_tasks"
@@ -30,6 +32,7 @@ class IntentAction(StrEnum):
     CREATE_NOTE = "create_note"
     CREATE_REMINDER = "create_reminder"
     CANCEL_REMINDER = "cancel_reminder"
+    CANCEL_AGENDA = "cancel_agenda"
     ACKNOWLEDGE_REMINDER = "acknowledge_reminder"
     SNOOZE_REMINDER = "snooze_reminder"
     COMPLETE_TASK = "complete_task"
@@ -45,6 +48,15 @@ class ParsedIntent:
     arguments: dict[str, Any] = field(default_factory=dict, repr=False)
     source: str = "deterministic"
     requires_confirmation: bool = False
+
+
+class ModelLinkLabelProposal(BaseModel):
+    """Presentation metadata for a URL that remains hidden from the model."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    source_index: int = Field(ge=1, le=8)
+    label: str = Field(min_length=1, max_length=40)
 
 
 class ModelIntentProposal(BaseModel):
@@ -66,6 +78,8 @@ class ModelIntentProposal(BaseModel):
         default_factory=list,
         max_length=8,
     )
+    links: list[ModelLinkLabelProposal] = Field(default_factory=list, max_length=8)
+    include_in_daily_briefing: bool = False
     task_id: str | None = Field(default=None, max_length=160)
     reminder_id: str | None = Field(default=None, max_length=160)
     resource_id: str | None = Field(default=None, max_length=160)

@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, time
 from enum import StrEnum
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dateutil.rrule import rrulestr
 
+from .action_link import ActionLink
 from .classification import DataClassification, require_ordinary_storage
 from .errors import ValidationError
 from .hong_kong_calendar import monthly_business_day
@@ -82,6 +83,7 @@ class AgendaItem:
     creator_user_id: str | None = None
     all_day: bool = False
     description: str = ""
+    action_links: tuple[ActionLink, ...] = field(default_factory=tuple, repr=False)
     classification: DataClassification = DataClassification.PERSONAL
     recurrence: RecurrenceRule | None = None
     version: int = 1
@@ -105,6 +107,8 @@ class AgendaItem:
         if self.updated_at is not None:
             require_aware(self.updated_at, "updated_at")
         require_ordinary_storage(self.classification)
+        if len(self.action_links) > 8:
+            raise ValidationError("agenda action link limit exceeded")
         if self.recurrence is not None and self.recurrence.timezone != self.timezone:
             raise ValidationError("recurrence timezone must match agenda timezone")
 
@@ -120,6 +124,7 @@ class AgendaNotificationRule:
     day_offset: int
     text: str
     timezone: str
+    action_links: tuple[ActionLink, ...] = field(default_factory=tuple, repr=False)
     classification: DataClassification = DataClassification.PERSONAL
     enabled: bool = True
     created_at: datetime | None = None
@@ -141,6 +146,8 @@ class AgendaNotificationRule:
             raise ValidationError("agenda notification day offset is out of range")
         require_timezone(self.timezone)
         require_ordinary_storage(self.classification)
+        if len(self.action_links) > 8:
+            raise ValidationError("agenda notification action link limit exceeded")
         if self.created_at is not None:
             require_aware(self.created_at, "created_at")
 

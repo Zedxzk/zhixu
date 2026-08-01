@@ -8,6 +8,7 @@ from datetime import date, datetime, time
 from typing import Any, TypeVar
 
 from zhixu.domain import (
+    ActionLink,
     DataClassification,
     ExceptionAction,
     MissedReminderPolicy,
@@ -25,6 +26,7 @@ class CreateAgenda:
     end_at: datetime
     timezone: str
     description: str = ""
+    action_links: tuple[ActionLink, ...] = ()
     all_day: bool = False
     recurrence_rule: str | None = None
     classification: DataClassification = DataClassification.PERSONAL
@@ -39,6 +41,7 @@ class CreateAgendaNotification:
     text: str
     timezone: str
     target_ref: str
+    action_links: tuple[ActionLink, ...] = ()
     classification: DataClassification = DataClassification.PERSONAL
 
 
@@ -69,6 +72,7 @@ class UpdateAgenda:
     end_at: datetime
     timezone: str
     description: str = ""
+    action_links: tuple[ActionLink, ...] = ()
     all_day: bool = False
     recurrence_rule: str | None = None
     classification: DataClassification = DataClassification.PERSONAL
@@ -159,6 +163,7 @@ class CreateReminder:
     title: str
     fire_at: datetime
     target_ref: str
+    action_links: tuple[ActionLink, ...] = ()
     missed_policy: MissedReminderPolicy = MissedReminderPolicy.FIRE
     classification: DataClassification = DataClassification.PERSONAL
     related_kind: str | None = None

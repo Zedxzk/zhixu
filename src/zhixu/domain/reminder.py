@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 
+from .action_link import ActionLink
 from .agenda import require_aware
 from .classification import DataClassification, require_ordinary_storage
 from .errors import ValidationError
@@ -30,6 +31,7 @@ class Reminder:
     fire_at: datetime
     target_ref: str
     creator_user_id: str | None = None
+    action_links: tuple[ActionLink, ...] = field(default_factory=tuple, repr=False)
     status: ReminderStatus = ReminderStatus.PENDING
     missed_policy: MissedReminderPolicy = MissedReminderPolicy.FIRE
     classification: DataClassification = DataClassification.PERSONAL
@@ -51,3 +53,5 @@ class Reminder:
         if self.version < 1:
             raise ValidationError("version must be positive")
         require_ordinary_storage(self.classification)
+        if len(self.action_links) > 8:
+            raise ValidationError("reminder action link limit exceeded")

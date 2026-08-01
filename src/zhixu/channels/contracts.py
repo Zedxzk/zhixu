@@ -27,6 +27,11 @@ class MessageKind(StrEnum):
     VOICE = "voice"
 
 
+class ButtonActionKind(StrEnum):
+    COMMAND = "command"
+    OPEN_URL = "open_url"
+
+
 @dataclass(frozen=True, slots=True)
 class ChannelCapabilities:
     inbound_text: bool = False
@@ -71,6 +76,7 @@ class InboundEvent:
 class MessageButton:
     label: str
     action: str
+    kind: ButtonActionKind = ButtonActionKind.COMMAND
 
     def __post_init__(self) -> None:
         if not self.label.strip() or not self.action.strip():

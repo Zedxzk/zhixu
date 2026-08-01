@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from zhixu.channels import (
+    ButtonActionKind,
     ChannelCapabilities,
     ChannelDeliveryResult,
     MessageButton,
@@ -45,10 +46,14 @@ def _button_payload(button: MessageButton, index: int) -> dict[str, Any]:
             "style": 1 if action.startswith("/提醒完成 ") else 0,
         },
         "action": {
-            "type": 1,
+            "type": 0 if button.kind is ButtonActionKind.OPEN_URL else 1,
             "data": action,
             "permission": {"type": 2},
-            "unsupport_tips": "请发送对应文字命令",
+            "unsupport_tips": (
+                "请复制消息中的链接"
+                if button.kind is ButtonActionKind.OPEN_URL
+                else "请发送对应文字命令"
+            ),
         },
     }
 

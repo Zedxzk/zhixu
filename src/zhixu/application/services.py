@@ -23,7 +23,12 @@ from zhixu.domain import (
     ResourceRef,
     Task,
 )
-from zhixu.domain.errors import ConcurrencyConflict, NotFoundError, ValidationError
+from zhixu.domain.errors import (
+    ConcurrencyConflict,
+    NotFoundError,
+    PermissionDenied,
+    ValidationError,
+)
 from zhixu.ports import (
     AgendaNotificationRepositoryPort,
     AgendaRepositoryPort,
@@ -59,6 +64,7 @@ from .commands import (
 )
 from .queries import (
     AgendaBetween,
+    ListAgendaItems,
     ListAnniversaries,
     ListDailyBriefings,
     ListReminders,
@@ -124,6 +130,21 @@ class ZhixuServices:
     ) -> ResourceRef:
         return ResourceRef(kind, resource_id, owner_user_id, classification)
 
+    @staticmethod
+    def _require_creator_or_manager(
+        context: CommandContext,
+        *,
+        owner_user_id: str,
+        creator_user_id: str | None,
+    ) -> None:
+        if context.actor_user_id == owner_user_id:
+            return
+        if context.actor_user_id == creator_user_id:
+            return
+        if context.roles.intersection({"group_owner", "project_admin"}):
+            return
+        raise PermissionDenied("only the creator or a group manager may cancel shared data")
+
     def create_agenda(self, command: CreateAgenda, context: CommandContext) -> AgendaItem:
         current = self._context(context)
         item_id = self.id_factory("agenda")
@@ -138,6 +159,7 @@ class ZhixuServices:
             creator_user_id=current.actor_user_id,
             title=command.title,
             description=command.description,
+            action_links=command.action_links,
             start_at=command.start_at,
             end_at=command.end_at,
             timezone=command.timezone,
@@ -202,6 +224,7 @@ class ZhixuServices:
             day_offset=command.day_offset,
             text=command.text,
             timezone=command.timezone,
+            action_links=command.action_links,
             classification=max(item.classification, command.classification),
         )
         authorization = self.policy.require(
@@ -256,6 +279,7 @@ class ZhixuServices:
             existing,
             title=command.title,
             description=command.description,
+            action_links=command.action_links,
             start_at=command.start_at,
             end_at=command.end_at,
             timezone=command.timezone,
@@ -289,6 +313,11 @@ class ZhixuServices:
         if existing is None:
             raise NotFoundError("agenda item not found")
         current = self._context(context)
+        self._require_creator_or_manager(
+            current,
+            owner_user_id=existing.owner_user_id,
+            creator_user_id=existing.creator_user_id,
+        )
         authorization = self.policy.require(
             current,
             Action.DELETE,
@@ -299,6 +328,27 @@ class ZhixuServices:
                 existing.classification,
             ),
         )
+        for reminder in self.reminders.list_for_owner(existing.owner_user_id):
+            if (
+                reminder.related_kind == "agenda"
+                and reminder.related_id == existing.id
+                and reminder.status.value == "pending"
+            ):
+                reminder_authorization = self.policy.require(
+                    current,
+                    Action.UPDATE,
+                    self._ref(
+                        "reminder",
+                        reminder.id,
+                        reminder.owner_user_id,
+                        reminder.classification,
+                    ),
+                )
+                self.reminders.cancel(
+                    reminder.id,
+                    expected_version=reminder.version,
+                    authorization=reminder_authorization,
+                )
         self.agenda.delete(existing.id, authorization)
 
     def set_agenda_exception(
@@ -498,6 +548,7 @@ class ZhixuServices:
             title=command.title,
             fire_at=command.fire_at,
             target_ref=command.target_ref,
+            action_links=command.action_links,
             missed_policy=command.missed_policy,
             classification=command.classification,
             related_kind=command.related_kind,
@@ -549,6 +600,11 @@ class ZhixuServices:
         if reminder is None:
             raise NotFoundError("reminder not found")
         current = self._context(context)
+        self._require_creator_or_manager(
+            current,
+            owner_user_id=reminder.owner_user_id,
+            creator_user_id=reminder.creator_user_id,
+        )
         authorization = self.policy.require(
             current,
             Action.UPDATE,
@@ -631,6 +687,34 @@ class ZhixuServices:
             )
             checked.add(item.id)
         return occurrences
+
+    def list_agenda_items(
+        self,
+        _query: ListAgendaItems,
+        context: CommandContext,
+    ) -> list[AgendaItem]:
+        current = self._context(context)
+        values: list[AgendaItem] = []
+        for owner_user_id in self._read_owners(current):
+            self.policy.require(
+                current,
+                Action.READ,
+                self._ref(
+                    "agenda_collection",
+                    owner_user_id,
+                    owner_user_id,
+                    DataClassification.PERSONAL,
+                ),
+            )
+            for item in self.agenda.list_for_owner(owner_user_id):
+                self.policy.require(
+                    current,
+                    Action.READ,
+                    self._ref("agenda", item.id, item.owner_user_id, item.classification),
+                )
+                values.append(item)
+        values.sort(key=lambda item: (item.start_at, item.id))
+        return values
 
     def list_tasks(self, query: ListTasks, context: CommandContext) -> list[Task]:
         current = self._context(context)
@@ -785,6 +869,7 @@ class ZhixuServices:
     def query_bus(self) -> QueryBus:
         bus = QueryBus()
         bus.register(AgendaBetween, self.agenda_between)
+        bus.register(ListAgendaItems, self.list_agenda_items)
         bus.register(ListTasks, self.list_tasks)
         bus.register(SearchNotes, self.search_notes)
         bus.register(ListReminders, self.list_reminders)

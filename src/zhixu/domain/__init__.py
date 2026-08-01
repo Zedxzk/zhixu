@@ -1,5 +1,6 @@
 """Channel-independent domain types."""
 
+from .action_link import ActionLink
 from .agenda import (
     AgendaItem,
     AgendaNotificationRule,
@@ -32,6 +33,7 @@ from .task import Task, TaskStatus
 
 __all__ = [
     "Action",
+    "ActionLink",
     "AgendaItem",
     "AgendaNotificationRule",
     "AgendaOccurrence",
