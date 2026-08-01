@@ -190,17 +190,51 @@ class QQEventMapper:
         # what proves the message is addressed, the identifiers are what strip
         # the marker back out of the text.
         mentions = data.get("mentions")
+        mention_entries = (
+            tuple(mention for mention in mentions if isinstance(mention, dict))
+            if isinstance(mentions, list)
+            else ()
+        )
         addressed_by_mentions = False
         mention_identifiers = {self.bot_identifier}
-        if isinstance(mentions, list):
-            for mention in mentions:
-                if not isinstance(mention, dict) or not mention.get("is_you"):
-                    continue
-                addressed_by_mentions = True
-                mention_identifiers.update(
-                    str(mention.get(key) or "")
-                    for key in ("id", "member_openid", "user_openid")
+        bot_mention_entries = 0
+        self_mention_entries = 0
+        for mention in mention_entries:
+            identifiers = {
+                str(mention.get(key) or "").strip()
+                for key in ("id", "member_openid", "user_openid")
+            } - {""}
+            entry_marker = bool(
+                identifiers
+                and re.match(
+                    r"^\s*<@!?(?:"
+                    + "|".join(re.escape(value) for value in sorted(identifiers))
+                    + r")>\s*",
+                    text,
                 )
+            )
+            entry_name = str(mention.get("username") or "").strip()
+            entry_display_match = bool(
+                entry_name and entry_name in self.display_names
+            )
+            entry_is_bot = _provider_flag(mention.get("bot"))
+            entry_is_self = _provider_flag(mention.get("is_you"))
+            bot_mention_entries += int(entry_is_bot)
+            self_mention_entries += int(entry_is_self)
+            # In current QQ group deliveries `is_you` is not reliable across
+            # every event variant. A bot mention is still attributable to this
+            # receiver when either its content marker or configured display
+            # name agrees with the mention entry. Human mentions never satisfy
+            # this branch.
+            if entry_is_self or (
+                entry_is_bot
+                and (
+                    entry_display_match
+                    or (entry_marker and not self.display_names)
+                )
+            ):
+                addressed_by_mentions = True
+                mention_identifiers.update(identifiers)
         bot_mention_pattern = (
             r"^\s*<@!?(?:"
             + "|".join(
@@ -241,8 +275,12 @@ class QQEventMapper:
             # from the receipt, and getting it wrong makes the bot look mute.
             # Only the form is recorded; the message body never is.
             logger.info(
-                "qq_group_event type=%s mentions=%s marker=%s display=%s command=%s",
+                "qq_group_event type=%s mention_entries=%d bot_entries=%d "
+                "self_entries=%d addressed=%s marker=%s display=%s command=%s",
                 event_type,
+                len(mention_entries),
+                bot_mention_entries,
+                self_mention_entries,
                 addressed_by_mentions,
                 bot_mentioned_in_content,
                 addressed_by_display_name,
@@ -388,6 +426,14 @@ class QQEventMapper:
                 "reply_context_ref": reply_context_ref,
             },
         )
+
+
+def _provider_flag(value: object) -> bool:
+    """Accept provider booleans without treating arbitrary strings as true."""
+
+    return value is True or value == 1 or (
+        isinstance(value, str) and value.strip().lower() in {"1", "true"}
+    )
 
 
 class QQGatewayProtocol:
