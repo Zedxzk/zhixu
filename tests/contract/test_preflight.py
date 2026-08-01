@@ -215,7 +215,7 @@ def test_preflight_accepts_a_qq_bot_display_name_but_rejects_a_leading_at(
     original = paths.runtime_config.read_text(encoding="utf-8")
 
     with paths.runtime_config.open("a", encoding="utf-8") as output:
-        output.write("\nZHIXU_QQ_BOT_DISPLAY_NAME=SyntheticBotName\n")
+        output.write("\nZHIXU_QQ_BOT_DISPLAY_NAME=SyntheticBotName\n")  # pragma: allowlist secret
     verify_deployment_configuration(
         paths,
         expected_owner_uid=os.getuid(),
