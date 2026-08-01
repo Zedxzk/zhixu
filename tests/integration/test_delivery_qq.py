@@ -1456,6 +1456,27 @@ def test_gateway_strips_a_display_name_mention_before_a_group_command(
     assert event.text == "/日历"
 
 
+def test_gateway_accepts_a_display_mentioned_command_from_plain_group_delivery(
+    database: Database,
+    privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],
+) -> None:
+    contacts = register_account(database, privacy_primitives)
+    event = QQEventMapper("bot_test_a", contacts).map(
+        "GROUP_MESSAGE_CREATE",
+        {
+            "id": "synthetic-plain-display-command-event",
+            "group_openid": "synthetic-group",
+            "content": "@SyntheticBot /日历",
+            "author": {"member_openid": "synthetic-member"},
+        },
+        received_at=NOW,
+    )
+
+    assert event is not None
+    assert event.metadata["mentioned"] is True
+    assert event.text == "/日历"
+
+
 def test_gateway_maps_full_group_message_without_marking_it_mentioned(
     database: Database,
     privacy_primitives: tuple[FieldCipher, OpaqueReferenceFactory],

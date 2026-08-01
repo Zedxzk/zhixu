@@ -168,10 +168,17 @@ class QQEventMapper:
             text,
             count=1,
         ).strip()
-        if event_type in {"GROUP_AT_MESSAGE_CREATE", "AT_MESSAGE_CREATE"}:
+        display_mentioned_command = bool(
+            event_type in {"GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE"}
+            and re.match(r"^\s*@\S+\s+/\S", text)
+        )
+        if event_type in {"GROUP_AT_MESSAGE_CREATE", "AT_MESSAGE_CREATE"} or (
+            display_mentioned_command
+        ):
             # Some QQ clients expose the addressed bot as a display-name mention
             # instead of the documented <@app-id> form. The event type already
-            # proves that this leading mention targets the bot.
+            # proves natural-language mentions; plain group events are accepted
+            # only when the mention is followed by an explicit slash command.
             text = re.sub(r"^\s*@\S+\s+", "", text, count=1).strip()
         if not event_id or not text:
             return None
@@ -257,7 +264,9 @@ class QQEventMapper:
                 external_identifier=conversation,
                 now=received_at,
             )
-            mentioned = event_type == "GROUP_AT_MESSAGE_CREATE"
+            mentioned = (
+                event_type == "GROUP_AT_MESSAGE_CREATE" or display_mentioned_command
+            )
         elif event_type in {"AT_MESSAGE_CREATE", "DIRECT_MESSAGE_CREATE"}:
             actor = str(author.get("id") or "")
             conversation = str(data.get("channel_id") or "")
