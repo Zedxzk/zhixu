@@ -37,11 +37,48 @@ class NoteAttachment:
 
 
 @dataclass(frozen=True, slots=True)
+class NoteField:
+    """One named value inside a repeatable note content block."""
+
+    name: str
+    value: str
+
+    def __post_init__(self) -> None:
+        if not self.name.strip() or len(self.name) > 80:
+            raise ValidationError("note field name is invalid")
+        if not self.value.strip() or len(self.value) > 200_000:
+            raise ValidationError("note field value is invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class NoteContentBlock:
+    """A freely named group of text and fields beneath one note entry."""
+
+    name: str
+    body: str = ""
+    fields: tuple[NoteField, ...] = ()
+    id: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.name.strip() or len(self.name) > 120:
+            raise ValidationError("note content block name is invalid")
+        if self.id and len(self.id) > 160:
+            raise ValidationError("note content block id is invalid")
+        if len(self.body) > 200_000 or (not self.body.strip() and not self.fields):
+            raise ValidationError("note content block requires body or fields")
+        names = [item.name for item in self.fields]
+        if len(set(names)) != len(names):
+            raise ValidationError("note field names must be unique within a block")
+
+
+@dataclass(frozen=True, slots=True)
 class Note:
     id: str
     owner_user_id: str
     title: str
     body: str
+    category_path: tuple[str, ...] = ("未分类",)
+    content_blocks: tuple[NoteContentBlock, ...] = ()
     creator_user_id: str | None = None
     tags: tuple[str, ...] = ()
     attachments: tuple[NoteAttachment, ...] = ()
@@ -57,6 +94,13 @@ class Note:
             raise ValidationError("note creator must not be empty")
         if not self.title.strip() and not self.body.strip():
             raise ValidationError("note title or body is required")
+        if not self.category_path or len(self.category_path) > 8:
+            raise ValidationError("note category path is invalid")
+        if any(not part.strip() or len(part) > 80 for part in self.category_path):
+            raise ValidationError("note category path is invalid")
+        block_ids = [item.id for item in self.content_blocks if item.id]
+        if len(set(block_ids)) != len(block_ids):
+            raise ValidationError("note content block ids must be unique")
         if self.version < 1:
             raise ValidationError("version must be positive")
         if self.created_at is not None:

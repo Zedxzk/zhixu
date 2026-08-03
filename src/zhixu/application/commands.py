@@ -15,6 +15,8 @@ from zhixu.domain import (
     ImportantDayKind,
     MissedReminderPolicy,
     NoteAttachment,
+    NoteContentBlock,
+    NoteField,
     TaskStatus,
 )
 from zhixu.domain.errors import ConflictError, ValidationError
@@ -209,6 +211,8 @@ class PostponeTask:
 class CreateNote:
     title: str
     body: str
+    category_path: tuple[str, ...] = ("未分类",)
+    content_blocks: tuple[NoteContentBlock, ...] = ()
     tags: tuple[str, ...] = ()
     attachments: tuple[NoteAttachment, ...] = ()
     classification: DataClassification = DataClassification.PERSONAL
@@ -229,6 +233,20 @@ class UpdateNote:
 @dataclass(frozen=True, slots=True)
 class DeleteNote:
     note_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class AddNoteContentBlock:
+    note_id: str
+    name: str
+    body: str = ""
+    fields: tuple[NoteField, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class MoveNoteCategory:
+    note_id: str
+    category_path: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -281,6 +299,8 @@ Command = (
     | TransitionTask
     | PostponeTask
     | CreateNote
+    | AddNoteContentBlock
+    | MoveNoteCategory
     | UpdateNote
     | DeleteNote
     | CreateReminder

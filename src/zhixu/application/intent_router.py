@@ -29,6 +29,8 @@ _MUTATING_MODEL_ACTIONS = {
     IntentAction.CREATE_DAILY_BRIEFING,
     IntentAction.CREATE_TASK,
     IntentAction.CREATE_NOTE,
+    IntentAction.ADD_NOTE_CONTENT_BLOCK,
+    IntentAction.MOVE_NOTE_CATEGORY,
     IntentAction.CREATE_REMINDER,
     IntentAction.CANCEL_REMINDER,
     IntentAction.ACKNOWLEDGE_REMINDER,
@@ -53,11 +55,118 @@ _SCHEDULING_CUE_PATTERN = re.compile(
     r"今天|明天|后天|下周|下月|每(?:天|周|月|年)|"
     r"\d{1,2}(?:[:：点时]|月|日|号)|\d{4}-\d{1,2}-\d{1,2})"
 )
+_STRUCTURED_NOTE_SAVE_PATTERN = re.compile(
+    r"^(?:请|麻烦)?(?:帮我)?(?:保存|登记|记录)(?:到|至)\s*"
+    r"(?:[“\"](?P<quoted_path>[^”\"]+)[”\"]|(?P<plain_path>[^，,:：]+))"
+    r"\s*[，,:：]\s*(?P<rest>.+)$",
+    re.DOTALL,
+)
+_NOTE_BLOCK_PATTERN = re.compile(
+    r"^(?:新增|添加)?(?:一条|一组)?\s*[“\"](?P<name>[^”\"]+)[”\"]"
+    r"\s*[，,:：]?\s*(?P<content>.*)$",
+    re.DOTALL,
+)
+_APPEND_NOTE_BLOCK_PATTERN = re.compile(
+    r"^在\s*(?P<title>.+?)(?:条目)?(?:下|里)\s*(?:再)?"
+    r"(?:记|记录|保存|新增|添加)(?:一条|一组)?\s*"
+    r"[“\"](?P<name>[^”\"]+)[”\"]\s*[，,:：]?\s*(?P<content>.+)$",
+    re.DOTALL,
+)
+_MOVE_NOTE_CATEGORY_PATTERN = re.compile(
+    r"^把\s*(?P<title>.+?)\s*(?:条目|备忘)?\s*移(?:动)?到\s*"
+    r"(?:[“\"](?P<quoted_path>[^”\"]+)[”\"]|(?P<plain_path>.+))$"
+)
 
 
 def _natural_note_title(body: str) -> str:
     first_part = re.split(r"[,，;；\n]", body, maxsplit=1)[0].strip()
     return (first_part or body)[:80]
+
+
+def _note_fields(content: str) -> tuple[list[dict[str, str]], str]:
+    fields: list[dict[str, str]] = []
+    free_text: list[str] = []
+    for part in (value.strip() for value in re.split(r"[，,；;\n]+", content)):
+        if not part:
+            continue
+        match = re.fullmatch(r"([^:：]{1,80})\s*[:：]\s*(.+)", part)
+        if match is None:
+            match = re.fullmatch(r"([A-Za-z][A-Za-z0-9_.-]{0,79})\s+(.+)", part)
+        if match is None:
+            free_text.append(part)
+            continue
+        fields.append({"name": match.group(1).strip(), "value": match.group(2).strip()})
+    return fields, "\n".join(free_text)
+
+
+def _structured_note_route(value: str) -> ParsedIntent | None:
+    move = _MOVE_NOTE_CATEGORY_PATTERN.fullmatch(value)
+    if move is not None:
+        raw_path = move.group("quoted_path") or move.group("plain_path") or ""
+        path = tuple(
+            part.strip()
+            for part in re.split(r"\s*(?:/|>|＞)\s*", raw_path)
+            if part.strip()
+        )
+        if path:
+            return ParsedIntent(
+                IntentAction.MOVE_NOTE_CATEGORY,
+                {
+                    "entry_query": move.group("title").strip(),
+                    "category_path": path,
+                },
+                requires_confirmation=True,
+            )
+    append = _APPEND_NOTE_BLOCK_PATTERN.fullmatch(value)
+    if append is not None:
+        fields, body = _note_fields(append.group("content"))
+        return ParsedIntent(
+            IntentAction.ADD_NOTE_CONTENT_BLOCK,
+            {
+                "entry_query": append.group("title").strip(),
+                "block": {
+                    "name": append.group("name").strip(),
+                    "body": body,
+                    "fields": fields,
+                },
+            },
+            requires_confirmation=True,
+        )
+    structured = _STRUCTURED_NOTE_SAVE_PATTERN.fullmatch(value)
+    if structured is None:
+        return None
+    raw_path = structured.group("quoted_path") or structured.group("plain_path") or ""
+    path = tuple(
+        part.strip()
+        for part in re.split(r"\s*(?:/|>|＞)\s*", raw_path)
+        if part.strip()
+    )
+    if not path:
+        return None
+    rest = structured.group("rest").strip()
+    block_match = _NOTE_BLOCK_PATTERN.fullmatch(rest)
+    block_name = "默认内容"
+    content = rest
+    if block_match is not None:
+        block_name = block_match.group("name").strip()
+        content = block_match.group("content").strip()
+    fields, block_body = _note_fields(content)
+    return ParsedIntent(
+        IntentAction.CREATE_NOTE,
+        {
+            "title": path[-1],
+            "body": content or rest,
+            "category_path": path[:-1] or ("未分类",),
+            "content_blocks": [
+                {
+                    "name": block_name,
+                    "body": block_body,
+                    "fields": fields,
+                }
+            ],
+        },
+        requires_confirmation=True,
+    )
 
 
 def _redact_action_links(text: str) -> tuple[str, tuple[str, ...]]:
@@ -225,6 +334,9 @@ class RuleIntentRouter:
         compact = re.sub(r"\s+", "", value)
         if value.lower() in {"/帮助", "/help", "帮助", "help", "/菜单", "菜单"}:
             return ParsedIntent(IntentAction.HELP)
+        structured_note = _structured_note_route(value)
+        if structured_note is not None:
+            return structured_note
         natural_note = _NATURAL_NOTE_PATTERN.fullmatch(value)
         if natural_note:
             body = natural_note.group("body").strip()
@@ -412,6 +524,15 @@ class RuleIntentRouter:
             "查看提醒",
         }:
             return ParsedIntent(IntentAction.LIST_REMINDERS)
+        if value in {"/备忘", "/备忘录", "/所有备忘"} or compact in {
+            "查看所有备忘录条目",
+            "查看所有备忘",
+            "列出所有备忘录条目",
+            "列出全部备忘",
+            "所有备忘录",
+            "备忘录列表",
+        }:
+            return ParsedIntent(IntentAction.LIST_NOTES)
         if value.startswith("/私人提醒 "):
             return ParsedIntent(
                 IntentAction.CREATE_REMINDER,
@@ -662,6 +783,9 @@ class ModelIntentClassifier:
                 "alerted at a usable future time; include title and an aware ISO-8601 fire_at. "
                 "Never turn a note or missing-time request into a reminder and never supply a "
                 "default reminder time. Use answer for a question that needs no stored data. "
+                "Use list_notes when the user asks to enumerate all stored notes or note "
+                "entries. Use search_notes only when the user supplies a subject or keyword "
+                "to find within notes. Never classify notes or 备忘录 as a daily briefing. "
                 "Set private=true only when the user explicitly asks for a private/personal "
                 "record. For a recurring calendar event use action=create_agenda with title, "
                 "aware start_at, aware end_at, and "

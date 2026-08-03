@@ -32,6 +32,8 @@ from zhixu.domain import (
     MissedReminderPolicy,
     Note,
     NoteAttachment,
+    NoteContentBlock,
+    NoteField,
     RecurrenceException,
     RecurrenceRule,
     Reminder,
@@ -1234,6 +1236,62 @@ class NoteRepository:
             for row in rows
         )
 
+    @staticmethod
+    def _category_path(
+        connection: sqlite3.Connection,
+        category_id: str | None,
+    ) -> tuple[str, ...]:
+        if not category_id:
+            return ("未分类",)
+        rows = connection.execute(
+            """
+            WITH RECURSIVE category_path(id,parent_id,name,depth) AS (
+                SELECT id,parent_id,name,0 FROM note_categories WHERE id=?
+                UNION ALL
+                SELECT parent.id,parent.parent_id,parent.name,path.depth + 1
+                FROM note_categories AS parent
+                JOIN category_path AS path ON path.parent_id=parent.id
+            )
+            SELECT name FROM category_path ORDER BY depth DESC
+            """,
+            (category_id,),
+        ).fetchall()
+        return tuple(str(row["name"]) for row in rows) or ("未分类",)
+
+    @staticmethod
+    def _content_blocks(
+        connection: sqlite3.Connection,
+        note_id: str,
+    ) -> tuple[NoteContentBlock, ...]:
+        rows = connection.execute(
+            """
+            SELECT id,name,body FROM note_content_blocks
+            WHERE note_id=? ORDER BY position,id
+            """,
+            (note_id,),
+        ).fetchall()
+        blocks: list[NoteContentBlock] = []
+        for row in rows:
+            fields = connection.execute(
+                """
+                SELECT name,value FROM note_content_fields
+                WHERE block_id=? ORDER BY position,name
+                """,
+                (str(row["id"]),),
+            ).fetchall()
+            blocks.append(
+                NoteContentBlock(
+                    id=str(row["id"]),
+                    name=str(row["name"]),
+                    body=str(row["body"]),
+                    fields=tuple(
+                        NoteField(str(field["name"]), str(field["value"]))
+                        for field in fields
+                    ),
+                )
+            )
+        return tuple(blocks)
+
     @classmethod
     def _from_row(cls, connection: sqlite3.Connection, row: sqlite3.Row) -> Note:
         return Note(
@@ -1246,6 +1304,11 @@ class NoteRepository:
             ),
             title=str(row["title"]),
             body=str(row["body"]),
+            category_path=cls._category_path(
+                connection,
+                str(row["category_id"]) if row["category_id"] is not None else None,
+            ),
+            content_blocks=cls._content_blocks(connection, str(row["id"])),
             tags=cls._tags(connection, str(row["id"])),
             attachments=cls._attachments(connection, str(row["id"])),
             classification=DataClassification(int(row["classification"])),
@@ -1307,14 +1370,93 @@ class NoteRepository:
         )
 
     @staticmethod
+    def _category_id(owner_user_id: str, parent_id: str | None, name: str) -> str:
+        identity = "\x1f".join((owner_user_id, parent_id or "", name))
+        return "category_" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
+
+    @classmethod
+    def _ensure_category_path(
+        cls,
+        connection: sqlite3.Connection,
+        note: Note,
+    ) -> str:
+        parent_id: str | None = None
+        created_at = _dump_datetime(note.created_at or note.updated_at)
+        assert created_at is not None
+        for raw_name in note.category_path:
+            name = raw_name.strip()
+            category_id = cls._category_id(note.owner_user_id, parent_id, name)
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO note_categories(
+                    id,owner_user_id,parent_id,name,created_at
+                ) VALUES(?,?,?,?,?)
+                """,
+                (category_id, note.owner_user_id, parent_id, name, created_at),
+            )
+            row = connection.execute(
+                """
+                SELECT id FROM note_categories
+                WHERE owner_user_id=? AND parent_id IS ? AND name=?
+                """,
+                (note.owner_user_id, parent_id, name),
+            ).fetchone()
+            assert row is not None
+            parent_id = str(row["id"])
+        assert parent_id is not None
+        return parent_id
+
+    @staticmethod
+    def _write_content_blocks(
+        connection: sqlite3.Connection,
+        note: Note,
+    ) -> None:
+        connection.execute("DELETE FROM note_content_blocks WHERE note_id=?", (note.id,))
+        created_at = _dump_datetime(note.created_at or note.updated_at)
+        updated_at = _dump_datetime(note.updated_at or note.created_at)
+        assert created_at is not None and updated_at is not None
+        for block_position, block in enumerate(note.content_blocks):
+            connection.execute(
+                """
+                INSERT INTO note_content_blocks(
+                    id,note_id,name,body,position,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?)
+                """,
+                (
+                    block.id,
+                    note.id,
+                    block.name,
+                    block.body,
+                    block_position,
+                    created_at,
+                    updated_at,
+                ),
+            )
+            connection.executemany(
+                """
+                INSERT INTO note_content_fields(block_id,name,value,position)
+                VALUES(?,?,?,?)
+                """,
+                (
+                    (block.id, field.name, field.value, field_position)
+                    for field_position, field in enumerate(block.fields)
+                ),
+            )
+
+    @staticmethod
     def _write_fts(connection: sqlite3.Connection, note: Note) -> None:
+        structured = [*note.category_path, note.body]
+        for block in note.content_blocks:
+            structured.extend((block.name, block.body))
+            for field in block.fields:
+                structured.extend((field.name, field.value))
         connection.execute("DELETE FROM notes_fts WHERE note_id=?", (note.id,))
         connection.execute(
             """
             INSERT INTO notes_fts(note_id,owner_user_id,title,body)
             VALUES(?,?,?,?)
             """,
-            (note.id, note.owner_user_id, note.title, note.body),
+            (note.id, note.owner_user_id, note.title, "\n".join(structured)),
         )
 
     def create(self, note: Note, authorization: AuthorizedAction) -> Note:
@@ -1335,12 +1477,13 @@ class NoteRepository:
         )
         try:
             with self.database.transaction() as connection:
+                category_id = self._ensure_category_path(connection, stored)
                 connection.execute(
                     """
                     INSERT INTO notes(
                         id,owner_user_id,creator_user_id,title,body,classification,
-                        version,created_at,updated_at
-                    ) VALUES(?,?,?,?,?,?,?,?,?)
+                        version,created_at,updated_at,category_id
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         stored.id,
@@ -1352,10 +1495,12 @@ class NoteRepository:
                         stored.version,
                         _dump_datetime(stored.created_at),
                         _dump_datetime(stored.updated_at),
+                        category_id,
                     ),
                 )
                 self._write_tags(connection, stored)
                 self._write_attachments(connection, stored)
+                self._write_content_blocks(connection, stored)
                 self._write_fts(connection, stored)
                 _audit(connection, authorization)
         except sqlite3.IntegrityError as exc:
@@ -1405,10 +1550,11 @@ class NoteRepository:
             updated_at=authorization.authorized_at,
         )
         with self.database.transaction() as connection:
+            category_id = self._ensure_category_path(connection, stored)
             cursor = connection.execute(
                 """
                 UPDATE notes SET
-                    title=?,body=?,classification=?,version=?,updated_at=?
+                    title=?,body=?,classification=?,version=?,updated_at=?,category_id=?
                 WHERE id=? AND owner_user_id=? AND version=?
                 """,
                 (
@@ -1417,6 +1563,7 @@ class NoteRepository:
                     int(stored.classification),
                     stored.version,
                     _dump_datetime(stored.updated_at),
+                    category_id,
                     stored.id,
                     stored.owner_user_id,
                     expected_version,
@@ -1426,6 +1573,7 @@ class NoteRepository:
                 raise ConcurrencyConflict("note changed or does not exist")
             self._write_tags(connection, stored)
             self._write_attachments(connection, stored)
+            self._write_content_blocks(connection, stored)
             self._write_fts(connection, stored)
             _audit(connection, authorization)
         return stored

@@ -96,8 +96,8 @@ def test_qq_network_database_is_separate_and_duplicate_events_are_idempotent(
 ) -> None:
     application_database = Database(tmp_path / "application.sqlite3")
     qq_database = Database(tmp_path / "qq.sqlite3")
-    assert application_database.migrate() == list(range(1, 20))
-    assert qq_database.migrate() == list(range(1, 20))
+    assert application_database.migrate() == list(range(1, 21))
+    assert qq_database.migrate() == list(range(1, 21))
     references = OpaqueReferenceFactory(b"R" * 32)
     cipher = FieldCipher(b"E" * 32)
     raw_actor = "synthetic-qq-actor"
@@ -761,7 +761,9 @@ def test_group_modes_enforce_public_isolation_and_internal_member_acl(
             }
         ).encode(),
     ).body["delivery"]
-    assert "shared needle：shared needle" in search_delivery["text"]
+    assert "【未分类 / shared needle】" in search_delivery["text"]
+    assert "默认内容" in search_delivery["text"]
+    assert "shared needle" in search_delivery["text"]
     assert "private needle content" not in search_delivery["text"]
 
     reminder_event = event(

@@ -93,7 +93,7 @@ def assistant_parts(
     tmp_path: Path,
 ) -> tuple[ZhixuServices, FrozenClock, Database, CommandContext]:
     database = Database(tmp_path / "zhixu.sqlite3")
-    assert database.migrate() == list(range(1, 20))
+    assert database.migrate() == list(range(1, 21))
     clock = FrozenClock(NOW)
     users = UserRepository(database)
     policy = PolicyEngine()
@@ -742,6 +742,92 @@ def test_natural_record_request_becomes_confirmed_note_without_llm_or_fake_time(
 
     assert found.source == "fts"
     assert body in found.text
+    assert client.calls == 0
+
+    listed = engine.handle("查看所有备忘录条目", group_context, target_ref=target)
+
+    assert listed.source == "deterministic"
+    assert "未分类 / 测试网络账号密码" in listed.text
+    assert "briefing_" not in listed.text
+    assert client.calls == 0
+
+
+def test_structured_note_category_blocks_fields_and_append(
+    assistant_parts: tuple[ZhixuServices, FrozenClock, Database, CommandContext],
+) -> None:
+    services, clock, database, context = assistant_parts
+    client = FakeLLM([])
+    engine = engine_with(services, clock, database, client)
+    group_context = CommandContext(
+        actor_user_id=context.actor_user_id,
+        roles=frozenset({"internal_group_member", "shared_workspace_member"}),
+        shared_owner_user_id=context.actor_user_id,
+        readable_shared_owner_user_ids=(context.actor_user_id,),
+        request_channel=RequestChannel.GROUP_CHAT,
+    )
+    target = "qqc_synthetic_structured_note"
+
+    preview = engine.handle(
+        "保存到“凭据/API/OpenAI”，新增一组“生产项目”："
+        "key: synthetic-value-one，endpoint: https://synthetic.invalid",
+        group_context,
+        target_ref=target,
+    )
+
+    assert preview.code == "plan_preview"
+    assert "保存位置：** 凭据 / API" in preview.text
+    assert "备忘：** OpenAI" in preview.text
+    assert "内容块：** 生产项目" in preview.text
+    assert r"synthetic\-value\-one" in preview.text
+    created = engine.handle(preview.buttons[0].action, group_context, target_ref=target)
+    assert created.code == "created"
+
+    note = services.notes.list_for_owner(context.actor_user_id)[0]
+    assert note.category_path == ("凭据", "API")
+    assert note.title == "OpenAI"
+    assert note.content_blocks[0].name == "生产项目"
+    assert [(field.name, field.value) for field in note.content_blocks[0].fields] == [
+        ("key", "synthetic-value-one"),
+        ("endpoint", "https://synthetic.invalid"),
+    ]
+
+    append_preview = engine.handle(
+        "在 OpenAI 条目下再记一条“临时测试”，"
+        "key: synthetic-value-two，备注: 临时使用",
+        group_context,
+        target_ref=target,
+    )
+    assert append_preview.code == "plan_preview"
+    assert "目标条目：** OpenAI" in append_preview.text
+    assert "新增内容块：** 临时测试" in append_preview.text
+    updated = engine.handle(
+        append_preview.buttons[0].action,
+        group_context,
+        target_ref=target,
+    )
+    assert updated.code == "updated"
+
+    move_preview = engine.handle(
+        "把 OpenAI 条目移到“凭据/模型/API”",
+        group_context,
+        target_ref=target,
+    )
+    assert move_preview.code == "plan_preview"
+    assert "目标条目：** OpenAI" in move_preview.text
+    assert "移动到：** 凭据 / 模型 / API" in move_preview.text
+    moved = engine.handle(
+        move_preview.buttons[0].action,
+        group_context,
+        target_ref=target,
+    )
+    assert moved.code == "updated"
+
+    found = engine.handle("查询OpenAI", group_context, target_ref=target)
+    assert found.source == "fts"
+    assert "【凭据 / 模型 / API / OpenAI】" in found.text
+    assert "生产项目" in found.text
+    assert "临时测试" in found.text
+    assert "synthetic-value-two" in found.text
     assert client.calls == 0
 
 

@@ -19,6 +19,7 @@ from zhixu.domain import (
     DataClassification,
     ImportantDayKind,
     Note,
+    NoteContentBlock,
     PolicyEngine,
     RecurrenceException,
     RecurrenceRule,
@@ -48,6 +49,7 @@ from zhixu.ports import (
 
 from .commands import (
     AcknowledgeReminder,
+    AddNoteContentBlock,
     CancelReminder,
     CommandBus,
     CreateAgenda,
@@ -63,6 +65,7 @@ from .commands import (
     DeleteDailyBriefing,
     DeleteNote,
     DeleteTask,
+    MoveNoteCategory,
     PostponeTask,
     SetAgendaException,
     SetNotificationLeads,
@@ -80,6 +83,7 @@ from .queries import (
     ListAgendaItems,
     ListAnniversaries,
     ListDailyBriefings,
+    ListNotes,
     ListReminders,
     ListTasks,
     QueryBus,
@@ -828,12 +832,23 @@ class ZhixuServices:
 
     def create_note(self, command: CreateNote, context: CommandContext) -> Note:
         current = self._context(context)
+        proposed_blocks = command.content_blocks or (
+            NoteContentBlock(name="默认内容", body=command.body),
+        )
+        blocks = tuple(
+            block
+            if block.id
+            else replace(block, id=self.id_factory("note_block"))
+            for block in proposed_blocks
+        )
         note = Note(
             id=self.id_factory("note"),
             owner_user_id=self._create_owner(current, private=command.private),
             creator_user_id=current.actor_user_id,
             title=command.title,
             body=command.body,
+            category_path=command.category_path,
+            content_blocks=blocks,
             tags=command.tags,
             attachments=command.attachments,
             classification=command.classification,
@@ -844,6 +859,64 @@ class ZhixuServices:
             self._ref("note", note.id, note.owner_user_id, note.classification),
         )
         return self.notes.create(note, authorization)
+
+    def add_note_content_block(
+        self,
+        command: AddNoteContentBlock,
+        context: CommandContext,
+    ) -> Note:
+        note = self.notes.get(command.note_id)
+        if note is None:
+            raise NotFoundError("note not found")
+        if any(block.name == command.name for block in note.content_blocks):
+            raise ValidationError("note content block name already exists")
+        current = self._context(context)
+        block = NoteContentBlock(
+            id=self.id_factory("note_block"),
+            name=command.name,
+            body=command.body,
+            fields=command.fields,
+        )
+        updated = replace(
+            note,
+            content_blocks=(*note.content_blocks, block),
+            version=note.version + 1,
+        )
+        authorization = self.policy.require(
+            current,
+            Action.UPDATE,
+            self._ref("note", note.id, note.owner_user_id, note.classification),
+        )
+        return self.notes.update(
+            updated,
+            expected_version=note.version,
+            authorization=authorization,
+        )
+
+    def move_note_category(
+        self,
+        command: MoveNoteCategory,
+        context: CommandContext,
+    ) -> Note:
+        note = self.notes.get(command.note_id)
+        if note is None:
+            raise NotFoundError("note not found")
+        current = self._context(context)
+        updated = replace(
+            note,
+            category_path=command.category_path,
+            version=note.version + 1,
+        )
+        authorization = self.policy.require(
+            current,
+            Action.UPDATE,
+            self._ref("note", note.id, note.owner_user_id, note.classification),
+        )
+        return self.notes.update(
+            updated,
+            expected_version=note.version,
+            authorization=authorization,
+        )
 
     def update_note(self, command: UpdateNote, context: CommandContext) -> Note:
         note = self.notes.get(command.note_id)
@@ -1144,6 +1217,31 @@ class ZhixuServices:
             visible.append(note)
         return visible
 
+    def list_notes(self, query: ListNotes, context: CommandContext) -> list[Note]:
+        if not 1 <= query.limit <= 100:
+            raise ValidationError("note list limit must be between 1 and 100")
+        current = self._context(context)
+        notes: list[Note] = []
+        for owner_user_id in self._read_owners(current):
+            self.policy.require(
+                current,
+                Action.READ,
+                self._ref(
+                    "note_collection",
+                    owner_user_id,
+                    owner_user_id,
+                    DataClassification.PERSONAL,
+                ),
+            )
+            for note in self.notes.list_for_owner(owner_user_id):
+                self.policy.require(
+                    current,
+                    Action.READ,
+                    self._ref("note", note.id, note.owner_user_id, note.classification),
+                )
+                notes.append(note)
+        return notes[: query.limit]
+
     def list_anniversaries(
         self,
         _query: ListAnniversaries,
@@ -1214,6 +1312,8 @@ class ZhixuServices:
         bus.register(TransitionTask, self.transition_task)
         bus.register(PostponeTask, self.postpone_task)
         bus.register(CreateNote, self.create_note)
+        bus.register(AddNoteContentBlock, self.add_note_content_block)
+        bus.register(MoveNoteCategory, self.move_note_category)
         bus.register(UpdateNote, self.update_note)
         bus.register(DeleteNote, self.delete_note)
         bus.register(CreateReminder, self.create_reminder)
@@ -1228,6 +1328,7 @@ class ZhixuServices:
         bus.register(ListAgendaItems, self.list_agenda_items)
         bus.register(ListTasks, self.list_tasks)
         bus.register(SearchNotes, self.search_notes)
+        bus.register(ListNotes, self.list_notes)
         bus.register(ListReminders, self.list_reminders)
         bus.register(ListAnniversaries, self.list_anniversaries)
         bus.register(ListDailyBriefings, self.list_daily_briefings)

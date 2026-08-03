@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import sqlite3
 from dataclasses import replace
 from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
@@ -70,7 +72,7 @@ class SequentialIds:
 @pytest.fixture
 def database(tmp_path: Path) -> Database:
     database = Database(tmp_path / "zhixu.sqlite3")
-    assert database.migrate() == list(range(1, 20))
+    assert database.migrate() == list(range(1, 21))
     assert database.migrate() == []
     return database
 
@@ -127,6 +129,9 @@ def test_migration_creates_required_phase_one_tables(database: Database) -> None
         "tasks",
         "notes",
         "note_attachments",
+        "note_categories",
+        "note_content_blocks",
+        "note_content_fields",
         "notes_fts",
         "reminders",
         "outbox_deliveries",
@@ -142,6 +147,87 @@ def test_migration_creates_required_phase_one_tables(database: Database) -> None
         "agenda_notification_rules",
         "assistant_pending_plans",
     } <= names
+
+
+def test_structured_note_migration_preserves_existing_note(tmp_path: Path) -> None:
+    path = tmp_path / "legacy.sqlite3"
+    migration_dir = (
+        Path(__file__).parents[2]
+        / "src/zhixu/adapters/storage/sqlite/migrations"
+    )
+    legacy_migrations = sorted(migration_dir.glob("00[01][0-9]_*.sql"))
+    assert [int(item.name[:4]) for item in legacy_migrations] == list(range(1, 20))
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE schema_migrations (
+                version INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                checksum TEXT NOT NULL,
+                applied_at TEXT NOT NULL
+            )
+            """
+        )
+        for migration in legacy_migrations:
+            version_text, _, name = migration.stem.partition("_")
+            script = migration.read_text(encoding="utf-8")
+            connection.executescript(script)
+            connection.execute(
+                """
+                INSERT INTO schema_migrations(version,name,checksum,applied_at)
+                VALUES(?,?,?,?)
+                """,
+                (
+                    int(version_text),
+                    name,
+                    hashlib.sha256(script.encode("utf-8")).hexdigest(),
+                    NOW.isoformat(),
+                ),
+            )
+        connection.execute(
+            "INSERT INTO users(id,display_name,status,created_at) VALUES(?,?,?,?)",
+            ("user_legacy", "Legacy Synthetic", "active", NOW.isoformat()),
+        )
+        connection.execute(
+            """
+            INSERT INTO notes(
+                id,owner_user_id,creator_user_id,title,body,classification,
+                version,created_at,updated_at
+            ) VALUES(?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                "note_legacy",
+                "user_legacy",
+                "user_legacy",
+                "Legacy entry",
+                "Legacy synthetic body",
+                int(DataClassification.PERSONAL),
+                1,
+                NOW.isoformat(),
+                NOW.isoformat(),
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO notes_fts(note_id,owner_user_id,title,body)
+            VALUES(?,?,?,?)
+            """,
+            (
+                "note_legacy",
+                "user_legacy",
+                "Legacy entry",
+                "Legacy synthetic body",
+            ),
+        )
+
+    database = Database(path)
+    assert database.migrate() == [20]
+    note = NoteRepository(database).get("note_legacy")
+    assert note is not None
+    assert note.category_path == ("未分类",)
+    assert len(note.content_blocks) == 1
+    assert note.content_blocks[0].name == "默认内容"
+    assert note.content_blocks[0].body == "Legacy synthetic body"
 
 
 def test_hong_kong_business_calendar_is_scoped_to_explicit_rule() -> None:
@@ -492,6 +578,7 @@ def test_full_text_search_is_scoped_to_owner(
         owner_user_id=other_user.id,
         title="Other router",
         body="Other synthetic router",
+        content_blocks=(),
         version=1,
         created_at=None,
         updated_at=None,

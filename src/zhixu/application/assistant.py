@@ -19,6 +19,8 @@ from zhixu.domain import (
     CommandContext,
     DataClassification,
     ImportantDayKind,
+    NoteContentBlock,
+    NoteField,
     TaskStatus,
 )
 from zhixu.domain.errors import (
@@ -35,6 +37,7 @@ from zhixu.security import web_query_is_safe
 
 from .commands import (
     AcknowledgeReminder,
+    AddNoteContentBlock,
     CancelReminder,
     CreateAgenda,
     CreateAgendaNotification,
@@ -47,6 +50,7 @@ from .commands import (
     DeleteAgendaNotification,
     DeleteAnniversary,
     DeleteDailyBriefing,
+    MoveNoteCategory,
     PostponeTask,
     SetNotificationLeads,
     SnoozeReminder,
@@ -68,6 +72,7 @@ from .queries import (
     ListAgendaItems,
     ListAnniversaries,
     ListDailyBriefings,
+    ListNotes,
     ListReminders,
     ListTasks,
     SearchNotes,
@@ -110,11 +115,11 @@ class _WebAnswerEnvelope(BaseModel):
 
 
 _NATURAL_NOTE_LOOKUP = re.compile(
-    r"^(?:请|麻烦)?(?:帮我)?(?:查询|查找|搜索|找一下|查一下|找)(?P<query>.+)$",
+    r"^(?:请|麻烦)?(?:帮我)?(?:查询|查找|搜索|查看|找一下|查一下|找)(?P<query>.+)$",
     re.DOTALL,
 )
 _NOTE_LOOKUP_SUFFIX = re.compile(
-    r"(?:的)?(?:账号密码|账户密码|密码|账号|账户|备忘|记录|信息)$"
+    r"(?:的)?(?:账号密码|账户密码|密码|账号|账户|备忘|记录|信息|分类|目录|条目)$"
 )
 
 
@@ -131,6 +136,36 @@ def _note_lookup_query(text: str) -> str:
     query = match.group("query").strip(" ：:，,。.!！?")
     simplified = _NOTE_LOOKUP_SUFFIX.sub("", query).strip()
     return simplified or query
+
+
+def _note_content_blocks(arguments: object) -> tuple[NoteContentBlock, ...]:
+    if not isinstance(arguments, (list, tuple)):
+        return ()
+    blocks: list[NoteContentBlock] = []
+    for raw_block in arguments:
+        if not isinstance(raw_block, dict):
+            raise ValidationError("note content block is invalid")
+        raw_fields = raw_block.get("fields") or []
+        if not isinstance(raw_fields, (list, tuple)):
+            raise ValidationError("note fields are invalid")
+        fields: list[NoteField] = []
+        for raw_field in raw_fields:
+            if not isinstance(raw_field, dict):
+                raise ValidationError("note field is invalid")
+            fields.append(
+                NoteField(
+                    name=str(raw_field.get("name") or "").strip(),
+                    value=str(raw_field.get("value") or "").strip(),
+                )
+            )
+        blocks.append(
+            NoteContentBlock(
+                name=str(raw_block.get("name") or "").strip(),
+                body=str(raw_block.get("body") or "").strip(),
+                fields=tuple(fields),
+            )
+        )
+    return tuple(blocks)
 
 
 def _encode_plan_value(value):
@@ -236,7 +271,11 @@ _HELP_TEXT = """# 知序 · 帮助
 
 ## 备忘
 - `/记 需要记住的内容` — 保存备忘
+- `/备忘` — 按分类列出全部备忘条目
 - `/搜索 关键词` — 搜索备忘
+- `保存到“凭据/API/OpenAI”，新增一组“生产”：key: ...` — 分级保存内容块与字段
+- `在 OpenAI 条目下再记一条“测试”，key: ...` — 向已有条目追加内容块
+- `把 OpenAI 条目移到“凭据/API”` — 调整条目分类而不重写内容
 - `/总结 关键词` — 总结相关备忘
 
 ## 联网问答
@@ -282,6 +321,8 @@ _INTERNAL_GROUP_HELP_TEXT = """# 知序 · 内部群帮助
 - `/提醒` — 查看本群待处理提醒及 ID
 - `/待办` — 查看本群待办
 - `/任务 内容`、`/记 内容` — 写入本群共享库并记录创建人
+- `/备忘` — 按分类列出本群全部备忘条目
+- `保存到“分类/子分类/条目”，新增一组“内容块”：字段: 值` — 分级保存
 - `明天上午9点提醒我提交报告` — 创建本群日程提醒
 - `/搜索 关键词`、`/总结 关键词` — 查询本群共享备忘
 - `/问 问题` — 能力规划问答；本群共享备忘仍按权限优先检索
@@ -1266,6 +1307,9 @@ class AssistantEngine:
                 for reminder in reminders
             ]
             return AssistantReply("\n".join(lines), "ok", intent.source)
+        if intent.action is IntentAction.LIST_NOTES:
+            notes = self.services.query_bus().execute(ListNotes(), context)
+            return self._notes_reply(notes, source=intent.source)
         if intent.action is IntentAction.SEARCH_NOTES:
             query = str(arguments.get("query") or "").strip()
             if not query:
@@ -1291,10 +1335,19 @@ class AssistantEngine:
             title = str(arguments.get("title") or body[:80]).strip()
             if not body:
                 return AssistantReply("缺少备忘内容。", "invalid_intent", intent.source)
+            category_value = arguments.get("category_path") or ("未分类",)
+            if not isinstance(category_value, (list, tuple)):
+                return AssistantReply("备忘分类路径无效。", "invalid_intent", intent.source)
+            try:
+                content_blocks = _note_content_blocks(arguments.get("content_blocks"))
+            except ValidationError:
+                return AssistantReply("备忘内容块或字段无效。", "invalid_intent", intent.source)
             note = self.services.command_bus().execute(
                 CreateNote(
                     title=title,
                     body=body,
+                    category_path=tuple(str(value).strip() for value in category_value),
+                    content_blocks=content_blocks,
                     private=bool(arguments.get("private")),
                 ),
                 context,
@@ -1303,6 +1356,91 @@ class AssistantEngine:
             return AssistantReply(
                 f"已保存{scope}备忘：{note.title}",
                 "created",
+                intent.source,
+            )
+        if intent.action is IntentAction.ADD_NOTE_CONTENT_BLOCK:
+            entry_query = str(arguments.get("entry_query") or "").strip()
+            try:
+                blocks = _note_content_blocks([arguments.get("block")])
+            except ValidationError:
+                blocks = ()
+            if not entry_query or len(blocks) != 1:
+                return AssistantReply("缺少条目或内容块信息。", "invalid_intent", intent.source)
+            candidates = [
+                note
+                for note in self.services.query_bus().execute(ListNotes(limit=100), context)
+                if note.title.casefold() == entry_query.casefold()
+            ]
+            if not candidates:
+                return AssistantReply(
+                    f"没有找到条目：{entry_query}。请先创建条目或写出完整分类路径。",
+                    "not_found",
+                    intent.source,
+                )
+            if len(candidates) > 1:
+                paths = "\n".join(
+                    f"- {' / '.join(note.category_path)} / {note.title}"
+                    for note in candidates
+                )
+                return AssistantReply(
+                    "存在多个同名条目，请在名称中补充分类：\n" + paths,
+                    "ambiguous_note",
+                    intent.source,
+                )
+            block = blocks[0]
+            try:
+                note = self.services.command_bus().execute(
+                    AddNoteContentBlock(
+                        note_id=candidates[0].id,
+                        name=block.name,
+                        body=block.body,
+                        fields=block.fields,
+                    ),
+                    context,
+                )
+            except ValidationError:
+                return AssistantReply(
+                    "该条目中已有同名内容块，请换一个内容块名称。",
+                    "duplicate_note_block",
+                    intent.source,
+                )
+            return AssistantReply(
+                f"已向 {' / '.join(note.category_path)} / {note.title} 添加内容块：{block.name}",
+                "updated",
+                intent.source,
+            )
+        if intent.action is IntentAction.MOVE_NOTE_CATEGORY:
+            entry_query = str(arguments.get("entry_query") or "").strip()
+            category_value = arguments.get("category_path") or ()
+            if not entry_query or not isinstance(category_value, (list, tuple)):
+                return AssistantReply("缺少条目或目标分类。", "invalid_intent", intent.source)
+            candidates = [
+                note
+                for note in self.services.query_bus().execute(ListNotes(limit=100), context)
+                if note.title.casefold() == entry_query.casefold()
+            ]
+            if not candidates:
+                return AssistantReply(
+                    f"没有找到条目：{entry_query}。",
+                    "not_found",
+                    intent.source,
+                )
+            if len(candidates) > 1:
+                return AssistantReply(
+                    "存在多个同名条目，请先用完整分类查询后再移动。",
+                    "ambiguous_note",
+                    intent.source,
+                )
+            note = self.services.command_bus().execute(
+                MoveNoteCategory(
+                    note_id=candidates[0].id,
+                    category_path=tuple(str(value).strip() for value in category_value),
+                ),
+                context,
+            )
+            return AssistantReply(
+                f"已移动备忘：{' / '.join(note.category_path)} / {note.title}",
+                "updated",
                 intent.source,
             )
         if intent.action is IntentAction.CREATE_REMINDER:
@@ -1702,8 +1840,58 @@ class AssistantEngine:
             note_body = str(arguments.get("body") or note_title).strip()
             lines.extend(
                 [
+                    "**保存位置：** "
+                    + _escape_markdown_text(
+                        " / ".join(
+                            str(value)
+                            for value in arguments.get("category_path") or ("未分类",)
+                        )
+                    ),
                     f"**备忘：** {_escape_markdown_text(note_title)}",
                     f"**具体条目：** {_escape_markdown_text(note_body)}",
+                ]
+            )
+            for block in arguments.get("content_blocks") or []:
+                if not isinstance(block, dict):
+                    continue
+                lines.append(
+                    "**内容块：** "
+                    + _escape_markdown_text(str(block.get("name") or "默认内容"))
+                )
+                for field in block.get("fields") or []:
+                    if isinstance(field, dict):
+                        lines.append(
+                            f"- {_escape_markdown_text(str(field.get('name') or ''))}: "
+                            f"{_escape_markdown_text(str(field.get('value') or ''))}"
+                        )
+        elif intent.action is IntentAction.ADD_NOTE_CONTENT_BLOCK:
+            block = arguments.get("block") or {}
+            lines.extend(
+                [
+                    "**目标条目：** "
+                    + _escape_markdown_text(str(arguments.get("entry_query") or "")),
+                    "**新增内容块：** "
+                    + _escape_markdown_text(str(block.get("name") or "")),
+                ]
+            )
+            if isinstance(block, dict):
+                for field in block.get("fields") or []:
+                    if isinstance(field, dict):
+                        lines.append(
+                            f"- {_escape_markdown_text(str(field.get('name') or ''))}: "
+                            f"{_escape_markdown_text(str(field.get('value') or ''))}"
+                        )
+        elif intent.action is IntentAction.MOVE_NOTE_CATEGORY:
+            lines.extend(
+                [
+                    "**目标条目：** "
+                    + _escape_markdown_text(str(arguments.get("entry_query") or "")),
+                    "**移动到：** "
+                    + _escape_markdown_text(
+                        " / ".join(
+                            str(value) for value in arguments.get("category_path") or ()
+                        )
+                    ),
                 ]
             )
         elif intent.action is IntentAction.CREATE_TASK:
@@ -1868,6 +2056,7 @@ class AssistantEngine:
             IntentAction.LIST_REMINDERS,
             IntentAction.LIST_ANNIVERSARIES,
             IntentAction.LIST_DAILY_BRIEFINGS,
+            IntentAction.LIST_NOTES,
             IntentAction.SEARCH_NOTES,
         }
         if intent.action not in allowed:
@@ -1927,7 +2116,18 @@ class AssistantEngine:
     def _notes_reply(notes, *, source: str) -> AssistantReply:
         if not notes:
             return AssistantReply("没有找到相关备忘。", "not_found", source)
-        lines = [f"{note.title}：{note.body}" for note in notes]
+        lines: list[str] = []
+        for note in notes:
+            lines.append(f"【{' / '.join(note.category_path)} / {note.title}】")
+            if note.content_blocks:
+                for block in note.content_blocks:
+                    lines.append(f"- {block.name}")
+                    if block.body.strip():
+                        lines.append(f"  {block.body}")
+                    for field in block.fields:
+                        lines.append(f"  {field.name}: {field.value}")
+            elif note.body.strip():
+                lines.append(note.body)
         return AssistantReply("\n".join(lines), "ok", source)
 
     @staticmethod

@@ -1729,6 +1729,19 @@ class AdminAPI:
             "id": item.id,
             "title": item.title,
             "body": item.body,
+            "category_path": list(item.category_path),
+            "content_blocks": [
+                {
+                    "id": block.id,
+                    "name": block.name,
+                    "body": block.body,
+                    "fields": [
+                        {"name": field.name, "value": field.value}
+                        for field in block.fields
+                    ],
+                }
+                for block in item.content_blocks
+            ],
             "tags": list(item.tags),
             "attachments": [
                 {

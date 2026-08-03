@@ -34,6 +34,11 @@ class SearchNotes:
 
 
 @dataclass(frozen=True, slots=True)
+class ListNotes:
+    limit: int = 50
+
+
+@dataclass(frozen=True, slots=True)
 class ListReminders:
     include_inactive: bool = False
 
@@ -53,6 +58,7 @@ Query = (
     | ListAgendaItems
     | ListTasks
     | SearchNotes
+    | ListNotes
     | ListReminders
     | ListAnniversaries
     | ListDailyBriefings

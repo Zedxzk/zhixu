@@ -65,7 +65,7 @@ NOW = datetime(2026, 6, 1, 8, tzinfo=UTC)
 @pytest.fixture
 def database(tmp_path: Path) -> Database:
     value = Database(tmp_path / "zhixu.sqlite3")
-    assert value.migrate() == list(range(1, 20))
+    assert value.migrate() == list(range(1, 21))
     return value
 
 
