@@ -26,9 +26,15 @@ print("Secret scan passed.")
 PY
 
 mkdir -p dist
-pip-audit --strict --requirement requirements.lock
 pip-audit \
   --strict \
+  --no-deps \
+  --disable-pip \
+  --requirement requirements.lock
+pip-audit \
+  --strict \
+  --no-deps \
+  --disable-pip \
   --requirement requirements.lock \
   --format cyclonedx-json \
   --output dist/sbom.cdx.json
