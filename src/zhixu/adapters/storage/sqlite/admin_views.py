@@ -198,7 +198,7 @@ class AdminReadStore:
             rows = connection.execute(
                 """
                 SELECT occurred_at,model_ref,reason,outcome,
-                       estimated_input_units,output_units
+                       estimated_input_units,input_units,output_units,cached_input_units
                 FROM llm_call_events
                 WHERE owner_user_id=?
                 ORDER BY occurred_at DESC,id DESC

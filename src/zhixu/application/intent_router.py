@@ -21,6 +21,7 @@ from zhixu.ports import Clock, LLMCallReason, LLMRequest
 
 from .intents import IntentAction, ModelIntentProposal, ParsedIntent
 from .llm import LLMGateway
+from .temporal_context import temporal_context_prompt
 
 _MUTATING_MODEL_ACTIONS = {
     IntentAction.CREATE_AGENDA,
@@ -43,6 +44,20 @@ _BRIEFING_INCLUSION_PATTERN = re.compile(
     r"(?:并入|纳入|加入|放入|显示在|出现在).{0,8}(?:每日)?(?:早报|简报)(?:中|里)?"
 )
 _EXPLICIT_NOTIFICATION_PATTERN = re.compile(r"提醒|通知|推送|叫我|告诉我")
+_NATURAL_NOTE_PATTERN = re.compile(
+    r"^(?:请|麻烦)?(?:帮我)?(?:登记|记录|记下|保存)(?:一下|下)?[：:，,\s]*(?P<body>.+)$",
+    re.DOTALL,
+)
+_SCHEDULING_CUE_PATTERN = re.compile(
+    r"(?:提醒|通知|待办|任务|日程|会议|活动|截止|到期|"
+    r"今天|明天|后天|下周|下月|每(?:天|周|月|年)|"
+    r"\d{1,2}(?:[:：点时]|月|日|号)|\d{4}-\d{1,2}-\d{1,2})"
+)
+
+
+def _natural_note_title(body: str) -> str:
+    first_part = re.split(r"[,，;；\n]", body, maxsplit=1)[0].strip()
+    return (first_part or body)[:80]
 
 
 def _redact_action_links(text: str) -> tuple[str, tuple[str, ...]]:
@@ -210,6 +225,15 @@ class RuleIntentRouter:
         compact = re.sub(r"\s+", "", value)
         if value.lower() in {"/帮助", "/help", "帮助", "help", "/菜单", "菜单"}:
             return ParsedIntent(IntentAction.HELP)
+        natural_note = _NATURAL_NOTE_PATTERN.fullmatch(value)
+        if natural_note:
+            body = natural_note.group("body").strip()
+            if body and not _SCHEDULING_CUE_PATTERN.search(body):
+                return ParsedIntent(
+                    IntentAction.CREATE_NOTE,
+                    {"title": _natural_note_title(body), "body": body},
+                    requires_confirmation=True,
+                )
         plan_confirmation = re.fullmatch(
             r"/(确认|拒绝|取消)计划\s+(plan_[A-Za-z0-9_-]{8,80})",
             value,
@@ -611,35 +635,36 @@ class ModelIntentClassifier:
                 _BRIEFING_INCLUSION_PATTERN.sub("", redacted_text)
             )
         )
-        temporal_context = (
-            f" Reference time: {reference_time.isoformat()}."
-            if reference_time is not None
-            else ""
-        )
-        revision_instruction = (
-            " Revise the existing structured plan using the user's latest changes. "
-            "Keep every field the user did not ask to change. A request about notification "
-            "wording, time, or card style must only update notifications and must preserve "
-            "the recurring event and recurrence_rule. "
-            + (
-                f"You MUST return action={required_action.value}; changing the action is "
-                "forbidden. "
-                if required_action is not None
-                else ""
+        user_sections: list[str] = []
+        if reference_time is not None:
+            user_sections.append(temporal_context_prompt(reference_time))
+        if revision_context:
+            user_sections.append(f"Existing plan: {revision_context}")
+        if required_action is not None:
+            user_sections.append(
+                f"Required action: {required_action.value} (changing it is forbidden)"
             )
-            + "Existing plan: "
-            f"{revision_context}"
-            if revision_context
-            else ""
-        )
+        user_sections.append(f"User request:\n{redacted_text}")
         request = LLMRequest(
             model=self.model,
             system_prompt=(
-                "Classify the request into the provided schema. Never invent identifiers, "
-                "times, or actions. Resolve relative time only from the supplied reference "
-                "time. For a reminder request use action=create_reminder and include title, "
-                "confidence, and an ISO-8601 fire_at with timezone. For a recurring calendar "
-                "event use action=create_agenda with title, aware start_at, aware end_at, and "
+                "Classify the user's meaning into the provided schema. Choose the operation "
+                "from the requested outcome, not from an isolated keyword. Never invent "
+                "identifiers, times, facts, or actions. Resolve relative time only from the "
+                "supplied Trusted temporal context. Its now, timezone, calendar anchors, and "
+                "weekday are authoritative runtime data. Derive other relative dates from "
+                "those fields without guessing. Use create_note when the user asks to "
+                "record, save, register, or remember information and does not request a "
+                "future action; put "
+                "the complete information in body and a concise label in title. Use "
+                "create_task for work that should be completed, with due_at only when a due "
+                "time is stated. Use create_reminder only when the user explicitly asks to be "
+                "alerted at a usable future time; include title and an aware ISO-8601 fire_at. "
+                "Never turn a note or missing-time request into a reminder and never supply a "
+                "default reminder time. Use answer for a question that needs no stored data. "
+                "Set private=true only when the user explicitly asks for a private/personal "
+                "record. For a recurring calendar event use action=create_agenda with title, "
+                "aware start_at, aware end_at, and "
                 "an RFC 5545 recurrence_rule; an unspecified event time means an all-day "
                 "event starting at local midnight and ending at the next local midnight. "
                 "This project uses the ordinary calendar for all events except salary. "
@@ -678,10 +703,14 @@ class ModelIntentClassifier:
                 "as minutes before the event starts, where 0 means the moment it starts. "
                 "For a daily morning "
                 "briefing use action=create_daily_briefing and briefing_time; use 08:00 only "
-                "when the user says morning without a precise time. Return only JSON."
-                f"{temporal_context}{revision_instruction}"
+                "when the user says morning without a precise time. If an Existing plan is "
+                "supplied, revise it using only the user's latest changes and keep every "
+                "field they did not ask to change. A request about notification wording, "
+                "time, or card style must only update notifications and preserve the "
+                "recurring event and recurrence_rule. Obey Required action when supplied. "
+                "Return only JSON."
             ),
-            user_prompt=redacted_text,
+            user_prompt="\n\n".join(user_sections),
             response_schema=ModelIntentProposal.model_json_schema(),
         )
         response = self.gateway.generate(
@@ -713,6 +742,7 @@ class ModelIntentClassifier:
             for key, value in {
                 "query": proposal.query,
                 "title": proposal.title,
+                "body": proposal.body,
                 "answer": proposal.answer,
                 "fire_at": proposal.fire_at,
                 "due_at": proposal.due_at,
@@ -740,6 +770,7 @@ class ModelIntentClassifier:
                 "include_in_daily_briefing": (
                     proposal.include_in_daily_briefing or briefing_inclusion
                 ),
+                "private": proposal.private or None,
                 "task_id": proposal.task_id,
                 "reminder_id": proposal.reminder_id,
                 "resource_id": proposal.resource_id,

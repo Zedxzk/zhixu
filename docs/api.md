@@ -117,8 +117,8 @@ represented by opaque references; status and audit endpoints do not return raw p
 identifiers, credentials, message bodies, or database paths.
 
 The LLM usage view contains only timestamp, model reference, fixed invocation reason,
-success/failure outcome, and unit counts. It never stores or returns a prompt, response,
-note body, question, or provider credential.
+success/failure outcome, input/output unit counts, and provider-reported cached input units.
+It never stores or returns a prompt, response, note body, question, or provider credential.
 
 ## Isolated high-sensitivity vault
 

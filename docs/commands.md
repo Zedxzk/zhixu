@@ -210,6 +210,17 @@ trigger web search. General questions and summaries require an explicitly config
 Model output is accepted only through a strict action schema, and every proposed mutation
 requires code-side confirmation and authorization. L3/L4 data never enters a model prompt.
 
+Natural requests beginning with “登记”, “记录”, “记下”, or “保存” are staged as note
+previews when they contain no scheduling cue. They therefore cannot be turned into reminders
+with an invented time. Model prompts keep their long instruction prefix stable; changing
+reference times and plan revisions are placed in the user message so provider prefix caching
+can be reused and its reported hit units can be inspected in the LLM usage view.
+Every time-aware model request receives a trusted JSON context containing the exact local
+time, timezone and UTC offset, weekday, today/tomorrow anchors, Monday week boundaries, and
+month boundaries. An external agent can obtain the identical shape without duplicating date
+logic by running `python scripts/agent_time_context.py --timezone Asia/Shanghai` from an
+installed checkout.
+
 ## Message retention
 
 Inbound message bodies are processed in memory and are not stored as chat history. Only an

@@ -225,6 +225,11 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                 "usage": {
                     "prompt_tokens": int(usage.get("input_tokens") or 0),
                     "completion_tokens": int(usage.get("output_tokens") or 0),
+                    "prompt_cache_hit_tokens": int(
+                        usage.get("prompt_cache_hit_tokens")
+                        or usage.get("cache_read_input_tokens")
+                        or 0
+                    ),
                 },
             },
             ensure_ascii=False,

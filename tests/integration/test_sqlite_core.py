@@ -70,7 +70,7 @@ class SequentialIds:
 @pytest.fixture
 def database(tmp_path: Path) -> Database:
     database = Database(tmp_path / "zhixu.sqlite3")
-    assert database.migrate() == list(range(1, 19))
+    assert database.migrate() == list(range(1, 20))
     assert database.migrate() == []
     return database
 

@@ -37,7 +37,12 @@ class FakeTransport:
             return 408, {}
         return 200, {
             "choices": [{"message": {"content": '{"answer":"synthetic"}'}}],
-            "usage": {"prompt_tokens": 4, "completion_tokens": 2},
+            "usage": {
+                "prompt_tokens": 4,
+                "completion_tokens": 2,
+                "prompt_cache_hit_tokens": 3,
+                "prompt_cache_miss_tokens": 1,
+            },
         }
 
 
@@ -64,6 +69,9 @@ def test_openai_compatible_adapter_uses_strict_schema_without_leaking_key() -> N
     response = client.generate(request, timeout_seconds=3)
 
     assert response.content == '{"answer":"synthetic"}'
+    assert response.input_units == 4
+    assert response.output_units == 2
+    assert response.cached_input_units == 3
     call = transport.calls[0]
     assert call["url"] == "https://example.invalid/v1/chat/completions"
     assert call["payload"]["response_format"]["json_schema"]["strict"] is True

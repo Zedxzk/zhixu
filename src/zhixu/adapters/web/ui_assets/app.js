@@ -515,7 +515,7 @@ function renderSystem() {
     return metric;
   }));
   renderRows(qs("#outbox-list"), state.outbox, (item) => [item.channel || "—", item.message_kind, item.status, `${item.attempts}/${item.max_attempts}`], "暂无投递记录", ["渠道", "消息类型", "状态", "尝试"]);
-  renderRows(qs("#llm-list"), state.llm, (item) => [item.reason || "调用", item.model_ref || "模型", item.outcome, `${item.estimated_input_units || 0} → ${item.output_units || 0}`], "暂无模型调用", ["用途", "模型", "结果", "用量"]);
+  renderRows(qs("#llm-list"), state.llm, (item) => [item.reason || "调用", item.model_ref || "模型", item.outcome, `${item.input_units || item.estimated_input_units || 0}（缓存 ${item.cached_input_units || 0}）→ ${item.output_units || 0}`], "暂无模型调用", ["用途", "模型", "结果", "输入（缓存）→ 输出"]);
   renderRows(qs("#audit-list"), state.audit, (item) => [item.action, item.resource_kind, item.outcome, formatDate(item.occurred_at)], "暂无审计记录", ["操作", "资源", "结果", "时间"]);
 }
 

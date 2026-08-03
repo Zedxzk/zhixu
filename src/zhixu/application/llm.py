@@ -89,7 +89,9 @@ class LLMGateway:
                 owner_user_id=owner_user_id,
                 model_ref=model_ref,
                 outcome="failed",
+                input_units=0,
                 output_units=0,
+                cached_input_units=0,
             )
             self._circuit.failures += 1
             if self._circuit.failures >= self.failure_threshold:
@@ -102,6 +104,8 @@ class LLMGateway:
             owner_user_id=owner_user_id,
             model_ref=model_ref,
             outcome="completed",
+            input_units=response.input_units,
             output_units=response.output_units,
+            cached_input_units=response.cached_input_units,
         )
         return response

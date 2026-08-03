@@ -143,4 +143,9 @@ class OpenAICompatibleLLM:
             content,
             int(usage.get("prompt_tokens") or 0),
             int(usage.get("completion_tokens") or 0),
+            int(
+                usage.get("prompt_cache_hit_tokens")
+                or usage.get("cache_read_input_tokens")
+                or 0
+            ),
         )

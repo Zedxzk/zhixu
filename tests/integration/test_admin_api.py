@@ -69,7 +69,7 @@ class AdminParts:
 @pytest.fixture
 def admin(tmp_path: Path) -> AdminParts:
     database = Database(tmp_path / "zhixu.sqlite3")
-    assert database.migrate() == list(range(1, 19))
+    assert database.migrate() == list(range(1, 20))
     clock = FrozenClock(NOW)
     grants = GrantRepository(database)
     policy = PolicyEngine(grants.has_grant)
@@ -98,7 +98,7 @@ def admin(tmp_path: Path) -> AdminParts:
     )
     reads = AdminReadStore(database)
     outbound_database = Database(tmp_path / "outbound-targets.sqlite3")
-    assert outbound_database.migrate() == list(range(1, 19))
+    assert outbound_database.migrate() == list(range(1, 20))
     outbound_targets = OutboundTargetStore(
         outbound_database,
         FieldCipher(b"o" * 32),

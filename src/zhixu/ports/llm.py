@@ -21,6 +21,7 @@ class LLMResponse:
     content: str = field(repr=False)
     input_units: int = 0
     output_units: int = 0
+    cached_input_units: int = 0
 
 
 class LLMCallReason(StrEnum):
@@ -69,5 +70,7 @@ class LLMUsagePort(Protocol):
         owner_user_id: str,
         model_ref: str,
         outcome: str,
+        input_units: int,
         output_units: int,
+        cached_input_units: int,
     ) -> None: ...

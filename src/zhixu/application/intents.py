@@ -73,6 +73,7 @@ class ModelIntentProposal(BaseModel):
     confidence: float = Field(ge=0, le=1)
     query: str | None = Field(default=None, max_length=500)
     title: str | None = Field(default=None, max_length=500)
+    body: str | None = Field(default=None, max_length=4000)
     answer: str | None = Field(default=None, max_length=4000)
     fire_at: datetime | None = None
     due_at: datetime | None = None
@@ -94,6 +95,7 @@ class ModelIntentProposal(BaseModel):
     )
     links: list[ModelLinkLabelProposal] = Field(default_factory=list, max_length=8)
     include_in_daily_briefing: bool = False
+    private: bool = False
     task_id: str | None = Field(default=None, max_length=160)
     reminder_id: str | None = Field(default=None, max_length=160)
     resource_id: str | None = Field(default=None, max_length=160)

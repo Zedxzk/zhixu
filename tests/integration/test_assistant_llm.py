@@ -93,7 +93,7 @@ def assistant_parts(
     tmp_path: Path,
 ) -> tuple[ZhixuServices, FrozenClock, Database, CommandContext]:
     database = Database(tmp_path / "zhixu.sqlite3")
-    assert database.migrate() == list(range(1, 19))
+    assert database.migrate() == list(range(1, 20))
     clock = FrozenClock(NOW)
     users = UserRepository(database)
     policy = PolicyEngine()
@@ -313,7 +313,14 @@ def test_fixed_commands_stay_deterministic_but_reminders_use_model(
     assert invalid_calendar.code == "invalid_intent"
     assert client.calls == 2
     assert all(
-        "Reference time: 2026-06-01T16:00:00+08:00" in request.system_prompt
+        '"now":"2026-06-01T16:00:00+08:00"' in request.user_prompt
+        and '"tomorrow":"2026-06-02"' in request.user_prompt
+        and '"timezone":"Asia/Shanghai"' in request.user_prompt
+        for request in client.requests
+    )
+    assert len({request.system_prompt for request in client.requests}) == 1
+    assert all(
+        "2026-06-01T16:00:00+08:00" not in request.system_prompt
         for request in client.requests
     )
     with database.connect() as connection:
@@ -393,7 +400,8 @@ def test_natural_compound_schedule_is_previewed_revised_and_materialized(
     revised_preview = engine.handle("Change it to 09:00", context, target_ref=target)
     assert revised_preview.code == "plan_preview"
     assert "09:00" in revised_preview.text
-    assert "Existing plan:" in client.requests[1].system_prompt
+    assert "Existing plan:" in client.requests[1].user_prompt
+    assert "Existing plan:" not in client.requests[1].system_prompt
 
     accepted = engine.handle(
         revised_preview.buttons[0].action,
@@ -691,7 +699,72 @@ def test_revision_cannot_downgrade_recurring_agenda_to_one_off_reminder(
     assert "提醒卡片" in guarded.text
     assert "2026-06-30T08:00" not in guarded.text
     assert services.agenda.list_for_owner("user_test") == []
-    assert "MUST return action=create_agenda" in client.requests[1].system_prompt
+    assert "Required action: create_agenda" in client.requests[1].user_prompt
+    assert client.requests[0].system_prompt == client.requests[1].system_prompt
+
+
+def test_natural_record_request_becomes_confirmed_note_without_llm_or_fake_time(
+    assistant_parts: tuple[ZhixuServices, FrozenClock, Database, CommandContext],
+) -> None:
+    services, clock, database, context = assistant_parts
+    client = FakeLLM([])
+    engine = engine_with(services, clock, database, client)
+    group_context = CommandContext(
+        actor_user_id=context.actor_user_id,
+        roles=frozenset({"internal_group_member"}),
+        shared_owner_user_id=context.actor_user_id,
+        request_channel=RequestChannel.GROUP_CHAT,
+    )
+    target = "qqc_synthetic_note_group"
+    body = "测试网络账号密码, synthetic-account, 密码 synthetic-password"
+
+    preview = engine.handle(f"登记{body}", group_context, target_ref=target)
+
+    assert preview.code == "plan_preview"
+    assert "写入范围：** 当前内部群共享库" in preview.text
+    assert "备忘：** 测试网络账号密码" in preview.text
+    assert "具体条目：**" in preview.text
+    assert body.replace("-", "\\-") in preview.text
+    assert "提醒：**" not in preview.text
+    assert "时间：**" not in preview.text
+    assert client.calls == 0
+    assert services.notes.list_for_owner(context.actor_user_id) == []
+
+    accepted = engine.handle(preview.buttons[0].action, group_context, target_ref=target)
+
+    assert accepted.code == "created"
+    notes = services.notes.list_for_owner(context.actor_user_id)
+    assert len(notes) == 1
+    assert notes[0].body == body
+
+
+def test_model_note_preview_shows_item_when_body_is_omitted(
+    assistant_parts: tuple[ZhixuServices, FrozenClock, Database, CommandContext],
+) -> None:
+    services, clock, database, context = assistant_parts
+    client = FakeLLM(
+        [
+            json.dumps(
+                {
+                    "action": "create_note",
+                    "confidence": 0.99,
+                    "title": "Synthetic model note item",
+                }
+            )
+        ]
+    )
+    engine = engine_with(services, clock, database, client)
+
+    preview = engine.handle(
+        "Archive this synthetic information",
+        context,
+        target_ref="qqc_synthetic_model_note",
+    )
+
+    assert preview.code == "plan_preview"
+    assert "备忘：** Synthetic model note item" in preview.text
+    assert "具体条目：** Synthetic model note item" in preview.text
+    assert "操作：** `create_note`" not in preview.text
 
 
 def test_fts_answer_wins_before_model(
@@ -861,7 +934,8 @@ def test_general_answer_and_summary_use_strict_json(
     with database.connect() as connection:
         events = connection.execute(
             """
-            SELECT reason,outcome,estimated_input_units,output_units
+            SELECT reason,outcome,estimated_input_units,input_units,
+                   output_units,cached_input_units
             FROM llm_call_events ORDER BY id
             """
         ).fetchall()
@@ -872,7 +946,9 @@ def test_general_answer_and_summary_use_strict_json(
     ]
     assert all(str(event["outcome"]) == "completed" for event in events)
     assert all(int(event["estimated_input_units"]) > 0 for event in events)
+    assert all(int(event["input_units"]) == 10 for event in events)
     assert all(int(event["output_units"]) == 5 for event in events)
+    assert all(int(event["cached_input_units"]) == 0 for event in events)
     raw_database = database.path.read_bytes()
     assert b"A completely open synthetic question" not in raw_database
     assert b"A synthetic explicit question" not in raw_database
@@ -922,7 +998,9 @@ def test_explicit_question_uses_controlled_web_search_with_sources(
     assert client.requests[0].web_search is False
     assert "信息来源规划器" in client.requests[0].system_prompt
     assert client.requests[1].web_search is True
-    assert client.requests[1].user_prompt == "current synthetic fact"
+    assert client.requests[1].user_prompt.endswith(
+        "用户问题：\ncurrent synthetic fact"
+    )
     assert "备忘" not in client.requests[1].user_prompt
 
 

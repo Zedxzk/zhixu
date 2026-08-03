@@ -101,13 +101,21 @@ class SQLiteLLMUsage:
         owner_user_id: str,
         model_ref: str,
         outcome: str,
+        input_units: int,
         output_units: int,
+        cached_input_units: int,
     ) -> None:
         if outcome not in {"completed", "failed"}:
             raise ValueError("LLM call outcome is invalid")
         now = self.clock.now()
         with self.database.transaction() as connection:
             recorded_output = max(0, output_units) if outcome == "completed" else 0
+            recorded_input = max(0, input_units) if outcome == "completed" else 0
+            recorded_cached_input = (
+                min(recorded_input, max(0, cached_input_units))
+                if outcome == "completed"
+                else 0
+            )
             if outcome == "completed":
                 for kind in ("day", "month"):
                     connection.execute(
@@ -127,12 +135,14 @@ class SQLiteLLMUsage:
             changed = connection.execute(
                 """
                 UPDATE llm_call_events
-                SET outcome=?,output_units=?
+                SET outcome=?,input_units=?,output_units=?,cached_input_units=?
                 WHERE id=? AND owner_user_id=? AND model_ref=? AND outcome='reserved'
                 """,
                 (
                     outcome,
+                    recorded_input,
                     recorded_output,
+                    recorded_cached_input,
                     call_id,
                     owner_user_id,
                     model_ref,
