@@ -109,8 +109,28 @@ class _WebAnswerEnvelope(BaseModel):
     sources: list[_WebSourceEnvelope] = Field(max_length=5)
 
 
+_NATURAL_NOTE_LOOKUP = re.compile(
+    r"^(?:请|麻烦)?(?:帮我)?(?:查询|查找|搜索|找一下|查一下|找)(?P<query>.+)$",
+    re.DOTALL,
+)
+_NOTE_LOOKUP_SUFFIX = re.compile(
+    r"(?:的)?(?:账号密码|账户密码|密码|账号|账户|备忘|记录|信息)$"
+)
+
+
 def _escape_markdown_text(value: str) -> str:
     return re.sub(r"([\\`*_{}\[\]()#+\-.!>|])", r"\\\1", value)
+
+
+def _note_lookup_query(text: str) -> str:
+    """Extract a stored subject while leaving unrelated natural questions untouched."""
+
+    match = _NATURAL_NOTE_LOOKUP.fullmatch(text.strip())
+    if match is None:
+        return text
+    query = match.group("query").strip(" ：:，,。.!！?")
+    simplified = _NOTE_LOOKUP_SUFFIX.sub("", query).strip()
+    return simplified or query
 
 
 def _encode_plan_value(value):
@@ -598,11 +618,12 @@ class AssistantEngine:
                 requires_confirmation=True,
             )
         if intent is None:
+            note_query = _note_lookup_query(text)
             matches = (
                 []
                 if "public_group_guest" in context.roles
                 else self.services.query_bus().execute(
-                    SearchNotes(text, limit=3),
+                    SearchNotes(note_query, limit=3),
                     context,
                 )
             )

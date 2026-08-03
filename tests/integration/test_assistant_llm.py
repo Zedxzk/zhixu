@@ -713,6 +713,7 @@ def test_natural_record_request_becomes_confirmed_note_without_llm_or_fake_time(
         actor_user_id=context.actor_user_id,
         roles=frozenset({"internal_group_member"}),
         shared_owner_user_id=context.actor_user_id,
+        readable_shared_owner_user_ids=(context.actor_user_id,),
         request_channel=RequestChannel.GROUP_CHAT,
     )
     target = "qqc_synthetic_note_group"
@@ -736,6 +737,12 @@ def test_natural_record_request_becomes_confirmed_note_without_llm_or_fake_time(
     notes = services.notes.list_for_owner(context.actor_user_id)
     assert len(notes) == 1
     assert notes[0].body == body
+
+    found = engine.handle("查询测试网络密码", group_context, target_ref=target)
+
+    assert found.source == "fts"
+    assert body in found.text
+    assert client.calls == 0
 
 
 def test_model_note_preview_shows_item_when_body_is_omitted(

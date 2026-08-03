@@ -1455,7 +1455,9 @@ class NoteRepository:
         tokens = re.findall(r"\w+", query, flags=re.UNICODE)
         if not tokens:
             return []
-        match = " AND ".join(f'"{token.replace(chr(34), chr(34) * 2)}"' for token in tokens)
+        match = " AND ".join(
+            f'"{token.replace(chr(34), chr(34) * 2)}"*' for token in tokens
+        )
         with self.database.connect() as connection:
             matches = connection.execute(
                 """
