@@ -1,128 +1,206 @@
-"""Dependency-free, deterministic PNG rendering for monthly calendars."""
+"""Deterministic PNG rendering for monthly calendars and daily agendas.
+
+Drawn at twice the delivered size and resampled down, so corners, dots and text
+edges are smooth. Only dates and aggregate counts enter an image; titles stay in
+the accompanying card, which also keeps the renderer free of CJK typography.
+"""
 
 from __future__ import annotations
 
-import binascii
-import struct
-import zlib
+from calendar import month_name
 from datetime import date, timedelta
+from functools import lru_cache
+from io import BytesIO
+from pathlib import Path
+
+from PIL import Image, ImageDraw, ImageFont
 
 from zhixu.channels import CalendarPreview, DailyAgendaPreview
 
-_FONT = {
-    "0": ("01110", "10001", "10011", "10101", "11001", "10001", "01110"),
-    "1": ("00100", "01100", "00100", "00100", "00100", "00100", "01110"),
-    "2": ("01110", "10001", "00001", "00010", "00100", "01000", "11111"),
-    "3": ("11110", "00001", "00001", "01110", "00001", "00001", "11110"),
-    "4": ("00010", "00110", "01010", "10010", "11111", "00010", "00010"),
-    "5": ("11111", "10000", "10000", "11110", "00001", "00001", "11110"),
-    "6": ("01110", "10000", "10000", "11110", "10001", "10001", "01110"),
-    "7": ("11111", "00001", "00010", "00100", "01000", "01000", "01000"),
-    "8": ("01110", "10001", "10001", "01110", "10001", "10001", "01110"),
-    "9": ("01110", "10001", "10001", "01111", "00001", "00001", "01110"),
-    "A": ("01110", "10001", "10001", "11111", "10001", "10001", "10001"),
-    "B": ("11110", "10001", "10001", "11110", "10001", "10001", "11110"),
-    "C": ("01111", "10000", "10000", "10000", "10000", "10000", "01111"),
-    "D": ("11110", "10001", "10001", "10001", "10001", "10001", "11110"),
-    "E": ("11111", "10000", "10000", "11110", "10000", "10000", "11111"),
-    "F": ("11111", "10000", "10000", "11110", "10000", "10000", "10000"),
-    "H": ("10001", "10001", "10001", "11111", "10001", "10001", "10001"),
-    "I": ("11111", "00100", "00100", "00100", "00100", "00100", "11111"),
-    "L": ("10000", "10000", "10000", "10000", "10000", "10000", "11111"),
-    "M": ("10001", "11011", "10101", "10101", "10001", "10001", "10001"),
-    "N": ("10001", "11001", "10101", "10011", "10001", "10001", "10001"),
-    "O": ("01110", "10001", "10001", "10001", "10001", "10001", "01110"),
-    "R": ("11110", "10001", "10001", "11110", "10100", "10010", "10001"),
-    "S": ("01111", "10000", "10000", "01110", "00001", "00001", "11110"),
-    "T": ("11111", "00100", "00100", "00100", "00100", "00100", "00100"),
-    "U": ("10001", "10001", "10001", "10001", "10001", "10001", "01110"),
-    "V": ("10001", "10001", "10001", "10001", "10001", "01010", "00100"),
-    "W": ("10001", "10001", "10001", "10101", "10101", "11011", "10001"),
-    "Y": ("10001", "10001", "01010", "00100", "00100", "00100", "00100"),
-    "-": ("00000", "00000", "00000", "11111", "00000", "00000", "00000"),
-}
+# Everything is laid out at this scale and resampled down once at the end.
+_SUPERSAMPLE = 2
+
+_WIDTH, _HEIGHT = 1120, 880
+
+_BACKGROUND = (17, 24, 39)
+_SURFACE = (31, 41, 55)
+_SURFACE_MUTED = (24, 32, 45)
+_HAIRLINE = (55, 65, 81)
+_PRIMARY = (243, 244, 246)
+_MUTED = (148, 163, 184)
+_FAINT = (100, 116, 139)
+_ACCENT = (59, 130, 246)
+_BUSY = (251, 146, 60)
+_AGENDA = (59, 130, 246)
+_REMINDER = (251, 146, 60)
+_ANNIVERSARY = (167, 139, 250)
+
+_WEEKDAYS = ("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
 
 
-class _Canvas:
-    def __init__(self, width: int, height: int, color: tuple[int, int, int]) -> None:
+# Installed separately by the host; the bundled face is Latin-only. Titles are
+# simply left out when none of these is present, so a missing font degrades the
+# image instead of failing a briefing.
+_CJK_FONT_CANDIDATES = (
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/arphic/uming.ttc",
+)
+
+
+@lru_cache(maxsize=1)
+def _cjk_font_path() -> str | None:
+    for candidate in _CJK_FONT_CANDIDATES:
+        if Path(candidate).is_file():
+            return candidate
+    return None
+
+
+def cjk_titles_available() -> bool:
+    """Whether titles can be drawn; preflight reports this to the operator."""
+
+    return _cjk_font_path() is not None
+
+
+@lru_cache(maxsize=32)
+def _font(size: int) -> ImageFont.FreeTypeFont:
+    """The scalable font Pillow bundles; no font file has to be shipped."""
+
+    return ImageFont.load_default(size=size * _SUPERSAMPLE)
+
+
+@lru_cache(maxsize=32)
+def _title_font(size: int) -> ImageFont.FreeTypeFont | None:
+    path = _cjk_font_path()
+    if path is None:
+        return None
+    return ImageFont.truetype(path, size * _SUPERSAMPLE)
+
+
+# The bundled face covers Latin only. Typographic punctuation and any CJK would
+# come out as replacement boxes, so fold what we can and drop the rest.
+_ASCII_FOLDING = str.maketrans(
+    {
+        "–": "-",
+        "—": "-",
+        "‘": "'",
+        "’": "'",
+        "“": '"',
+        "”": '"',
+        "…": "...",
+        " ": " ",
+    }
+)
+
+
+def _drawable(value: str) -> str:
+    folded = value.translate(_ASCII_FOLDING)
+    return "".join(character for character in folded if character.isascii())
+
+
+class _Sheet:
+    """A supersampled drawing surface that flattens to a PNG."""
+
+    def __init__(self, width: int, height: int) -> None:
         self.width = width
         self.height = height
-        self.pixels = bytearray(color * (width * height))
+        self._image = Image.new(
+            "RGB",
+            (width * _SUPERSAMPLE, height * _SUPERSAMPLE),
+            _BACKGROUND,
+        )
+        self.draw = ImageDraw.Draw(self._image)
 
-    def rect(
+    def _box(self, x: float, y: float, width: float, height: float) -> tuple[float, ...]:
+        left, top = x * _SUPERSAMPLE, y * _SUPERSAMPLE
+        return (left, top, left + width * _SUPERSAMPLE - 1, top + height * _SUPERSAMPLE - 1)
+
+    def panel(
         self,
-        x: int,
-        y: int,
-        width: int,
-        height: int,
-        color: tuple[int, int, int],
+        x: float,
+        y: float,
+        width: float,
+        height: float,
+        *,
+        radius: float,
+        fill: tuple[int, int, int] | None,
+        outline: tuple[int, int, int] | None = None,
+        outline_width: int = 1,
     ) -> None:
-        x0, y0 = max(0, x), max(0, y)
-        x1, y1 = min(self.width, x + width), min(self.height, y + height)
-        row = bytes(color) * max(0, x1 - x0)
-        for current_y in range(y0, y1):
-            start = (current_y * self.width + x0) * 3
-            self.pixels[start : start + len(row)] = row
+        self.draw.rounded_rectangle(
+            self._box(x, y, width, height),
+            radius=radius * _SUPERSAMPLE,
+            fill=fill,
+            outline=outline,
+            width=outline_width * _SUPERSAMPLE,
+        )
 
-    def circle(
-        self,
-        center_x: int,
-        center_y: int,
-        radius: int,
-        color: tuple[int, int, int],
-    ) -> None:
-        radius_squared = radius * radius
-        for y in range(center_y - radius, center_y + radius + 1):
-            distance = radius_squared - (y - center_y) ** 2
-            if distance < 0:
-                continue
-            half_width = int(distance**0.5)
-            self.rect(center_x - half_width, y, half_width * 2 + 1, 1, color)
+    def rule(self, x: float, y: float, width: float, colour: tuple[int, int, int]) -> None:
+        self.panel(x, y, width, 1, radius=0, fill=colour)
 
-    def text_width(self, value: str, scale: int) -> int:
-        return max(0, len(value) * 6 * scale - scale)
+    def dot(self, x: float, y: float, radius: float, colour: tuple[int, int, int]) -> None:
+        centre_x, centre_y = x * _SUPERSAMPLE, y * _SUPERSAMPLE
+        span = radius * _SUPERSAMPLE
+        self.draw.ellipse(
+            (centre_x - span, centre_y - span, centre_x + span, centre_y + span),
+            fill=colour,
+        )
 
     def text(
         self,
-        x: int,
-        y: int,
+        x: float,
+        y: float,
         value: str,
-        scale: int,
-        color: tuple[int, int, int],
+        size: int,
+        colour: tuple[int, int, int],
+        *,
+        anchor: str = "la",
     ) -> None:
-        cursor = x
-        for character in value.upper():
-            glyph = _FONT.get(character)
-            if glyph is not None:
-                for row_index, row in enumerate(glyph):
-                    for column_index, pixel in enumerate(row):
-                        if pixel == "1":
-                            self.rect(
-                                cursor + column_index * scale,
-                                y + row_index * scale,
-                                scale,
-                                scale,
-                                color,
-                            )
-            cursor += 6 * scale
+        self.draw.text(
+            (x * _SUPERSAMPLE, y * _SUPERSAMPLE),
+            _drawable(value),
+            font=_font(size),
+            fill=colour,
+            anchor=anchor,
+        )
+
+    def title_text(
+        self,
+        x: float,
+        y: float,
+        value: str,
+        size: int,
+        colour: tuple[int, int, int],
+        *,
+        max_width: float,
+    ) -> bool:
+        """Draw a possibly-CJK title, or report that no font could render it."""
+
+        font = _title_font(size)
+        if font is None or not value:
+            return False
+        limit = max_width * _SUPERSAMPLE
+        text = value
+        while text and self.draw.textlength(text, font=font) > limit:
+            text = text[:-1]
+        if not text:
+            return False
+        if text != value:
+            text = text[:-1] + "…"
+        self.draw.text(
+            (x * _SUPERSAMPLE, y * _SUPERSAMPLE),
+            text,
+            font=font,
+            fill=colour,
+            anchor="la",
+        )
+        return True
 
     def png(self) -> bytes:
-        scanlines = bytearray()
-        row_size = self.width * 3
-        for y in range(self.height):
-            scanlines.append(0)
-            start = y * row_size
-            scanlines.extend(self.pixels[start : start + row_size])
-        signature = b"\x89PNG\r\n\x1a\n"
-        header = struct.pack(">IIBBBBB", self.width, self.height, 8, 2, 0, 0, 0)
-        return signature + _chunk(b"IHDR", header) + _chunk(
-            b"IDAT", zlib.compress(bytes(scanlines), level=9)
-        ) + _chunk(b"IEND", b"")
-
-
-def _chunk(kind: bytes, data: bytes) -> bytes:
-    checksum = binascii.crc32(kind + data) & 0xFFFFFFFF
-    return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", checksum)
+        flattened = self._image.resize((self.width, self.height), Image.LANCZOS)
+        buffer = BytesIO()
+        flattened.save(buffer, format="PNG", optimize=True)
+        return buffer.getvalue()
 
 
 def _calendar_grid(year: int, month: int) -> tuple[date, ...]:
@@ -134,117 +212,117 @@ def _calendar_grid(year: int, month: int) -> tuple[date, ...]:
 
 
 def render_calendar_png(preview: CalendarPreview) -> bytes:
-    """Render a fixed-grid PNG; only dates and aggregate counts enter the image."""
+    """Render a fixed six-week grid; only dates and counts enter the image."""
 
-    width, height = 1120, 820
-    background = (15, 23, 42)
-    panel = (30, 41, 59)
-    adjacent_panel = (23, 32, 48)
-    border = (51, 65, 85)
-    primary = (241, 245, 249)
-    muted = (148, 163, 184)
-    today = (37, 99, 235)
-    busy = (244, 114, 86)
-    canvas = _Canvas(width, height, background)
+    sheet = _Sheet(_WIDTH, _HEIGHT)
 
-    title = f"{preview.year:04d}-{preview.month:02d}"
-    canvas.text(62, 48, title, 8, primary)
-    canvas.rect(62, 120, 996, 2, border)
+    sheet.text(64, 52, month_name[preview.month].upper(), 40, _PRIMARY)
+    sheet.text(64, 108, str(preview.year), 22, _FAINT)
+    sheet.rule(64, 152, _WIDTH - 128, _HAIRLINE)
 
-    weekdays = ("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
-    cell_width, cell_height, gap = 136, 88, 7
-    grid_x, grid_y = 61, 205
-    for index, label in enumerate(weekdays):
-        x = grid_x + index * (cell_width + gap)
-        label_width = canvas.text_width(label, 3)
-        canvas.text(x + (cell_width - label_width) // 2, 151, label, 3, muted)
+    margin, gap = 64, 10
+    cell_width = (_WIDTH - margin * 2 - gap * 6) / 7
+    cell_height = 92
+    header_y = 176
+    grid_y = 212
+
+    for index, label in enumerate(_WEEKDAYS):
+        centre = margin + index * (cell_width + gap) + cell_width / 2
+        colour = _FAINT if index >= 5 else _MUTED
+        sheet.text(centre, header_y, label, 17, colour, anchor="ma")
 
     busy_counts = dict(preview.busy_day_counts)
-    grid = _calendar_grid(preview.year, preview.month)
-    for row_index in range(6):
-        for column_index in range(7):
-            cell_date = grid[row_index * 7 + column_index]
-            day = cell_date.day
-            in_month = (
-                cell_date.year == preview.year and cell_date.month == preview.month
-            )
-            x = grid_x + column_index * (cell_width + gap)
-            y = grid_y + row_index * (cell_height + gap)
-            fill = panel if in_month else adjacent_panel
-            if in_month and day == preview.today_day:
-                fill = today
-            canvas.rect(x, y, cell_width, cell_height, border)
-            canvas.rect(x + 2, y + 2, cell_width - 4, cell_height - 4, fill)
-            day_value = str(day)
-            day_color = primary if in_month else muted
-            canvas.text(x + 15, y + 15, day_value, 5, day_color)
-            count = busy_counts.get(day) if in_month else None
-            if count is not None:
-                canvas.circle(x + cell_width - 25, y + cell_height - 24, 14, busy)
-                count_value = str(min(count, 99))
-                count_width = canvas.text_width(count_value, 2)
-                canvas.text(
-                    x + cell_width - 25 - count_width // 2,
-                    y + cell_height - 31,
-                    count_value,
-                    2,
-                    primary,
-                )
+    for offset, cell_date in enumerate(_calendar_grid(preview.year, preview.month)):
+        row, column = divmod(offset, 7)
+        x = margin + column * (cell_width + gap)
+        y = grid_y + row * (cell_height + gap)
+        in_month = (
+            cell_date.year == preview.year and cell_date.month == preview.month
+        )
+        is_today = in_month and cell_date.day == preview.today_day
 
-    canvas.circle(72, 786, 9, busy)
-    canvas.text(93, 772, "BUSY", 3, muted)
+        if is_today:
+            sheet.panel(x, y, cell_width, cell_height, radius=14, fill=_ACCENT)
+            number_colour = (255, 255, 255)
+        else:
+            sheet.panel(
+                x,
+                y,
+                cell_width,
+                cell_height,
+                radius=14,
+                fill=_SURFACE if in_month else _SURFACE_MUTED,
+                outline=_HAIRLINE if in_month else None,
+            )
+            number_colour = _PRIMARY if in_month else _FAINT
+
+        sheet.text(x + 16, y + 14, str(cell_date.day), 26, number_colour)
+
+        count = busy_counts.get(cell_date.day) if in_month else None
+        if count:
+            dot_colour = (255, 255, 255) if is_today else _BUSY
+            for dot_index in range(min(count, 3)):
+                sheet.dot(x + 24 + dot_index * 16, y + cell_height - 22, 4.5, dot_colour)
+
+    legend_y = grid_y + 6 * (cell_height + gap) + 20
+    sheet.dot(margin + 6, legend_y, 5, _BUSY)
+    sheet.text(margin + 22, legend_y - 10, "SCHEDULED", 16, _MUTED)
     if preview.today_day is not None:
-        canvas.rect(265, 776, 20, 20, today)
-        canvas.text(300, 772, "TODAY", 3, muted)
-    return canvas.png()
+        sheet.panel(margin + 176, legend_y - 8, 16, 16, radius=5, fill=_ACCENT)
+        sheet.text(margin + 202, legend_y - 10, "TODAY", 16, _MUTED)
+    return sheet.png()
 
 
 def render_daily_agenda_png(preview: DailyAgendaPreview) -> bytes:
-    """Render a title-free timeline; private titles remain in the accompanying card."""
-
-    width, height = 1120, 820
-    background = (15, 23, 42)
-    panel = (30, 41, 59)
-    border = (51, 65, 85)
-    primary = (241, 245, 249)
-    muted = (148, 163, 184)
-    agenda_color = (37, 99, 235)
-    reminder_color = (244, 114, 86)
-    canvas = _Canvas(width, height, background)
-    canvas.text(62, 45, f"{preview.year:04d}-{preview.month:02d}-{preview.day:02d}", 7, primary)
-    canvas.text(62, 112, "TODAY SCHEDULE", 3, muted)
-    canvas.rect(62, 156, 996, 2, border)
-
-    y = 186
-    if preview.anniversary_day_numbers:
-        values = " ".join(f"DAY {value}" for value in preview.anniversary_day_numbers[:3])
-        canvas.rect(62, y, 996, 64, border)
-        canvas.rect(64, y + 2, 992, 60, (51, 45, 83))
-        canvas.text(88, y + 18, values, 3, (216, 180, 254))
-        y += 82
+    """Render a title-free timeline; private titles remain in the card."""
 
     visible = preview.entries[:7]
+    anniversary_rows = 1 if preview.anniversary_day_numbers else 0
+    content_height = 190 + anniversary_rows * 80 + max(len(visible), 1) * 76
+    sheet = _Sheet(_WIDTH, min(_HEIGHT, content_height + 40))
+    stamp = date(preview.year, preview.month, preview.day)
+
+    sheet.text(64, 52, stamp.strftime("%d %B").upper().lstrip("0"), 40, _PRIMARY)
+    sheet.text(64, 108, stamp.strftime("%A %Y").upper(), 22, _FAINT)
+    sheet.rule(64, 152, _WIDTH - 128, _HAIRLINE)
+
+    y = 190.0
+    if preview.anniversary_day_numbers:
+        values = "   ".join(
+            f"DAY {value}" for value in preview.anniversary_day_numbers[:3]
+        )
+        sheet.panel(64, y, _WIDTH - 128, 64, radius=14, fill=_SURFACE)
+        sheet.panel(64, y, 6, 64, radius=3, fill=_ANNIVERSARY)
+        sheet.text(96, y + 20, values, 22, _ANNIVERSARY)
+        y += 80
+
     if not visible:
-        canvas.text(62, y + 80, "NO EVENTS", 5, muted)
-    for index, (start, end, kind) in enumerate(visible, start=1):
-        start_hour, start_minute = divmod(start, 60)
-        end_hour, end_minute = divmod(end, 60)
-        color = agenda_color if kind == "agenda" else reminder_color
-        canvas.rect(62, y, 996, 64, border)
-        canvas.rect(64, y + 2, 12, 60, color)
-        canvas.rect(76, y + 2, 980, 60, panel)
-        canvas.text(
-            100,
-            y + 17,
-            f"{start_hour:02d}-{start_minute:02d}  {end_hour:02d}-{end_minute:02d}",
-            3,
-            primary,
+        sheet.text(_WIDTH / 2, y + 16, "NOTHING SCHEDULED", 26, _FAINT, anchor="ma")
+    for index, (start, end, kind, title) in enumerate(visible, start=1):
+        colour = _AGENDA if kind == "agenda" else _REMINDER
+        sheet.panel(64, y, _WIDTH - 128, 64, radius=14, fill=_SURFACE)
+        sheet.panel(64, y, 6, 64, radius=3, fill=colour)
+        sheet.text(
+            96,
+            y + 20,
+            f"{start // 60:02d}:{start % 60:02d} - {end // 60:02d}:{end % 60:02d}",
+            22,
+            _PRIMARY,
         )
         label = "EVENT" if kind == "agenda" else "REMINDER"
-        label_value = f"{label} {index}"
-        label_width = canvas.text_width(label_value, 3)
-        canvas.text(1030 - label_width, y + 17, label_value, 3, color)
+        label_width = 130
+        drawn = sheet.title_text(
+            288,
+            y + 20,
+            title,
+            22,
+            _PRIMARY,
+            max_width=_WIDTH - 288 - 96 - label_width,
+        )
+        if not drawn:
+            # No CJK font installed: fall back to the numbered label alone.
+            sheet.text(_WIDTH - 96, y + 20, f"{label} {index}", 18, colour, anchor="ra")
+        else:
+            sheet.text(_WIDTH - 96, y + 22, label, 16, colour, anchor="ra")
         y += 76
-    if len(preview.entries) > len(visible):
-        canvas.text(62, 772, f"PLUS {len(preview.entries) - len(visible)}", 3, muted)
-    return canvas.png()
+    return sheet.png()

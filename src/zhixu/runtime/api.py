@@ -271,6 +271,7 @@ def create_api(args: argparse.Namespace) -> CompositePrivateAPI:
     grants = GrantRepository(database)
     policy = PolicyEngine(grants.has_grant)
     reads = AdminReadStore(database)
+    users = UserRepository(database)
     services = ZhixuServices(
         agenda=AgendaRepository(database),
         tasks=TaskRepository(database),
@@ -280,13 +281,13 @@ def create_api(args: argparse.Namespace) -> CompositePrivateAPI:
         daily_briefings=DailyBriefingRepository(database),
         agenda_notifications=AgendaNotificationRepository(database),
         notification_leads=NotificationLeadRepository(database),
+        users=users,
         policy=policy,
         clock=clock,
     )
     references = OpaqueReferenceFactory(
         read_key_file(args.reference_key_file)
     )
-    users = UserRepository(database)
     routes = ChannelRouteStore(database)
     outbound_configuration = _outbound_accounts(args.outbound_accounts_file)
     outbound_values = (

@@ -717,7 +717,7 @@ def test_qq_http_renders_calendar_as_private_base64_image_with_buttons(
     assert "url" not in upload_payload
     png = base64.b64decode(upload_payload["file_data"], validate=True)
     assert png.startswith(b"\x89PNG\r\n\x1a\n")
-    assert struct.unpack(">II", png[16:24]) == (1120, 820)
+    assert struct.unpack(">II", png[16:24]) == (1120, 880)
     final_payload = transport.requests[-1][2]
     assert final_payload is not None
     assert final_payload["msg_type"] == 7
@@ -840,7 +840,10 @@ def test_daily_agenda_preview_survives_outbox_and_uploads_png(
         2026,
         8,
         28,
-        entries=((540, 600, "agenda"), (720, 735, "reminder")),
+        entries=(
+            (540, 600, "agenda", "合成日程"),
+            (720, 735, "reminder", "合成提醒"),
+        ),
         anniversary_day_numbers=(365,),
     )
     outbox = OutboxStore(database)

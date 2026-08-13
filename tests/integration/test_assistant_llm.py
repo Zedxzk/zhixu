@@ -545,10 +545,13 @@ def test_daily_briefing_inclusion_is_not_misparsed_as_a_notification(
     assert preview.code == "plan_preview"
     assert "每日早报：** 自动纳入" in preview.text
     assert "通知 1" not in preview.text
+    # Briefing inclusion still creates no notification; the trailing button only
+    # offers to add one.
     assert [button.label for button in preview.buttons] == [
         "接受",
         "修改",
         "取消创建",
+        "加通知",
     ]
     accepted = engine.handle(preview.buttons[0].action, context, target_ref=target)
     assert accepted.code == "created"

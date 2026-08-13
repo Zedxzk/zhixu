@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 from typing import Literal
 
@@ -66,6 +66,7 @@ from .intents import (
     ModelNotificationProposal,
     ParsedIntent,
 )
+from .labels import agenda_mark
 from .llm import LLMGateway
 from .queries import (
     AgendaBetween,
@@ -125,6 +126,40 @@ _NOTE_LOOKUP_SUFFIX = re.compile(
 
 def _escape_markdown_text(value: str) -> str:
     return re.sub(r"([\\`*_{}\[\]()#+\-.!>|])", r"\\\1", value)
+
+
+def _creator_suffix(name: str | None) -> str:
+    """Credit the member who created a shared entry, when one is known."""
+
+    return f" · {_escape_markdown_text(name)}" if name else ""
+
+
+@dataclass(frozen=True, slots=True)
+class _PlanRef:
+    """Just the identifier the confirmation buttons need."""
+
+    id: str
+
+
+# Offered on a recurring plan so the standing 09:00 default can be moved or
+# dropped without typing. Each button carries a fixed command, so pressing one
+# twice lands on the same plan.
+NOTIFICATION_PRESETS = ("08:00", "09:00", "12:00", "18:00", "20:00")
+
+
+def _notification_buttons(
+    action: IntentAction,
+    arguments: dict,
+    plan_id: str,
+) -> tuple[MessageButton, ...]:
+    if action is not IntentAction.CREATE_AGENDA:
+        return ()
+    if arguments.get("notifications"):
+        return (
+            MessageButton("改通知时间", f"/计划通知 {plan_id}"),
+            MessageButton("不提醒", f"/计划免通知 {plan_id}"),
+        )
+    return (MessageButton("加通知", f"/计划通知 {plan_id}"),)
 
 
 _CHINESE_ORDINALS = ("", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十")
@@ -261,7 +296,7 @@ _HELP_TEXT = """# 知序 · 帮助
 - `/今天` 或 `/日程` — 按时间查看今日日程与提醒
 - `/全部日程` — 列出全部未来日程和待触发提醒，并提供取消入口
 - `/日历` — 本月图片日历预览
-- `/日历 2026-08` — 查看指定月份
+- `/日历 2026-08`、`/日历 下个月`、`/日历 9月`、`/日历 +3` — 查看指定月份
 - `/提醒` — 查看待处理提醒及其 ID
 - `明天上午9点提醒我提交报告` — 创建日程提醒
 - `30秒后参加会议，链接：https://…` — 创建带“打开链接”按钮的提醒
@@ -305,6 +340,7 @@ _HELP_TEXT = """# 知序 · 帮助
 - `/问 问题` — 自动选择可信运行时、模型常识或联网搜索
 
 ## 身份绑定
+- `/我叫 张三` — 设置你的显示名；群共享条目会标注创建人
 - `/申请绑定` — 在未绑定的机器人私聊中申请绑定码
 - `/绑定私聊 绑定码` — 在已启用的内部群中完成绑定
 
@@ -340,7 +376,7 @@ _INTERNAL_GROUP_HELP_TEXT = """# 知序 · 内部群帮助
 
 ## 群共享
 - `/今天` 或 `/日程` — 查看本群日程与提醒
-- `/日历`、`/日历 2026-08` — 预览本群图片月历
+- `/日历`、`/日历 2026-08`、`/日历 下个月` — 预览本群图片月历
 - `/提醒` — 查看本群待处理提醒及 ID
 - `/待办` — 查看本群待办
 - `/任务 内容`、`/记 内容` — 写入本群共享库并记录创建人
@@ -731,6 +767,7 @@ class AssistantEngine:
             IntentAction.CONFIRM_PLAN,
             IntentAction.REJECT_PLAN,
             IntentAction.CANCEL_PLAN,
+            IntentAction.ADJUST_PLAN_NOTIFICATION,
         }:
             plan_id = str(intent.arguments.get("plan_id") or "")
             if self.pending_plans is None or not target_ref:
@@ -751,6 +788,14 @@ class AssistantEngine:
                     "该计划不存在、已过期，或不属于你和当前会话。",
                     "plan_not_found",
                     "deterministic",
+                )
+            if intent.action is IntentAction.ADJUST_PLAN_NOTIFICATION:
+                return self._adjust_plan_notification(
+                    stored,
+                    intent.arguments,
+                    context,
+                    target_ref=target_ref,
+                    now=now,
                 )
             if intent.action is IntentAction.REJECT_PLAN:
                 self.pending_plans.reject(plan_id, now=now)
@@ -865,13 +910,20 @@ class AssistantEngine:
                 if start <= reminder.fire_at.astimezone(self.router.timezone) < start
                 + timedelta(days=1)
             ]
+            creators = self.services.creator_names(
+                [getattr(item, "creator_user_id", "") or "" for item in items]
+            )
             entries: list[tuple[datetime, str]] = [
                 (
                     item.start_at,
                     (
                         f"- `{item.start_at.astimezone(self.router.timezone):%H:%M}"
                         f"–{item.end_at.astimezone(self.router.timezone):%H:%M}` "
-                        f"📅 {_escape_markdown_text(item.title)}"
+                        f"{agenda_mark(item.start_at.astimezone(self.router.timezone))} "
+                        f"{_escape_markdown_text(item.title)}"
+                        + _creator_suffix(
+                            creators.get(getattr(item, "creator_user_id", "") or "")
+                        )
                     ),
                 )
                 for item in items
@@ -978,6 +1030,8 @@ class AssistantEngine:
                 buttons=tuple(buttons),
                 rich_text=True,
             )
+        if intent.action is IntentAction.SET_DISPLAY_NAME:
+            return self._set_display_name(arguments, context, source=intent.source)
         if intent.action is IntentAction.VIEW_CALENDAR:
             return self._calendar_reply(arguments, context, source=intent.source)
         if intent.action is IntentAction.CREATE_AGENDA:
@@ -1775,6 +1829,118 @@ class AssistantEngine:
             payload_json=payload_json,
             now=self.services.clock.now(),
         )
+        return self._render_plan_preview(
+            intent.action,
+            arguments,
+            plan_id=plan.id,
+            context=context,
+            source=intent.source,
+            notice=notice,
+        )
+
+    def _adjust_plan_notification(
+        self,
+        stored,
+        arguments: dict,
+        context: CommandContext,
+        *,
+        target_ref: str,
+        now: datetime,
+    ) -> AssistantReply:
+        """Move or drop the notification on a plan that is still awaiting approval."""
+
+        assert self.pending_plans is not None
+        try:
+            action = IntentAction(stored.action)
+            plan_arguments = _decode_plan_value(json.loads(stored.payload_json))
+        except (ValueError, TypeError, json.JSONDecodeError):
+            return AssistantReply(
+                "计划内容已损坏，请重新描述。",
+                "plan_corrupted",
+                "deterministic",
+            )
+        if action is not IntentAction.CREATE_AGENDA:
+            return AssistantReply(
+                "只有循环事件的通知可以在这里调整。",
+                "plan_notification_unsupported",
+                "deterministic",
+            )
+
+        chosen = str(arguments.get("time_of_day") or "")
+        if not arguments.get("disable") and not chosen:
+            return AssistantReply(
+                "选择通知时间：",
+                "plan_notification_choice",
+                "deterministic",
+                buttons=tuple(
+                    MessageButton(preset, f"/计划通知 {stored.id} {preset}")
+                    for preset in NOTIFICATION_PRESETS
+                )
+                + (MessageButton("不提醒", f"/计划免通知 {stored.id}"),),
+            )
+
+        existing = list(plan_arguments.get("notifications") or [])
+        if arguments.get("disable"):
+            plan_arguments["notifications"] = []
+            plan_arguments["notification_defaulted"] = False
+            outcome = "已取消本计划的通知。"
+        else:
+            hour, minute = (int(part) for part in chosen.split(":"))
+            template = existing[0] if existing else None
+            plan_arguments["notifications"] = [
+                ModelNotificationProposal(
+                    time_of_day=time(hour, minute),
+                    day_offset=template.day_offset if template is not None else 0,
+                    text=(
+                        template.text
+                        if template is not None
+                        else str(plan_arguments.get("title") or "")
+                    ),
+                )
+            ]
+            plan_arguments["notification_defaulted"] = False
+            outcome = f"通知时间已改为 {chosen}。"
+
+        updated = self.pending_plans.update_payload(
+            stored.id,
+            actor_user_id=context.actor_user_id,
+            target_ref=target_ref,
+            payload_json=json.dumps(
+                _encode_plan_value(plan_arguments),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+            now=now,
+        )
+        if updated is None:
+            return AssistantReply(
+                "该计划已经处理，请不要重复提交。",
+                "plan_already_handled",
+                "deterministic",
+            )
+        return self._render_plan_preview(
+            action,
+            plan_arguments,
+            plan_id=stored.id,
+            context=context,
+            source="deterministic",
+            notice=outcome,
+        )
+
+    def _render_plan_preview(
+        self,
+        action: IntentAction,
+        arguments: dict,
+        *,
+        plan_id: str,
+        context: CommandContext,
+        source: str,
+        notice: str = "",
+    ) -> AssistantReply:
+        """Draw the confirmation card for a plan already in the store."""
+
+        intent = ParsedIntent(action, arguments, source=source)
+        plan = _PlanRef(plan_id)
         scope = (
             "私人库"
             if arguments.get("private") or "internal_group_member" not in context.roles
@@ -1836,10 +2002,17 @@ class AssistantEngine:
                         if notification.day_offset < 0
                         else f"事件后 {notification.day_offset} 天"
                     )
-                    lines.append(
-                        f"**通知 {index}：** {relation} {notification.time_of_day:%H:%M} · "
-                        f"{_escape_markdown_text(notification.text)}"
+                    default_mark = (
+                        " · 默认"
+                        if arguments.get("notification_defaulted") and index == 1
+                        else ""
                     )
+                    lines.append(
+                        f"**通知 {index}：** {relation} {notification.time_of_day:%H:%M}"
+                        f"{default_mark} · {_escape_markdown_text(notification.text)}"
+                    )
+            if not notifications:
+                lines.append("**通知：** 无（本次不会提醒）")
             for index, link in enumerate(links, start=1):
                 if isinstance(link, ActionLink):
                     lines.append(
@@ -1996,7 +2169,9 @@ class AssistantEngine:
                 MessageButton("接受", f"/确认计划 {plan.id}"),
                 MessageButton("修改", f"/拒绝计划 {plan.id}"),
                 MessageButton("取消创建", f"/取消计划 {plan.id}"),
-            ),
+            )
+            # Appended last so the primary actions keep their positions.
+            + _notification_buttons(action, arguments, plan.id),
             rich_text=True,
         )
 
@@ -2177,6 +2352,40 @@ class AssistantEngine:
             rich_text=True,
         )
 
+    def _set_display_name(
+        self,
+        arguments: dict,
+        context: CommandContext,
+        *,
+        source: str,
+    ) -> AssistantReply:
+        """Let a member state the name their entries are credited to.
+
+        A member can only ever rename themselves; the actor comes from the
+        authenticated context, never from the message.
+        """
+
+        requested = str(arguments.get("display_name") or "").strip()
+        try:
+            renamed = self.services.rename_user(requested, context)
+        except ValidationError:
+            return AssistantReply(
+                "名字需要 1 到 40 个字符。",
+                "invalid_intent",
+                source,
+            )
+        if renamed is None:
+            return AssistantReply(
+                "找不到你的账户，请先完成绑定。",
+                "not_found",
+                source,
+            )
+        return AssistantReply(
+            f"好的，之后你创建的条目会显示为「{renamed.display_name}」。",
+            "ok",
+            source,
+        )
+
     def _calendar_reply(
         self,
         arguments: dict,
@@ -2185,6 +2394,14 @@ class AssistantEngine:
         source: str,
     ) -> AssistantReply:
         local_now = self.services.clock.now().astimezone(self.router.timezone)
+        if arguments.get("invalid_month") is not None:
+            return AssistantReply(
+                "看不懂这个月份。可以用 `/日历 2026-08`、`/日历 下个月`、"
+                "`/日历 9月` 或 `/日历 +3`。",
+                "invalid_intent",
+                source,
+                rich_text=True,
+            )
         try:
             year = int(arguments.get("year") or local_now.year)
             month = int(arguments.get("month") or local_now.month)
@@ -2215,12 +2432,17 @@ class AssistantEngine:
             )
             if start <= reminder.fire_at.astimezone(self.router.timezone) < next_month
         ]
+        creators = self.services.creator_names(
+            [occurrence.creator_user_id or "" for occurrence in occurrences]
+        )
         entries: list[tuple[datetime, str]] = [
             (
                 occurrence.start_at,
                 (
                     f"- `{occurrence.start_at.astimezone(self.router.timezone):%m-%d %H:%M}` "
-                    f"📅 {_escape_markdown_text(occurrence.title)}"
+                    f"{agenda_mark(occurrence.start_at.astimezone(self.router.timezone))} "
+                    f"{_escape_markdown_text(occurrence.title)}"
+                    + _creator_suffix(creators.get(occurrence.creator_user_id or ""))
                 ),
             )
             for occurrence in occurrences

@@ -118,7 +118,13 @@ def _message_from_row(row: object) -> OutboundMessage:
                 month=int(daily_value["month"]),
                 day=int(daily_value["day"]),
                 entries=tuple(
-                    (int(item[0]), int(item[1]), str(item[2]))
+                    # Rows queued before titles were carried have three fields.
+                    (
+                        int(item[0]),
+                        int(item[1]),
+                        str(item[2]),
+                        str(item[3]) if len(item) > 3 else "",
+                    )
                     for item in daily_value.get("entries", [])
                 ),
                 anniversary_day_numbers=tuple(

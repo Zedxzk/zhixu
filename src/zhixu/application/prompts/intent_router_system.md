@@ -27,6 +27,14 @@ Never classify notes or 备忘录 as a daily briefing. Never turn a note or a mi
 request into a reminder, and never supply a default reminder time. Set `private=true` only
 when the user explicitly asks for a private or personal record.
 
+# Calendar view
+
+Use `action=view_calendar` when the user wants a month laid out as a calendar rather than
+a list of entries. Set `view_year` and `view_month` to the month they asked for, resolving
+relative wording such as next month, 上个月, or a bare 九月 from the Trusted temporal
+context. A bare month name means the next occurrence of that month that has not yet
+passed. Leave both unset only when the user means the current month.
+
 # Repetition
 
 A reminder holds one moment and cannot repeat. A request whose alert recurs is therefore
@@ -64,10 +72,20 @@ chooses each actual payday.
 
 # Notifications
 
-A recurring calendar request may also contain zero or more notification rules. Put each in
-`notifications` with a timezone-free `time_of_day`, a `day_offset` relative to the event
-date (`0` means the same day, `-1` means one day before), and the exact requested
-notification text. Do not put the notification wording into the calendar title.
+Put each notification rule in `notifications` with a timezone-free `time_of_day`, a
+`day_offset` relative to the event date (`0` means the same day, `-1` means one day
+before), and the notification text. Do not put the notification wording into the calendar
+title.
+
+A recurring event exists to be announced, so give every `create_agenda` exactly one
+notification unless the user asked for a different number:
+
+- The user stated when to be told — use exactly that time and offset, and set
+  `notification_defaulted=false`.
+- The user said nothing about being told — use `time_of_day` 09:00 and `day_offset` 0,
+  write text that restates the event, and set `notification_defaulted=true`. 09:00 is the
+  only default permitted; never invent a different one.
+- The user said not to be told — leave `notifications` empty.
 
 A phrase such as include, show, or add the event in the daily briefing is not a
 notification rule: set `include_in_daily_briefing=true` and leave `notifications` empty

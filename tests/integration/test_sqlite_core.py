@@ -320,7 +320,10 @@ def test_daily_briefing_enqueues_anniversary_schedule_image_once(
     assert "Synthetic relationship" in claimed.message.text
     assert "Synthetic daily event" in claimed.message.text
     assert claimed.message.daily_agenda_preview is not None
-    assert claimed.message.daily_agenda_preview.entries == ((1080, 1140, "agenda"),)
+    # The title now travels with the entry so the image can draw it.
+    assert claimed.message.daily_agenda_preview.entries == (
+        (1080, 1140, "agenda", "Synthetic daily event"),
+    )
     assert claimed.message.daily_agenda_preview.anniversary_day_numbers == (366,)
 
 

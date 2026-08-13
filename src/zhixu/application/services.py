@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unicodedata
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 
 from zhixu.domain import (
@@ -27,6 +27,7 @@ from zhixu.domain import (
     RequestChannel,
     ResourceRef,
     Task,
+    User,
 )
 from zhixu.domain.errors import (
     ConcurrencyConflict,
@@ -45,6 +46,7 @@ from zhixu.ports import (
     NotificationLeadRepositoryPort,
     ReminderRepositoryPort,
     TaskRepositoryPort,
+    UserRepositoryPort,
 )
 
 from .commands import (
@@ -88,6 +90,12 @@ from .queries import (
     ListTasks,
     QueryBus,
     SearchNotes,
+)
+
+# Names auto-assigned at bind time carry no information, so an entry stays
+# uncredited until the member states one.
+_PLACEHOLDER_DISPLAY_NAMES = frozenset(
+    {"QQ group member", "Shared group workspace"}
 )
 
 IdFactory = Callable[[str], str]
@@ -136,6 +144,7 @@ class ZhixuServices:
         daily_briefings: DailyBriefingRepositoryPort | None = None,
         agenda_notifications: AgendaNotificationRepositoryPort | None = None,
         notification_leads: NotificationLeadRepositoryPort | None = None,
+        users: UserRepositoryPort | None = None,
     ) -> None:
         self.agenda = agenda
         self.tasks = tasks
@@ -148,9 +157,38 @@ class ZhixuServices:
         self.daily_briefings = daily_briefings
         self.agenda_notifications = agenda_notifications
         self.notification_leads = notification_leads
+        self.users = users
 
     def _context(self, context: CommandContext) -> CommandContext:
         return replace(context, now=self.clock.now())
+
+    def rename_user(self, display_name: str, context: CommandContext) -> User | None:
+        """Rename the acting member. Nobody can rename anybody else this way."""
+
+        if self.users is None:
+            return None
+        scoped = self._context(context)
+        authorization = self.policy.require(
+            scoped,
+            Action.UPDATE,
+            ResourceRef("user", scoped.actor_user_id, scoped.actor_user_id),
+        )
+        return self.users.rename(scoped.actor_user_id, display_name, authorization)
+
+    def creator_names(self, user_ids: Sequence[str]) -> dict[str, str]:
+        """Display names for entry creators, skipping the unnamed placeholder."""
+
+        if self.users is None:
+            return {}
+        names: dict[str, str] = {}
+        for user_id in {value for value in user_ids if value}:
+            user = self.users.get(user_id)
+            if user is None:
+                continue
+            name = user.display_name.strip()
+            if name and name not in _PLACEHOLDER_DISPLAY_NAMES:
+                names[user_id] = name
+        return names
 
     @staticmethod
     def _create_owner(context: CommandContext, *, private: bool) -> str:

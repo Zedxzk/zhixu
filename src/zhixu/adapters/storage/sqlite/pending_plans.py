@@ -141,6 +141,35 @@ class PendingPlanStore:
             ).fetchone()
         return self._from_row(row) if row is not None else None
 
+    def update_payload(
+        self,
+        plan_id: str,
+        *,
+        actor_user_id: str,
+        target_ref: str,
+        payload_json: str,
+        now: datetime,
+    ) -> StoredPendingPlan | None:
+        """Rewrite a still-open plan in place, keeping its id and buttons valid."""
+
+        require_aware(now, "now")
+        with self.database.transaction() as connection:
+            changed = connection.execute(
+                """
+                UPDATE assistant_pending_plans SET payload_json=?
+                WHERE id=? AND actor_user_id=? AND target_ref=?
+                  AND state IN ('pending','revising') AND expires_at>?
+                """,
+                (payload_json, plan_id, actor_user_id, target_ref, _dump(now)),
+            ).rowcount
+            if not changed:
+                return None
+            row = connection.execute(
+                "SELECT * FROM assistant_pending_plans WHERE id=?",
+                (plan_id,),
+            ).fetchone()
+        return self._from_row(row) if row is not None else None
+
     def reject(self, plan_id: str, *, now: datetime) -> None:
         require_aware(now, "now")
         with self.database.transaction() as connection:

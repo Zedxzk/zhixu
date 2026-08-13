@@ -32,6 +32,8 @@ from zhixu.ports import (
     ReminderRepositoryPort,
 )
 
+from .labels import agenda_mark
+
 
 class OutboxPort(Protocol):
     def enqueue(
@@ -97,6 +99,18 @@ def _important_day_lines(anniversary: Anniversary, today) -> list[str]:
 def _minute(value: datetime, timezone: ZoneInfo) -> int:
     local = value.astimezone(timezone)
     return local.hour * 60 + local.minute
+
+
+# A payload guard only. The renderer shortens further to whatever the drawn row
+# can actually hold, so this just keeps the stored entry from growing unbounded.
+_PREVIEW_TITLE_LIMIT = 40
+
+
+def _preview_title(value: str) -> str:
+    collapsed = " ".join(value.split())
+    if len(collapsed) <= _PREVIEW_TITLE_LIMIT:
+        return collapsed
+    return collapsed[: _PREVIEW_TITLE_LIMIT - 1] + "…"
 
 
 def _preview_bounds(
@@ -369,7 +383,8 @@ class DailyBriefingScheduler:
                         occurrence.start_at,
                         (
                             f"- `{occurrence.start_at.astimezone(timezone):%H:%M}` "
-                            f"📅 {_escape_markdown_text(occurrence.title)}"
+                            f"{agenda_mark(occurrence.start_at.astimezone(timezone))} "
+                            f"{_escape_markdown_text(occurrence.title)}"
                         ),
                     )
                 )
@@ -398,6 +413,7 @@ class DailyBriefingScheduler:
                         day_end,
                     ),
                     "agenda",
+                    _preview_title(occurrence.title),
                 )
                 for occurrence in safe_occurrences
             ]
@@ -406,6 +422,7 @@ class DailyBriefingScheduler:
                     _minute(reminder.fire_at, timezone),
                     min(1440, _minute(reminder.fire_at, timezone) + 15),
                     "reminder",
+                    _preview_title(reminder.title),
                 )
                 for reminder in reminders
                 if _minute(reminder.fire_at, timezone) < 1440

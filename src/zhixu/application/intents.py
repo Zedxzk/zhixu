@@ -30,6 +30,8 @@ class IntentAction(StrEnum):
     CONFIRM_PLAN = "confirm_plan"
     REJECT_PLAN = "reject_plan"
     CANCEL_PLAN = "cancel_plan"
+    ADJUST_PLAN_NOTIFICATION = "adjust_plan_notification"
+    SET_DISPLAY_NAME = "set_display_name"
     LIST_ANNIVERSARIES = "list_anniversaries"
     LIST_DAILY_BRIEFINGS = "list_daily_briefings"
     LIST_TASKS = "list_tasks"
@@ -90,6 +92,12 @@ class ModelIntentProposal(BaseModel):
     lunar_month: int | None = Field(default=None, ge=1, le=12)
     lunar_day: int | None = Field(default=None, ge=1, le=30)
     lunar_leap: bool = False
+    # The month a calendar view should show. Both unset means the current month.
+    view_year: int | None = Field(default=None, ge=1970, le=2100)
+    view_month: int | None = Field(default=None, ge=1, le=12)
+    # True when the single notification came from the standing 09:00 default
+    # rather than from something the user asked for.
+    notification_defaulted: bool = False
     advance_days: list[int] = Field(default_factory=list, max_length=8)
     lead_minutes: list[int] = Field(default_factory=list, max_length=12)
     notifications: list[ModelNotificationProposal] = Field(

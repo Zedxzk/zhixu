@@ -879,8 +879,8 @@ class InternalChannelAPI:
                             "month": rendered.daily_agenda_preview.month,
                             "day": rendered.daily_agenda_preview.day,
                             "entries": [
-                                [start, end, kind]
-                                for start, end, kind in (
+                                [start, end, kind, title]
+                                for start, end, kind, title in (
                                     rendered.daily_agenda_preview.entries
                                 )
                             ],

@@ -12,6 +12,7 @@ license = "MIT"
 dependencies = [
     "argon2-cffi>=25.1,<26",
     "cryptography>=50,<51",
+    "pillow>=12,<13",
     "pydantic>=2.7,<3",
     "python-dateutil>=2.9,<3",
     "webauthn>=3,<4",

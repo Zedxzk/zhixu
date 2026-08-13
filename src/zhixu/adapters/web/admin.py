@@ -292,6 +292,17 @@ class AdminAPI:
                                 "commands_enabled": route.commands_enabled,
                                 "group_mode": route.group_mode.value,
                                 "member_user_ids": list(route.member_user_ids),
+                                "members": [
+                                    {
+                                        "id": member_id,
+                                        "display_name": (
+                                            member.display_name
+                                            if (member := self.users.get(member_id))
+                                            else ""
+                                        ),
+                                    }
+                                    for member_id in route.member_user_ids
+                                ],
                                 "last_seen_at": route.last_seen_at.isoformat(),
                             }
                             for route in self.channel_routes.list()
@@ -316,6 +327,12 @@ class AdminAPI:
                 )
             if method == "DELETE" and path.startswith("/admin/identities/"):
                 return self._unbind_identity(path.rsplit("/", 1)[-1], context)
+            if method == "POST" and path.startswith("/admin/members/"):
+                return self._rename_member(
+                    path.rsplit("/", 1)[-1],
+                    self._object_body(body),
+                    context,
+                )
             if path == "/admin/acl":
                 if method == "GET":
                     return self._list_acl(query, context)
@@ -601,6 +618,35 @@ class AdminAPI:
                 "token_type": "Bearer",
                 "expires_at": token.expires_at.isoformat(),
             },
+        )
+
+    def _rename_member(
+        self,
+        member_id: str,
+        data: dict[str, object],
+        context: CommandContext,
+    ) -> AdminResponse:
+        """Give a member the name their shared entries are credited to.
+
+        QQ never discloses a group nickname, so an administrator can supply one
+        for members who have not set their own.
+        """
+
+        self._fields(data, required={"display_name"})
+        display_name = data.get("display_name")
+        if not isinstance(display_name, str):
+            raise ValidationError("display_name must be a string")
+        authorization = self.policy.require(
+            context,
+            Action.UPDATE,
+            ResourceRef("user", member_id, member_id),
+        )
+        renamed = self.users.rename(member_id, display_name, authorization)
+        if renamed is None:
+            raise NotFoundError("member not found")
+        return AdminResponse(
+            200,
+            {"id": renamed.id, "display_name": renamed.display_name},
         )
 
     def _begin_passkey_registration(self, user_id: str) -> AdminResponse:

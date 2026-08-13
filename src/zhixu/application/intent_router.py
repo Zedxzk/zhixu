@@ -371,6 +371,13 @@ class RuleIntentRouter:
                     {"title": _natural_note_title(body), "body": body},
                     requires_confirmation=True,
                 )
+        # QQ never tells us a group nickname, so a member states their own.
+        rename = re.fullmatch(r"/(?:我叫|改名)\s+(.{1,40})", value)
+        if rename:
+            return ParsedIntent(
+                IntentAction.SET_DISPLAY_NAME,
+                {"display_name": rename.group(1).strip()},
+            )
         plan_confirmation = re.fullmatch(
             r"/(确认|拒绝|取消)计划\s+(plan_[A-Za-z0-9_-]{8,80})",
             value,
@@ -384,6 +391,22 @@ class RuleIntentRouter:
                 }[plan_confirmation.group(1)],
                 {"plan_id": plan_confirmation.group(2)},
             )
+        # Button payloads only; the time is fixed by the preset that was pressed,
+        # so the whole notification adjustment stays deterministic.
+        plan_notification = re.fullmatch(
+            r"/计划(免)?通知\s+(plan_[A-Za-z0-9_-]{8,80})"
+            r"(?:\s+([01]?\d|2[0-3]):([0-5]\d))?",
+            value,
+        )
+        if plan_notification:
+            arguments: dict[str, object] = {"plan_id": plan_notification.group(2)}
+            if plan_notification.group(1):
+                arguments["disable"] = True
+            elif plan_notification.group(3) is not None:
+                arguments["time_of_day"] = (
+                    f"{int(plan_notification.group(3)):02d}:{plan_notification.group(4)}"
+                )
+            return ParsedIntent(IntentAction.ADJUST_PLAN_NOTIFICATION, arguments)
         if value in {"/今天", "/日程"} or compact in {
             "今天有什么安排",
             "今天的日程",
@@ -525,17 +548,17 @@ class RuleIntentRouter:
                     "model_text": value.removeprefix("/循环 ").strip(),
                 },
             )
-        calendar_view = re.fullmatch(
-            r"/(?:日历|月历)(?:\s+(\d{4})-(\d{1,2}))?",
-            value,
-        )
+        calendar_view = re.fullmatch(r"/(?:日历|月历)(?:\s+(\S+))?", value)
         if calendar_view:
-            arguments = {}
-            if calendar_view.group(1) is not None:
-                arguments = {
-                    "year": int(calendar_view.group(1)),
-                    "month": int(calendar_view.group(2)),
-                }
+            selector = calendar_view.group(1)
+            if selector is None:
+                return ParsedIntent(IntentAction.VIEW_CALENDAR, {})
+            arguments = self._calendar_month_arguments(selector)
+            if arguments is None:
+                return ParsedIntent(
+                    IntentAction.VIEW_CALENDAR,
+                    {"invalid_month": selector},
+                )
             return ParsedIntent(IntentAction.VIEW_CALENDAR, arguments)
         if value in {"/待办", "/任务"} or compact in {
             "有哪些待办",
@@ -688,6 +711,47 @@ class RuleIntentRouter:
                     "web_search": True,
                 },
             )
+        return None
+
+    def _calendar_month_arguments(self, selector: str) -> dict[str, int] | None:
+        """Resolve a /日历 month selector, or None when it is not understood.
+
+        Relative selectors are resolved here rather than by the model so that
+        month navigation keeps working with no language model configured.
+        """
+
+        text = selector.strip()
+        absolute = re.fullmatch(r"(\d{4})[-/年](\d{1,2})月?", text)
+        if absolute:
+            year, month = int(absolute.group(1)), int(absolute.group(2))
+            if not 1 <= month <= 12:
+                return None
+            return {"year": year, "month": month}
+
+        current = self.clock.now().astimezone(self.timezone)
+        offsets = {
+            "本月": 0, "这个月": 0, "当月": 0, "本月份": 0,
+            "下月": 1, "下个月": 1, "次月": 1,
+            "上月": -1, "上个月": -1, "前一个月": -1,
+        }
+        offset: int | None = offsets.get(text)
+        if offset is None:
+            relative = re.fullmatch(r"([+-]\d{1,3})", text)
+            if relative:
+                offset = int(relative.group(1))
+        if offset is not None:
+            total = (current.year * 12 + current.month - 1) + offset
+            year, month = divmod(total, 12)
+            return {"year": year, "month": month + 1}
+
+        bare = re.fullmatch(r"(\d{1,2})月?", text)
+        if bare:
+            month = int(bare.group(1))
+            if not 1 <= month <= 12:
+                return None
+            # A bare month means the nearest one that has not already passed.
+            year = current.year + int(month < current.month)
+            return {"year": year, "month": month}
         return None
 
     def _parse_reminder(self, value: str) -> ParsedIntent | None:
@@ -846,6 +910,8 @@ class ModelIntentClassifier:
                 "lunar_month": proposal.lunar_month,
                 "lunar_day": proposal.lunar_day,
                 "lunar_leap": proposal.lunar_leap,
+                "year": proposal.view_year,
+                "month": proposal.view_month,
                 # An empty list means the model said nothing about these, not
                 # that the user asked for none; passing it on would override the
                 # defaults with silence.

@@ -351,6 +351,27 @@ class UserRepository:
             created_at=created_at,
         )
 
+    def rename(
+        self,
+        user_id: str,
+        display_name: str,
+        authorization: AuthorizedAction,
+    ) -> User | None:
+        """Change how a member is shown; returns None when the user is gone."""
+
+        cleaned = " ".join(display_name.split())
+        if not cleaned or len(cleaned) > 40:
+            raise ValidationError("display name is invalid")
+        with self.database.transaction() as connection:
+            changed = connection.execute(
+                "UPDATE users SET display_name=? WHERE id=?",
+                (cleaned, user_id),
+            ).rowcount
+            if not changed:
+                return None
+            _audit(connection, authorization)
+        return self.get(user_id)
+
     def has_role(self, user_id: str, role_id: str) -> bool:
         with self.database.connect() as connection:
             row = connection.execute(

@@ -6,6 +6,7 @@ argon2-cffi-bindings==25.1.0
 cbor2==6.1.4
 cffi==2.1.1
 cryptography==50.0.0
+pillow==12.3.0
 pyasn1==0.6.4
 pyasn1-modules==0.4.2
 pycparser==3.0

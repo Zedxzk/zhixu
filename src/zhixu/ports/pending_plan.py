@@ -55,6 +55,18 @@ class PendingPlanStorePort(Protocol):
         now: datetime,
     ) -> StoredPendingPlan | None: ...
 
+    def update_payload(
+        self,
+        plan_id: str,
+        *,
+        actor_user_id: str,
+        target_ref: str,
+        payload_json: str,
+        now: datetime,
+    ) -> StoredPendingPlan | None:
+        """Rewrite a still-open plan in place, keeping its id and buttons valid."""
+        ...
+
     def reject(self, plan_id: str, *, now: datetime) -> None: ...
 
     def consume(self, plan_id: str, *, now: datetime) -> bool: ...

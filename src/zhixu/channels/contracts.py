@@ -112,12 +112,17 @@ class CalendarPreview:
 
 @dataclass(frozen=True, slots=True)
 class DailyAgendaPreview:
-    """Privacy-minimized timeline data for a daily briefing image."""
+    """Timeline data for a daily briefing image.
+
+    Each entry is ``(start_minute, end_minute, kind, title)``. Titles reach the
+    image only after the caller has applied the same classification filter the
+    accompanying card uses, and are trimmed so one entry cannot crowd the row.
+    """
 
     year: int
     month: int
     day: int
-    entries: tuple[tuple[int, int, str], ...] = field(default_factory=tuple)
+    entries: tuple[tuple[int, int, str, str], ...] = field(default_factory=tuple)
     anniversary_day_numbers: tuple[int, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
@@ -129,7 +134,8 @@ class DailyAgendaPreview:
             not 0 <= start < 1440
             or not start < end <= 1440
             or kind not in {"agenda", "reminder"}
-            for start, end, kind in self.entries
+            or len(title) > 60
+            for start, end, kind, title in self.entries
         ):
             raise ValidationError("daily agenda preview entry is invalid")
         if any(value < 1 for value in self.anniversary_day_numbers):

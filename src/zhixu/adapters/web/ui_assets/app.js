@@ -495,8 +495,39 @@ function renderConnections() {
     });
     mode.addEventListener("change", () => updateRoute(item, mode.value));
     row.append(node("strong", "", label), node("span", "", item.channel.toUpperCase()), mode, node("span", "", item.commands_enabled ? "命令已启用" : "命令已关闭"));
+    const members = item.members || [];
+    if (members.length) {
+      const list = node("div", "member-list");
+      members.forEach((member) => {
+        const entry = node("div", "member-row");
+        const field = node("input");
+        field.type = "text";
+        field.maxLength = 40;
+        field.value = member.display_name || "";
+        field.placeholder = "未命名成员";
+        field.addEventListener("change", () => renameMember(member.id, field.value));
+        entry.append(node("span", "", "创建人显示名"), field);
+        list.append(entry);
+      });
+      row.append(list);
+    }
     return row;
   }));
+}
+
+async function renameMember(memberId, displayName) {
+  const name = (displayName || "").trim();
+  if (!name) { toast("显示名不能为空", "error"); renderConnections(); return; }
+  setBusy(true);
+  try {
+    await api(`/admin/members/${encodeURIComponent(memberId)}`, {
+      method: "POST",
+      body: { display_name: name },
+    });
+    toast("成员显示名已更新");
+    await loadData({ quiet: true });
+  } catch (error) { toast(error.message, "error"); renderConnections(); }
+  finally { setBusy(false); }
 }
 
 function renderSystem() {

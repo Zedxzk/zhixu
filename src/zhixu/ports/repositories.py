@@ -35,6 +35,15 @@ class UserRepositoryPort(Protocol):
         authorization: AuthorizedAction,
     ) -> ExternalIdentity: ...
 
+    def rename(
+        self,
+        user_id: str,
+        display_name: str,
+        authorization: AuthorizedAction,
+    ) -> User | None:
+        """Change how a member is shown; returns None when the user is gone."""
+        ...
+
 
 class NotificationLeadRepositoryPort(Protocol):
     def resolve(self, agenda_item_id: str, owner_user_id: str) -> tuple[int, ...]: ...
