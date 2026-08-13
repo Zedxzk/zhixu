@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import date, datetime, time, timedelta
+from functools import lru_cache
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
@@ -16,12 +17,36 @@ from zhixu.domain import (
     DataClassification,
     normalise_lead_minutes,
 )
+from zhixu.domain.agenda import BUSINESS_CALENDARS
 from zhixu.domain.errors import InvalidModelOutput, LLMUnavailable, ValidationError
 from zhixu.ports import Clock, LLMCallReason, LLMRequest
 
 from .intents import IntentAction, ModelIntentProposal, ParsedIntent
 from .llm import LLMGateway
+from .prompts import render_prompt
 from .temporal_context import temporal_context_prompt
+
+# Generated from the installed calendars so a new region never needs a prompt edit.
+_BUSINESS_CALENDAR_CHOICES = ", ".join(
+    f"{calendar.token} for a {calendar.label} payday"
+    for calendar in sorted(
+        BUSINESS_CALENDARS.values(),
+        key=lambda calendar: calendar.token,
+    )
+)
+
+
+@lru_cache(maxsize=1)
+def _system_prompt() -> str:
+    """The packaged classification prompt, rendered once and reused verbatim.
+
+    Holding it stable across requests is what lets the provider cache it.
+    """
+
+    return render_prompt(
+        "intent_router_system.md",
+        business_calendars=_BUSINESS_CALENDAR_CHOICES,
+    )
 
 _MUTATING_MODEL_ACTIONS = {
     IntentAction.CREATE_AGENDA,
@@ -768,72 +793,7 @@ class ModelIntentClassifier:
         user_sections.append(f"User request:\n{redacted_text}")
         request = LLMRequest(
             model=self.model,
-            system_prompt=(
-                "Classify the user's meaning into the provided schema. Choose the operation "
-                "from the requested outcome, not from an isolated keyword. Never invent "
-                "identifiers, times, facts, or actions. Resolve relative time only from the "
-                "supplied Trusted temporal context. Its now, timezone, calendar anchors, and "
-                "weekday are authoritative runtime data. Derive other relative dates from "
-                "those fields without guessing. Use create_note when the user asks to "
-                "record, save, register, or remember information and does not request a "
-                "future action; put "
-                "the complete information in body and a concise label in title. Use "
-                "create_task for work that should be completed, with due_at only when a due "
-                "time is stated. Use create_reminder only when the user explicitly asks to be "
-                "alerted at a usable future time; include title and an aware ISO-8601 fire_at. "
-                "Never turn a note or missing-time request into a reminder and never supply a "
-                "default reminder time. Use answer for a question that needs no stored data. "
-                "Use list_notes when the user asks to enumerate all stored notes or note "
-                "entries. Use search_notes only when the user supplies a subject or keyword "
-                "to find within notes. Never classify notes or 备忘录 as a daily briefing. "
-                "Set private=true only when the user explicitly asks for a private/personal "
-                "record. For a recurring calendar event use action=create_agenda with title, "
-                "aware start_at, aware end_at, and "
-                "an RFC 5545 recurrence_rule; an unspecified event time means an all-day "
-                "event starting at local midnight and ending at the next local midnight. "
-                "This project uses the ordinary calendar for all events except salary. "
-                "Only when the event is salary/payday on the second-to-last Hong Kong "
-                "business day of every month, set recurrence_rule exactly to "
-                "X-BUSINESS-DAY;CALENDAR=HK_GENERAL_HOLIDAYS;BYSETPOS=-2. Never use that "
-                "Hong Kong rule for anniversaries, briefings, or other recurring events. "
-                "For that custom business-day rule, use the supplied reference date at "
-                "local midnight as start_at and the next local midnight as end_at; the "
-                "deterministic calendar engine, not the model, chooses each actual payday. "
-                "A recurring calendar request may also contain zero or more notification "
-                "rules. Put each in notifications with a timezone-free time_of_day, "
-                "day_offset relative to the event date (0 means the same day, -1 means "
-                "one day before), and the exact requested notification text. Do not put "
-                "the notification wording into the calendar title. "
-                "URLs in the request are replaced by <LINK_N> placeholders and are never "
-                "available to you. For every link that belongs to the created resource, "
-                "return its source_index N and a short action label in links; never invent, "
-                "repeat, or reconstruct a URL. A phrase such as include/show/add the event "
-                "in the daily briefing is not a notification rule: set "
-                "include_in_daily_briefing=true and leave notifications empty unless the "
-                "user separately asks for a reminder, notification, or push. "
-                "For an anniversary use action=create_anniversary with title and "
-                "anchor_date, and set important_day_kind=anniversary. For a birthday use "
-                "the same action with important_day_kind=birthday, which is required "
-                "whenever the request calls the day a birthday (生日) rather than an "
-                "anniversary (纪念日), including a correction that only says it is a "
-                "birthday; anchor_date carries the "
-                "birth date, or 0001-01-01 when the year is unknown. When the user states "
-                "the date on the Chinese lunisolar calendar, set calendar_system=lunar with "
-                "lunar_month, lunar_day and lunar_leap, and never convert it yourself. "
-                "Otherwise leave calendar_system=solar. Put any requested advance notice in "
-                "advance_days as whole days before the date. "
-                "When the user is changing how far ahead calendar events are announced, use "
-                "action=set_notification_leads and put every requested lead in lead_minutes "
-                "as minutes before the event starts, where 0 means the moment it starts. "
-                "For a daily morning "
-                "briefing use action=create_daily_briefing and briefing_time; use 08:00 only "
-                "when the user says morning without a precise time. If an Existing plan is "
-                "supplied, revise it using only the user's latest changes and keep every "
-                "field they did not ask to change. A request about notification wording, "
-                "time, or card style must only update notifications and preserve the "
-                "recurring event and recurrence_rule. Obey Required action when supplied. "
-                "Return only JSON."
-            ),
+            system_prompt=_system_prompt(),
             user_prompt="\n\n".join(user_sections),
             response_schema=ModelIntentProposal.model_json_schema(),
         )

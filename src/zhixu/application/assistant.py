@@ -23,6 +23,7 @@ from zhixu.domain import (
     NoteField,
     TaskStatus,
 )
+from zhixu.domain.agenda import BusinessDayRule, parse_business_day_rule
 from zhixu.domain.errors import (
     ConfirmationRequired,
     InvalidModelOutput,
@@ -31,7 +32,6 @@ from zhixu.domain.errors import (
     PermissionDenied,
     ValidationError,
 )
-from zhixu.domain.hong_kong_calendar import monthly_business_day
 from zhixu.ports import LLMCallReason, LLMRequest, PendingPlanStorePort
 from zhixu.security import web_query_is_safe
 
@@ -125,6 +125,29 @@ _NOTE_LOOKUP_SUFFIX = re.compile(
 
 def _escape_markdown_text(value: str) -> str:
     return re.sub(r"([\\`*_{}\[\]()#+\-.!>|])", r"\\\1", value)
+
+
+_CHINESE_ORDINALS = ("", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十")
+_BUSINESS_CALENDAR_NAMES = {
+    "HK_GENERAL_HOLIDAYS": "香港",
+    "MO_GENERAL_HOLIDAYS": "澳门",
+}
+
+
+def _chinese_ordinal(value: int) -> str:
+    return _CHINESE_ORDINALS[value] if 0 < value < len(_CHINESE_ORDINALS) else str(value)
+
+
+def _business_day_rule_label(rule: BusinessDayRule) -> str:
+    """Human label for a business-day recurrence rule, for the preview card."""
+
+    region = _BUSINESS_CALENDAR_NAMES.get(rule.calendar.token, rule.calendar.label)
+    position = rule.position
+    if position == -1:
+        return f"每月最后一个{region}工作日"
+    if position < 0:
+        return f"每月倒数第{_chinese_ordinal(-position)}个{region}工作日"
+    return f"每月第{_chinese_ordinal(position)}个{region}工作日"
 
 
 def _note_lookup_query(text: str) -> str:
@@ -1763,29 +1786,33 @@ class AssistantEngine:
         lines.extend(["", f"**写入范围：** {scope}"])
         if intent.action is IntentAction.CREATE_AGENDA:
             recurrence = str(arguments.get("recurrence_rule") or "")
+            business_rule = parse_business_day_rule(recurrence)
             recurrence_text = (
-                "每月倒数第二个香港工作日"
-                if recurrence
-                == "X-BUSINESS-DAY;CALENDAR=HK_GENERAL_HOLIDAYS;BYSETPOS=-2"
+                _business_day_rule_label(business_rule)
+                if business_rule is not None
                 else recurrence
             )
             lines.append(
                 f"**事件：** {_escape_markdown_text(str(arguments.get('title') or ''))}"
             )
-            if recurrence_text == "每月倒数第二个香港工作日":
+            if business_rule is not None:
                 local_today = self.services.clock.now().astimezone(
                     self.router.timezone
                 ).date()
                 try:
-                    first_date = monthly_business_day(
+                    first_date = business_rule.calendar.monthly_business_day(
                         local_today.year,
                         local_today.month,
-                        -2,
+                        business_rule.position,
                     )
                     if first_date < local_today:
                         next_year = local_today.year + int(local_today.month == 12)
                         next_month = 1 if local_today.month == 12 else local_today.month + 1
-                        first_date = monthly_business_day(next_year, next_month, -2)
+                        first_date = business_rule.calendar.monthly_business_day(
+                            next_year,
+                            next_month,
+                            business_rule.position,
+                        )
                     lines.append(f"**首次执行：** `{first_date:%Y-%m-%d}`")
                 except ValidationError:
                     pass

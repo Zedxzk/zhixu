@@ -12,13 +12,47 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from dateutil.rrule import rrulestr
 
 from .action_link import ActionLink
+from .business_calendar import BusinessCalendar
 from .classification import DataClassification, require_ordinary_storage
 from .errors import ValidationError
-from .hong_kong_calendar import monthly_business_day
+from .hong_kong_calendar import HONG_KONG
+from .macau_calendar import MACAU
 
-_HK_BUSINESS_RULE = re.compile(
-    r"^X-BUSINESS-DAY;CALENDAR=HK_GENERAL_HOLIDAYS;BYSETPOS=(-?\d{1,2})$"
+#: Every regional business calendar the deterministic engine can resolve.
+#: Adding a region here is the only change a new payday calendar needs; the
+#: model prompt is generated from this mapping rather than restating it.
+BUSINESS_CALENDARS = {
+    calendar.token: calendar for calendar in (HONG_KONG, MACAU)
+}
+_BUSINESS_RULE = re.compile(
+    r"^X-BUSINESS-DAY;CALENDAR=(?P<calendar>[A-Z_]+);BYSETPOS=(?P<position>-?\d{1,2})$"
 )
+
+
+@dataclass(frozen=True, slots=True)
+class BusinessDayRule:
+    """A payday-style rule resolved by the deterministic calendar engine."""
+
+    calendar: BusinessCalendar
+    position: int
+
+
+def parse_business_day_rule(recurrence_rule: str) -> BusinessDayRule | None:
+    """Business-day rule carried by a recurrence value, or None for other rules.
+
+    A positive position counts business days from the start of the month and a
+    negative one from its end, so the last business day is -1 and the
+    second-to-last is -2. An unknown calendar token is not a business-day rule.
+    """
+
+    match = _BUSINESS_RULE.match(recurrence_rule)
+    if match is None:
+        return None
+    calendar = BUSINESS_CALENDARS.get(match.group("calendar"))
+    if calendar is None:
+        return None
+    return BusinessDayRule(calendar, int(match.group("position")))
+
 
 # Minutes before an occurrence starts. Zero is the start itself.
 DEFAULT_NOTIFICATION_LEAD_MINUTES = (1440, 360, 60, 30, 1, 0)
@@ -59,7 +93,7 @@ class RecurrenceRule:
         if not self.value.strip():
             raise ValidationError("recurrence rule is required")
         require_timezone(self.timezone)
-        if _HK_BUSINESS_RULE.fullmatch(self.value):
+        if parse_business_day_rule(self.value) is not None:
             return
         try:
             rrulestr(self.value, dtstart=datetime.now(ZoneInfo(self.timezone)))
@@ -198,7 +232,7 @@ def occurrences_between(
             return []
         starts = [item.start_at]
     else:
-        business_rule = _HK_BUSINESS_RULE.fullmatch(item.recurrence.value)
+        business_rule = parse_business_day_rule(item.recurrence.value)
         if business_rule:
             local_start = item.start_at.astimezone(ZoneInfo(item.timezone))
             local_window_start = (window_start - duration).astimezone(
@@ -208,10 +242,10 @@ def occurrences_between(
             starts = []
             year, month = local_window_start.year, local_window_start.month
             while (year, month) <= (local_window_end.year, local_window_end.month):
-                occurrence_date = monthly_business_day(
+                occurrence_date = business_rule.calendar.monthly_business_day(
                     year,
                     month,
-                    int(business_rule.group(1)),
+                    business_rule.position,
                 )
                 occurrence = datetime.combine(
                     occurrence_date,
