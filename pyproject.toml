@@ -11,7 +11,7 @@ requires-python = ">=3.11"
 license = "MIT"
 dependencies = [
     "argon2-cffi>=25.1,<26",
-    "cryptography>=49,<50",
+    "cryptography>=50,<51",
     "pydantic>=2.7,<3",
     "python-dateutil>=2.9,<3",
     "webauthn>=3,<4",
