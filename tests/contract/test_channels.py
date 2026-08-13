@@ -34,6 +34,19 @@ from zhixu.security import FieldCipher, OpaqueReferenceFactory
 NOW = datetime(2026, 7, 30, 12, tzinfo=UTC)
 
 
+def _read_retired(path: Path) -> bytes:
+    """Read a database file, tolerating a sidecar SQLite retires mid-scan.
+
+    The -wal and -shm companions can disappear between listing the directory
+    and reading it, which made this scan fail at random.
+    """
+
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return b""
+
+
 def test_calendar_preview_rejects_impossible_or_duplicate_days() -> None:
     with pytest.raises(ValidationError):
         CalendarPreview(2026, 2, ((30, 1),))
@@ -226,7 +239,7 @@ def test_wecom_delivery_uses_encrypted_target_and_fixed_provider(
     assert transport.requests[-1][2]["touser"] == external_user
     assert all("qyapi.weixin.qq.com" in url for url, _method, _payload in transport.requests)
     database_bytes = b"".join(
-        path.read_bytes()
+        _read_retired(path)
         for path in tmp_path.iterdir()
         if path.name.startswith("zhixu.sqlite3")
     )
