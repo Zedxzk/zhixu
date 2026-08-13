@@ -46,6 +46,16 @@ FULL_INTENTS = (
     | INTERACTION
 )
 
+# Transport-level keepalive. Without it a half-open connection is only noticed
+# through the QQ application heartbeat, which reacts far more slowly.
+PING_INTERVAL_SECONDS = 20.0
+PING_TIMEOUT_SECONDS = 20.0
+
+# An unacknowledged heartbeat must fail fast. Checking only when the next
+# heartbeat falls due leaves a blind window of up to two heartbeat intervals,
+# during which the platform keeps buffering inbound events.
+HEARTBEAT_ACK_TIMEOUT_SECONDS = 10.0
+
 
 @dataclass(slots=True)
 class QQGatewayState:
@@ -565,7 +575,8 @@ class QQGatewayRunner:
                 url,
                 open_timeout=12,
                 close_timeout=3,
-                ping_interval=None,
+                ping_interval=PING_INTERVAL_SECONDS,
+                ping_timeout=PING_TIMEOUT_SECONDS,
                 max_size=2 * 1024 * 1024,
             )
         from websockets.sync.client import connect
@@ -574,7 +585,8 @@ class QQGatewayRunner:
             url,
             open_timeout=12,
             close_timeout=3,
-            ping_interval=None,
+            ping_interval=PING_INTERVAL_SECONDS,
+            ping_timeout=PING_TIMEOUT_SECONDS,
             max_size=2 * 1024 * 1024,
         )
 
@@ -590,23 +602,26 @@ class QQGatewayRunner:
             raise RuntimeError("QQ gateway discovery failed")
         return url
 
-    def connect_once(self, stop_event: threading.Event) -> None:
+    def connect_once(self, stop_event: threading.Event) -> str:
         token = self.adapter.access_token()
         gateway_url = self._gateway_url(token)
         heartbeat_interval = 30.0
         next_heartbeat = time.monotonic() + heartbeat_interval
+        heartbeat_deadline: float | None = None
         with self._connect(gateway_url) as websocket:
             while not stop_event.is_set():
                 current = time.monotonic()
+                if heartbeat_deadline is not None and current >= heartbeat_deadline:
+                    raise RuntimeError("QQ gateway heartbeat ack timeout")
                 if current >= next_heartbeat:
-                    if not self.protocol.state.heartbeat_acknowledged:
-                        raise RuntimeError("QQ gateway heartbeat timeout")
                     websocket.send(json.dumps(self.protocol.heartbeat_payload()))
+                    heartbeat_deadline = current + HEARTBEAT_ACK_TIMEOUT_SECONDS
                     next_heartbeat = current + heartbeat_interval
+                wake_at = next_heartbeat
+                if heartbeat_deadline is not None:
+                    wake_at = min(wake_at, heartbeat_deadline)
                 try:
-                    raw = websocket.recv(
-                        timeout=min(1.0, max(0.05, next_heartbeat - current))
-                    )
+                    raw = websocket.recv(timeout=min(1.0, max(0.05, wake_at - current)))
                 except TimeoutError:
                     continue
                 payload = json.loads(raw)
@@ -620,6 +635,7 @@ class QQGatewayRunner:
                         0,
                         heartbeat_interval,
                     )
+                    heartbeat_deadline = None
                     websocket.send(json.dumps(self.protocol.handshake_payload(token)))
                     continue
                 if (
@@ -635,21 +651,43 @@ class QQGatewayRunner:
                     if interaction_id:
                         self.adapter.acknowledge_interaction(interaction_id)
                 action = self.protocol.handle(payload, received_at=datetime.now(UTC))
+                if action == "heartbeat_ack":
+                    heartbeat_deadline = None
                 if action == "reconnect":
-                    return
+                    return "reconnect_requested"
+        return "stopped"
+
+    def _resumable(self) -> bool:
+        """Whether a RESUME is possible, without touching the session id itself."""
+        state = getattr(self.protocol, "state", None)
+        return bool(getattr(state, "session_id", ""))
 
     def run(self, stop_event: threading.Event) -> None:
         retry_delays = (1, 2, 5, 10, 30, 60)
         failures = 0
         while not stop_event.is_set():
+            started = time.monotonic()
             try:
-                self.connect_once(stop_event)
-                failures = 0
+                reason = self.connect_once(stop_event)
             except Exception as exc:
-                logger.warning(
-                    "qq_gateway reconnecting after %s",
-                    type(exc).__name__,
-                )
                 delay = retry_delays[min(failures, len(retry_delays) - 1)]
                 failures += 1
+                # Only the exception type is logged; messages may carry payload data.
+                logger.warning(
+                    "qq_gateway reconnecting reason=%s uptime=%.1fs resumable=%s delay=%ss",
+                    type(exc).__name__,
+                    time.monotonic() - started,
+                    self._resumable(),
+                    delay,
+                )
                 stop_event.wait(delay)
+                continue
+            failures = 0
+            if stop_event.is_set():
+                return
+            logger.info(
+                "qq_gateway reconnecting reason=%s uptime=%.1fs resumable=%s delay=0s",
+                reason,
+                time.monotonic() - started,
+                self._resumable(),
+            )
