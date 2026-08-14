@@ -11,6 +11,7 @@ from dataclasses import replace
 from datetime import UTC, date, datetime, time
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from zhixu.application.labels import card
 from zhixu.domain import (
     DEFAULT_NOTIFICATION_LEAD_MINUTES,
     Action,
@@ -116,10 +117,11 @@ def _timezone_of(reminder: Reminder) -> tuple[ZoneInfo, str]:
 
 
 def _reminder_notification_text(reminder: Reminder) -> str:
+    """The card a reminder is delivered as, built like every other card."""
+
     zone, zone_label = _timezone_of(reminder)
     local_fire_at = reminder.fire_at.astimezone(zone)
-    title = _escape_markdown_text(reminder.title)
-    lines = ["# ⏰ 日程提醒", "", f"**事项：** {title}"]
+    fields = [("事项", _escape_markdown_text(reminder.title))]
     if reminder.related_start_at is not None:
         # This reminder speaks before the thing it announces, so the moment the
         # reader needs is when that thing starts, not when the reminder fired.
@@ -128,21 +130,20 @@ def _reminder_notification_text(reminder: Reminder) -> str:
         weekday = _WEEKDAYS[starts_at.weekday()]
         same_day = starts_at.date() == local_fire_at.date()
         when = f"{starts_at:%H:%M}" if same_day else f"{starts_at:%Y-%m-%d %H:%M}"
-        lines.extend(
-            [
-                "",
-                f"**开始：** {when} 周{weekday}"
+        fields.append(
+            (
+                "开始",
+                f"{when} 周{weekday}"
                 + ("（今天）" if same_day else "")
                 + f"（{zone_label}）",
-                "",
-                f"**距开始：** {_humanise_gap(gap)}",
-            ]
+            )
         )
+        fields.append(("距开始", _humanise_gap(gap)))
     else:
-        lines.extend(
-            ["", f"**时间：** {local_fire_at:%Y-%m-%d %H:%M}（{zone_label}）"]
+        fields.append(
+            ("时间", f"{local_fire_at:%Y-%m-%d %H:%M}（{zone_label}）")
         )
-    return "\n".join(lines)
+    return card("日程提醒", fields)
 
 
 def _dump_action_links(links: tuple[ActionLink, ...]) -> str:

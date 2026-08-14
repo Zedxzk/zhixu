@@ -366,7 +366,7 @@ def test_qq_network_database_is_separate_and_duplicate_events_are_idempotent(
         ).encode(),
     ).body["delivery"]
     assert proactive["target_ref"] == actor_ref
-    assert proactive["text"].startswith("# ⏰ 日程提醒")
+    assert proactive["text"].startswith("# 日程提醒")
     assert "**事项：** 提交合成报告" in proactive["text"]
     assert "2026-07-31 17:00（北京时间）" in proactive["text"]
     assert [button["label"] for button in proactive["buttons"]] == [
@@ -422,7 +422,7 @@ def test_qq_network_database_is_separate_and_duplicate_events_are_idempotent(
             }
         ).encode(),
     ).body["delivery"]
-    assert repeated["text"].startswith("# ⏰ 日程提醒")
+    assert repeated["text"].startswith("# 日程提醒")
     assert "**事项：** 提交合成报告" in repeated["text"]
     internal.dispatch(
         "POST",
