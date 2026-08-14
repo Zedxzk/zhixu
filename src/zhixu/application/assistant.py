@@ -71,7 +71,7 @@ from .intents import (
     ModelNotificationProposal,
     ParsedIntent,
 )
-from .labels import agenda_mark
+from .labels import agenda_mark, card, local_moment
 from .llm import LLMGateway
 from .queries import (
     AgendaBetween,
@@ -1171,11 +1171,29 @@ class AssistantEngine:
                     ),
                     context,
                 )
+            agenda_fields = [
+                ("事件", _escape_markdown_text(item.title)),
+                ("开始", local_moment(item.start_at, self.router.timezone)),
+            ]
+            if recurrence_rule:
+                business_rule = parse_business_day_rule(recurrence_rule)
+                agenda_fields.append(
+                    (
+                        "重复",
+                        _escape_markdown_text(
+                            _business_day_rule_label(business_rule)
+                            if business_rule is not None
+                            else recurrence_rule
+                        ),
+                    )
+                )
+            if notifications:
+                agenda_fields.append(("通知", f"{len(notifications)} 条提醒规则"))
             return AssistantReply(
-                f"已创建循环日程：{item.title}"
-                + (f"，并配置 {len(notifications)} 条提醒规则" if notifications else ""),
+                card("循环日程已创建", agenda_fields),
                 "created",
                 intent.source,
+                rich_text=True,
             )
         if intent.action is IntentAction.CREATE_ANNIVERSARY:
             try:
@@ -1631,16 +1649,38 @@ class AssistantEngine:
                     ),
                     context,
                 )
-            return AssistantReply(
+            fields = [
+                ("事项", _escape_markdown_text(reminder.title)),
+                ("时间", local_moment(reminder.fire_at, self.router.timezone)),
                 (
-                    "私人提醒已设置："
+                    "范围",
+                    "私人库"
                     if reminder.owner_user_id == context.actor_user_id
-                    else "群共享提醒已设置："
+                    else "当前内部群共享库",
+                ),
+            ]
+            if leads:
+                fields.append(
+                    (
+                        "提前通知",
+                        f"{len(leads)} 次 · "
+                        + _escape_markdown_text(
+                            "、".join(
+                                local_moment(
+                                    moment,
+                                    self.router.timezone,
+                                    with_weekday=False,
+                                )
+                                for moment in leads
+                            )
+                        ),
+                    )
                 )
-                + f"{reminder.fire_at.isoformat()} {reminder.title}"
-                + (f"，另有 {len(leads)} 次提前通知" if leads else ""),
+            return AssistantReply(
+                card("提醒已设置", fields),
                 "created",
                 intent.source,
+                rich_text=True,
             )
         if intent.action is IntentAction.ACKNOWLEDGE_REMINDER:
             reminder_id = str(arguments.get("reminder_id") or "").strip()
@@ -1953,9 +1993,10 @@ class AssistantEngine:
         chosen = str(arguments.get("lead") or "")
         if not arguments.get("disable") and not chosen:
             return AssistantReply(
-                "选择提前多久通知：",
+                card("选择提前多久通知", [("说明", "按你的默认设置提前通知")]),
                 "plan_lead_choice",
                 "deterministic",
+                rich_text=True,
                 buttons=tuple(
                     MessageButton(preset, f"/计划提前 {stored.id} {preset}")
                     for preset in REMINDER_LEAD_PRESETS
@@ -2041,9 +2082,10 @@ class AssistantEngine:
         chosen = str(arguments.get("time_of_day") or "")
         if not arguments.get("disable") and not chosen:
             return AssistantReply(
-                "选择通知时间：",
+                card("选择通知时间", [("当前", "事件当天与前一天各一次")]),
                 "plan_notification_choice",
                 "deterministic",
+                rich_text=True,
                 buttons=tuple(
                     MessageButton(preset, f"/计划通知 {stored.id} {preset}")
                     for preset in NOTIFICATION_PRESETS

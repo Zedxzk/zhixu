@@ -287,7 +287,10 @@ def test_qq_network_database_is_separate_and_duplicate_events_are_idempotent(
             }
         ).encode(),
     ).body["delivery"]
-    assert confirmation_delivery["text"].startswith("私人提醒已设置")
+    # The confirmation is a card now; this channel advertises no markdown, so
+    # it arrives with the marks stripped but the fields intact.
+    assert confirmation_delivery["text"].startswith("提醒已设置")
+    assert "范围： 私人库" in confirmation_delivery["text"]
     assert confirmation_delivery["reply_context_ref"] == ""
     internal.dispatch(
         "POST",

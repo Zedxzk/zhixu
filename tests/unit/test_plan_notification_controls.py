@@ -98,3 +98,35 @@ def test_preview_rejects_an_over_long_title() -> None:
             day=13,
             entries=((540, 600, "agenda", "x" * 61),),
         )
+
+
+def test_every_outbound_card_shares_one_shape() -> None:
+    """One builder defines the style, so confirmations cannot drift apart."""
+
+    from zhixu.application.labels import card
+
+    rendered = card(
+        "提醒已设置",
+        [("事项", "合成事项"), ("时间", "2026-08-31 09:00 周一")],
+        note="接受后才会写入",
+    )
+    assert rendered.splitlines()[0] == "# 提醒已设置"
+    assert "**事项：** 合成事项" in rendered
+    assert "**时间：** 2026-08-31 09:00 周一" in rendered
+    assert rendered.endswith("> 接受后才会写入")
+
+
+def test_a_moment_is_shown_the_way_a_person_reads_it() -> None:
+    """An ISO string with an offset is not a confirmation anyone wants."""
+
+    from datetime import UTC, datetime
+    from zoneinfo import ZoneInfo
+
+    from zhixu.application.labels import local_moment
+
+    moment = datetime(2026, 8, 31, 1, 0, tzinfo=UTC)
+    shown = local_moment(moment, ZoneInfo("Asia/Shanghai"))
+
+    assert shown == "2026-08-31 09:00 周一"
+    assert "T" not in shown
+    assert "+08:00" not in shown
