@@ -265,7 +265,7 @@ def test_the_notification_states_when_the_event_starts(database: Database) -> No
 
     day_ahead, two_hours = stored
     early = _reminder_notification_text(day_ahead)
-    assert "**事项：** 部门会议" in early
+    assert "**事项：** `部门会议`" in early
     assert "2026-08-02 09:00" in early
     assert "周日" in early
     assert "还有 1 天" in early
@@ -292,7 +292,7 @@ def test_a_plain_reminder_keeps_its_own_time(database: Database) -> None:
         target_ref="qqc_target_test",
     )
     text = _reminder_notification_text(plain)
-    assert "**时间：** 2026-08-01 15:00" in text
+    assert "**时间：** `2026-08-01 15:00（北京时间）`" in text
     assert "距开始" not in text
 
 

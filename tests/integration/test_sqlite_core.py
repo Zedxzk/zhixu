@@ -741,8 +741,8 @@ def test_reminder_tick_is_atomic_and_idempotent(
     # Built by the shared card builder, so it matches every confirmation.
     assert value["text"] == (
         "# 日程提醒\n\n"
-        "**事项：** Synthetic reminder\n\n"
-        "**时间：** 2026-01-01 16:05（北京时间）"
+        "**事项：** `Synthetic reminder`\n\n"
+        "**时间：** `2026-01-01 16:05（北京时间）`"
     )
     assert [button["label"] for button in value["buttons"]] == [
         "5分钟",

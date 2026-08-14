@@ -35,17 +35,28 @@ def local_moment(value: datetime, timezone: ZoneInfo, *, with_weekday: bool = Tr
     return f"{stamp} 周{_WEEKDAYS[local.weekday()]}" if with_weekday else stamp
 
 
+def field(label: str, value: str) -> str:
+    """One label/value row: bold label, value set apart in a code span.
+
+    The value is not markdown-escaped, because inside a code span an escape
+    renders as a literal backslash. Its own backticks are dropped instead, so
+    a value can never break out of the span.
+    """
+
+    return f"**{label}：** `{value.replace('`', '')}`"
+
+
 def card(title: str, fields: Sequence[tuple[str, str]], *, note: str = "") -> str:
     """One outbound card shape, so every confirmation reads the same.
 
-    ``fields`` are already-escaped label/value pairs; ``note`` becomes a quoted
-    footer. Kept here rather than in the assistant so the scheduler and the
+    ``fields`` are raw label/value pairs; ``note`` becomes a quoted footer.
+    Kept here rather than in the assistant so the scheduler and the
     repositories can produce identical cards.
     """
 
     lines = [f"# {title}"]
     for label, value in fields:
-        lines.extend(["", f"**{label}：** {value}"])
+        lines.extend(["", field(label, value)])
     if note:
         lines.extend(["", f"> {note}"])
     return "\n".join(lines)

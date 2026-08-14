@@ -71,7 +71,7 @@ from .intents import (
     ModelNotificationProposal,
     ParsedIntent,
 )
-from .labels import agenda_mark, card, local_moment
+from .labels import agenda_mark, card, field, local_moment
 from .llm import LLMGateway
 from .queries import (
     AgendaBetween,
@@ -519,19 +519,24 @@ def _important_day_preview_lines(arguments: dict) -> list[str]:
     is_lunar = str(arguments.get("calendar") or "") == str(CalendarSystem.LUNAR)
     title = _escape_markdown_text(str(arguments.get("title") or ""))
     anchor = arguments.get("anchor_date")
-    lines = [f"**{'生日' if is_birthday else '纪念日'}：** {title}"]
+    lines = [field("生日" if is_birthday else "纪念日", title)]
     if is_lunar:
         leap = "闰" if arguments.get("lunar_leap") else ""
         lines.append(
-            f"**农历日期：** {leap}{arguments.get('lunar_month')}月"
-            f"{arguments.get('lunar_day')}日"
+            field(
+                "农历日期",
+                f"{leap}{arguments.get('lunar_month')}月"
+                f"{arguments.get('lunar_day')}日",
+            )
         )
         if isinstance(anchor, date) and anchor.year > UNKNOWN_YEAR:
-            lines.append(f"**出生年：** {anchor.year}")
+            lines.append(field("出生年", f"{anchor.year}"))
     elif isinstance(anchor, date) and anchor.year <= UNKNOWN_YEAR:
-        lines.append(f"**日期：** {anchor:%m-%d}（年份未知）")
+        lines.append(field("日期", f"{anchor:%m-%d}（年份未知）"))
     else:
-        lines.append(f"**{'出生日期' if is_birthday else '起始日期'}：** {anchor}")
+        lines.append(
+            field("出生日期" if is_birthday else "起始日期", str(anchor))
+        )
     advance = arguments.get("advance_days")
     if isinstance(advance, (list, tuple)) and advance:
         lines.append(
@@ -2169,7 +2174,7 @@ class AssistantEngine:
         lines = ["# 请确认计划"]
         if notice:
             lines.extend(["", f"> {_escape_markdown_text(notice)}"])
-        lines.extend(["", f"**写入范围：** {scope}"])
+        lines.extend(["", field("写入范围", f"{scope}")])
         if intent.action is IntentAction.CREATE_AGENDA:
             recurrence = str(arguments.get("recurrence_rule") or "")
             business_rule = parse_business_day_rule(recurrence)
@@ -2179,7 +2184,7 @@ class AssistantEngine:
                 else recurrence
             )
             lines.append(
-                f"**事件：** {_escape_markdown_text(str(arguments.get('title') or ''))}"
+                field("事件", f"{str(str(arguments.get('title') or ''))}")
             )
             if business_rule is not None:
                 local_today = self.services.clock.now().astimezone(
@@ -2199,7 +2204,7 @@ class AssistantEngine:
                             next_month,
                             business_rule.position,
                         )
-                    lines.append(f"**首次执行：** {first_date:%Y-%m-%d}")
+                    lines.append(field("首次执行", f"{first_date:%Y-%m-%d}"))
                 except ValidationError:
                     pass
             else:
@@ -2212,14 +2217,14 @@ class AssistantEngine:
                         else str(start_value)
                     )
                 )
-            lines.append(f"**重复：** {_escape_markdown_text(recurrence_text)}")
+            lines.append(field("重复", f"{str(recurrence_text)}"))
             notifications = arguments.get("notifications") or []
             links = arguments.get("links") or []
             if arguments.get("include_in_daily_briefing"):
                 lines.append("**每日早报：** 自动纳入（不会额外创建一条早报提醒）")
             if notifications:
                 lines.append(
-                    "**通知形式：** 提醒卡片（支持延后 5/15/30/60 分钟、完成、取消）"
+                    field("通知形式", "提醒卡片（支持延后 5/15/30/60 分钟、完成、取消）")
                 )
             for index, notification in enumerate(notifications, start=1):
                 if isinstance(notification, ModelNotificationProposal):
@@ -2234,30 +2239,33 @@ class AssistantEngine:
                         " · 默认" if arguments.get("notification_defaulted") else ""
                     )
                     lines.append(
-                        f"**通知 {index}：** {relation} {notification.time_of_day:%H:%M}"
-                        f"{default_mark} · {_escape_markdown_text(notification.text)}"
+                        field(
+                            f"通知 {index}",
+                            f"{relation} {notification.time_of_day:%H:%M}"
+                            f"{default_mark} · {notification.text}",
+                        )
                     )
             if not notifications:
                 lines.append("**通知：** 无（本次不会提醒）")
             for index, link in enumerate(links, start=1):
                 if isinstance(link, ActionLink):
                     lines.append(
-                        f"**操作入口 {index}：** {_escape_markdown_text(link.label)}"
+                        field(f"操作入口 {index}", link.label)
                     )
         elif intent.action is IntentAction.CREATE_ANNIVERSARY:
             lines.extend(_important_day_preview_lines(arguments))
         elif intent.action is IntentAction.CREATE_DAILY_BRIEFING:
-            lines.append(f"**每日简报时间：** {arguments.get('briefing_time')}")
+            lines.append(field("每日简报时间", f"{arguments.get('briefing_time')}"))
         elif intent.action is IntentAction.DELETE_ANNIVERSARY:
-            lines.append(f"**删除重要日子：** {arguments.get('anniversary_id')}")
+            lines.append(field("删除重要日子", f"{arguments.get('anniversary_id')}"))
         elif intent.action is IntentAction.DELETE_DAILY_BRIEFING:
-            lines.append(f"**删除每日简报：** {arguments.get('briefing_id')}")
+            lines.append(field("删除每日简报", f"{arguments.get('briefing_id')}"))
         elif intent.action is IntentAction.DELETE_AGENDA_NOTIFICATION:
-            lines.append(f"**删除日程通知：** {arguments.get('rule_id')}")
+            lines.append(field("删除日程通知", f"{arguments.get('rule_id')}"))
         elif intent.action is IntentAction.CREATE_REMINDER:
             lines.extend(
                 [
-                    f"**提醒：** {_escape_markdown_text(str(arguments.get('title') or ''))}",
+                    field("提醒", f"{str(str(arguments.get('title') or ''))}"),
                     "**时间：** "
                     + (
                         local_moment(fire_value, self.router.timezone)
@@ -2278,7 +2286,7 @@ class AssistantEngine:
                     for moment in leads
                 ]
                 lines.append(
-                    f"**提前通知：** {len(leads)} 次 · "
+                    field("提前通知", f"{len(leads)} 次 · ")
                     + _escape_markdown_text("、".join(local))
                 )
             else:
@@ -2288,63 +2296,59 @@ class AssistantEngine:
             note_body = str(arguments.get("body") or note_title).strip()
             lines.extend(
                 [
-                    "**保存位置：** "
-                    + _escape_markdown_text(
+                    field(
+                        "保存位置",
                         " / ".join(
                             str(value)
                             for value in arguments.get("category_path") or ("未分类",)
-                        )
+                        ),
                     ),
-                    f"**备忘：** {_escape_markdown_text(note_title)}",
-                    f"**具体条目：** {_escape_markdown_text(note_body)}",
+                    field("备忘", f"{str(note_title)}"),
+                    field("具体条目", f"{str(note_body)}"),
                 ]
             )
             for block in arguments.get("content_blocks") or []:
                 if not isinstance(block, dict):
                     continue
                 lines.append(
-                    "**内容块：** "
-                    + _escape_markdown_text(str(block.get("name") or "默认内容"))
+                    field("内容块", str(block.get("name") or "默认内容"))
                 )
-                for field in block.get("fields") or []:
-                    if isinstance(field, dict):
+                for entry in block.get("fields") or []:
+                    if isinstance(entry, dict):
                         lines.append(
-                            f"- {_escape_markdown_text(str(field.get('name') or ''))}: "
-                            f"{_escape_markdown_text(str(field.get('value') or ''))}"
+                            f"- {_escape_markdown_text(str(entry.get('name') or ''))}: "
+                            f"{_escape_markdown_text(str(entry.get('value') or ''))}"
                         )
         elif intent.action is IntentAction.ADD_NOTE_CONTENT_BLOCK:
             block = arguments.get("block") or {}
             lines.extend(
                 [
-                    "**目标条目：** "
-                    + _escape_markdown_text(str(arguments.get("entry_query") or "")),
-                    "**新增内容块：** "
-                    + _escape_markdown_text(str(block.get("name") or "")),
+                    field("目标条目", str(arguments.get("entry_query") or "")),
+                    field("新增内容块", str(block.get("name") or "")),
                 ]
             )
             if isinstance(block, dict):
-                for field in block.get("fields") or []:
-                    if isinstance(field, dict):
+                for entry in block.get("fields") or []:
+                    if isinstance(entry, dict):
                         lines.append(
-                            f"- {_escape_markdown_text(str(field.get('name') or ''))}: "
-                            f"{_escape_markdown_text(str(field.get('value') or ''))}"
+                            f"- {_escape_markdown_text(str(entry.get('name') or ''))}: "
+                            f"{_escape_markdown_text(str(entry.get('value') or ''))}"
                         )
         elif intent.action is IntentAction.MOVE_NOTE_CATEGORY:
             lines.extend(
                 [
-                    "**目标条目：** "
-                    + _escape_markdown_text(str(arguments.get("entry_query") or "")),
-                    "**移动到：** "
-                    + _escape_markdown_text(
+                    field("目标条目", str(arguments.get("entry_query") or "")),
+                    field(
+                        "移动到",
                         " / ".join(
                             str(value) for value in arguments.get("category_path") or ()
-                        )
+                        ),
                     ),
                 ]
             )
         elif intent.action is IntentAction.CREATE_TASK:
             lines.append(
-                f"**待办：** {_escape_markdown_text(str(arguments.get('title') or ''))}"
+                field("待办", f"{str(str(arguments.get('title') or ''))}")
             )
             if arguments.get("due_at") is not None:
                 due_value = arguments.get("due_at")
@@ -2371,8 +2375,8 @@ class AssistantEngine:
             lines.extend(
                 [
                     "**操作：** 取消该日程的所有未来安排",
-                    f"**日程：** {_escape_markdown_text(item.title) if item else agenda_id}",
-                    f"**资源 ID：** {agenda_id}",
+                    field("日程", f"{str(item.title) if item else agenda_id}"),
+                    field("资源 ID", f"{agenda_id}"),
                 ]
             )
         elif intent.action is IntentAction.CANCEL_REMINDER:
@@ -2393,17 +2397,17 @@ class AssistantEngine:
             lines.extend(
                 [
                     "**操作：** 取消未来提醒",
-                    f"**提醒：** {reminder_title}",
-                    f"**资源 ID：** {reminder_id}",
+                    field("提醒", f"{reminder_title}"),
+                    field("资源 ID", f"{reminder_id}"),
                 ]
             )
         else:
-            lines.append(f"**操作：** {intent.action.value}")
+            lines.append(field("操作", f"{intent.action.value}"))
         if intent.action is not IntentAction.CREATE_AGENDA:
             for index, link in enumerate(arguments.get("links") or [], start=1):
                 if isinstance(link, ActionLink):
                     lines.append(
-                        f"**操作入口 {index}：** {_escape_markdown_text(link.label)}"
+                        field(f"操作入口 {index}", link.label)
                     )
         lines.extend(
             [
@@ -2582,8 +2586,8 @@ class AssistantEngine:
                     lines.append(f"- {block.name}")
                     if block.body.strip():
                         lines.append(f"  {block.body}")
-                    for field in block.fields:
-                        lines.append(f"  {field.name}: {field.value}")
+                    for entry in block.fields:
+                        lines.append(f"  {entry.name}: {entry.value}")
             elif note.body.strip():
                 lines.append(note.body)
         return AssistantReply("\n".join(lines), "ok", source)

@@ -290,7 +290,7 @@ def test_qq_network_database_is_separate_and_duplicate_events_are_idempotent(
     # The confirmation is a card now; this channel advertises no markdown, so
     # it arrives with the marks stripped but the fields intact.
     assert confirmation_delivery["text"].startswith("提醒已设置")
-    assert "范围： 私人库" in confirmation_delivery["text"]
+    assert "范围： `私人库`" in confirmation_delivery["text"]
     assert confirmation_delivery["reply_context_ref"] == ""
     internal.dispatch(
         "POST",
@@ -367,7 +367,7 @@ def test_qq_network_database_is_separate_and_duplicate_events_are_idempotent(
     ).body["delivery"]
     assert proactive["target_ref"] == actor_ref
     assert proactive["text"].startswith("# 日程提醒")
-    assert "**事项：** 提交合成报告" in proactive["text"]
+    assert "**事项：** `提交合成报告`" in proactive["text"]
     assert "2026-07-31 17:00（北京时间）" in proactive["text"]
     assert [button["label"] for button in proactive["buttons"]] == [
         "5分钟",
@@ -423,7 +423,7 @@ def test_qq_network_database_is_separate_and_duplicate_events_are_idempotent(
         ).encode(),
     ).body["delivery"]
     assert repeated["text"].startswith("# 日程提醒")
-    assert "**事项：** 提交合成报告" in repeated["text"]
+    assert "**事项：** `提交合成报告`" in repeated["text"]
     internal.dispatch(
         "POST",
         "/internal/channel/delivery/complete",

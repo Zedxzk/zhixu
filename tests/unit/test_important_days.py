@@ -159,7 +159,7 @@ def test_plan_preview_names_the_kind_and_calendar_it_will_store() -> None:
             "advance_days": (7, 3, 1),
         }
     )
-    assert any("**生日：** 香宝生日" in line for line in lines)
+    assert any("**生日：** `香宝生日`" in line for line in lines)
     assert not any("纪念日" in line for line in lines)
     assert any("出生日期" in line for line in lines)
     assert any("提前预告" in line for line in lines)

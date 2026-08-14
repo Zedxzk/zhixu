@@ -111,8 +111,8 @@ def test_every_outbound_card_shares_one_shape() -> None:
         note="接受后才会写入",
     )
     assert rendered.splitlines()[0] == "# 提醒已设置"
-    assert "**事项：** 合成事项" in rendered
-    assert "**时间：** 2026-08-31 09:00 周一" in rendered
+    assert "**事项：** `合成事项`" in rendered
+    assert "**时间：** `2026-08-31 09:00 周一`" in rendered
     assert rendered.endswith("> 接受后才会写入")
 
 

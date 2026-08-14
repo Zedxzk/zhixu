@@ -388,8 +388,8 @@ def test_natural_compound_schedule_is_previewed_revised_and_materialized(
     )
     assert preview.code == "plan_preview"
     assert "每月倒数第二个香港工作日" in preview.text
-    assert "首次执行：** 2026-06-29" in preview.text
-    assert "通知形式：** 提醒卡片" in preview.text
+    assert "首次执行：** `2026-06-29`" in preview.text
+    assert "通知形式：** `提醒卡片" in preview.text
     assert "08:00" in preview.text
     assert services.agenda.list_for_owner("user_test") == []
 
@@ -700,7 +700,7 @@ def test_revision_cannot_downgrade_recurring_agenda_to_one_off_reminder(
     assert guarded.code == "plan_preview"
     assert "已拒绝该变更并保留原循环计划" in guarded.text
     assert "每月倒数第二个香港工作日" in guarded.text
-    assert "首次执行：** 2026-08-28" in guarded.text
+    assert "首次执行：** `2026-08-28`" in guarded.text
     assert "提醒卡片" in guarded.text
     assert "2026-06-30T08:00" not in guarded.text
     assert services.agenda.list_for_owner("user_test") == []
@@ -727,10 +727,12 @@ def test_natural_record_request_becomes_confirmed_note_without_llm_or_fake_time(
     preview = engine.handle(f"登记{body}", group_context, target_ref=target)
 
     assert preview.code == "plan_preview"
-    assert "写入范围：** 当前内部群共享库" in preview.text
-    assert "备忘：** 测试网络账号密码" in preview.text
+    assert "写入范围：** `当前内部群共享库`" in preview.text
+    assert "备忘：** `测试网络账号密码`" in preview.text
     assert "具体条目：**" in preview.text
-    assert body.replace("-", "\\-") in preview.text
+    # Inside a code span an escape would render as a literal backslash, so the
+    # value is carried through unescaped.
+    assert body in preview.text
     assert "提醒：**" not in preview.text
     assert "时间：**" not in preview.text
     assert client.calls == 0
@@ -780,9 +782,9 @@ def test_structured_note_category_blocks_fields_and_append(
     )
 
     assert preview.code == "plan_preview"
-    assert "保存位置：** 凭据 / API" in preview.text
-    assert "备忘：** OpenAI" in preview.text
-    assert "内容块：** 生产项目" in preview.text
+    assert "保存位置：** `凭据 / API`" in preview.text
+    assert "备忘：** `OpenAI`" in preview.text
+    assert "内容块：** `生产项目`" in preview.text
     assert r"synthetic\-value\-one" in preview.text
     created = engine.handle(preview.buttons[0].action, group_context, target_ref=target)
     assert created.code == "created"
@@ -803,8 +805,8 @@ def test_structured_note_category_blocks_fields_and_append(
         target_ref=target,
     )
     assert append_preview.code == "plan_preview"
-    assert "目标条目：** OpenAI" in append_preview.text
-    assert "新增内容块：** 临时测试" in append_preview.text
+    assert "目标条目：** `OpenAI`" in append_preview.text
+    assert "新增内容块：** `临时测试`" in append_preview.text
     updated = engine.handle(
         append_preview.buttons[0].action,
         group_context,
@@ -818,8 +820,8 @@ def test_structured_note_category_blocks_fields_and_append(
         target_ref=target,
     )
     assert move_preview.code == "plan_preview"
-    assert "目标条目：** OpenAI" in move_preview.text
-    assert "移动到：** 凭据 / 模型 / API" in move_preview.text
+    assert "目标条目：** `OpenAI`" in move_preview.text
+    assert "移动到：** `凭据 / 模型 / API`" in move_preview.text
     moved = engine.handle(
         move_preview.buttons[0].action,
         group_context,
@@ -860,8 +862,8 @@ def test_model_note_preview_shows_item_when_body_is_omitted(
     )
 
     assert preview.code == "plan_preview"
-    assert "备忘：** Synthetic model note item" in preview.text
-    assert "具体条目：** Synthetic model note item" in preview.text
+    assert "备忘：** `Synthetic model note item`" in preview.text
+    assert "具体条目：** `Synthetic model note item`" in preview.text
     assert "操作：** `create_note`" not in preview.text
 
 
@@ -1380,11 +1382,11 @@ def test_a_model_proposed_note_category_reaches_the_preview_and_the_note(
 
     filed = engine.handle("Record the synthetic router login", context, target_ref="qqc_x")
     assert filed.code == "plan_preview"
-    assert "**保存位置：** 账号 / 网络" in filed.text
+    assert "**保存位置：** `账号 / 网络`" in filed.text
     engine.handle(filed.buttons[0].action, context, target_ref="qqc_x")
 
     unfiled = engine.handle("Record a synthetic loose thought", context, target_ref="qqc_x")
-    assert "**保存位置：** 未分类" in unfiled.text
+    assert "**保存位置：** `未分类`" in unfiled.text
     engine.handle(unfiled.buttons[0].action, context, target_ref="qqc_x")
 
     notes = {note.title: note.category_path for note in services.notes.list_for_owner("user_test")}
