@@ -55,6 +55,17 @@ def test_out_of_range_button_payloads_are_refused(
     assert intent is None or intent.action is not IntentAction.ADJUST_PLAN_NOTIFICATION
 
 
+def test_the_prompt_states_both_default_notification_times() -> None:
+    """The two defaults are a stated contract, not something the model invents."""
+
+    from zhixu.application.intent_router import _system_prompt
+
+    prompt = _system_prompt()
+    assert "20:00" in prompt
+    assert "09:00" in prompt
+    assert "never invent a different one" in prompt
+
+
 def test_entries_queued_before_titles_existed_still_load() -> None:
     """Rows written by the previous release carry three-field entries."""
 

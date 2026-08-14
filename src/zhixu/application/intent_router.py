@@ -912,6 +912,9 @@ class ModelIntentClassifier:
                 "lunar_leap": proposal.lunar_leap,
                 "year": proposal.view_year,
                 "month": proposal.view_month,
+                # Only meaningful alongside notifications, and False is the
+                # same as absent, so let the None filter drop it otherwise.
+                "notification_defaulted": proposal.notification_defaulted or None,
                 # An empty list means the model said nothing about these, not
                 # that the user asked for none; passing it on would override the
                 # defaults with silence.

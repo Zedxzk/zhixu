@@ -77,14 +77,16 @@ Put each notification rule in `notifications` with a timezone-free `time_of_day`
 before), and the notification text. Do not put the notification wording into the calendar
 title.
 
-A recurring event exists to be announced, so give every `create_agenda` exactly one
-notification unless the user asked for a different number:
+A recurring event exists to be announced, so every `create_agenda` carries notifications
+unless the user asked otherwise:
 
-- The user stated when to be told — use exactly that time and offset, and set
+- The user stated when to be told — use exactly the times and offsets they gave, and set
   `notification_defaulted=false`.
-- The user said nothing about being told — use `time_of_day` 09:00 and `day_offset` 0,
-  write text that restates the event, and set `notification_defaulted=true`. 09:00 is the
-  only default permitted; never invent a different one.
+- The user said nothing about being told — emit exactly these two, and set
+  `notification_defaulted=true`:
+  1. `day_offset` -1 with `time_of_day` 20:00, saying the event falls tomorrow.
+  2. `day_offset` 0 with `time_of_day` 09:00, restating the event.
+  These two times are the only defaults permitted; never invent a different one.
 - The user said not to be told — leave `notifications` empty.
 
 A phrase such as include, show, or add the event in the daily briefing is not a

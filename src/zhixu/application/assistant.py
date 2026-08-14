@@ -1886,20 +1886,26 @@ class AssistantEngine:
             outcome = "已取消本计划的通知。"
         else:
             hour, minute = (int(part) for part in chosen.split(":"))
-            template = existing[0] if existing else None
+            # Picking a time collapses the plan to one same-day notification.
+            # The wording is taken from the same-day entry when there is one,
+            # never from an advance entry, which reads "tomorrow is ...".
+            same_day = next(
+                (item for item in existing if item.day_offset == 0),
+                None,
+            )
             plan_arguments["notifications"] = [
                 ModelNotificationProposal(
                     time_of_day=time(hour, minute),
-                    day_offset=template.day_offset if template is not None else 0,
+                    day_offset=0,
                     text=(
-                        template.text
-                        if template is not None
+                        same_day.text
+                        if same_day is not None
                         else str(plan_arguments.get("title") or "")
                     ),
                 )
             ]
             plan_arguments["notification_defaulted"] = False
-            outcome = f"通知时间已改为 {chosen}。"
+            outcome = f"已改为只在当天 {chosen} 提醒一次。"
 
         updated = self.pending_plans.update_payload(
             stored.id,
@@ -2003,9 +2009,7 @@ class AssistantEngine:
                         else f"事件后 {notification.day_offset} 天"
                     )
                     default_mark = (
-                        " · 默认"
-                        if arguments.get("notification_defaulted") and index == 1
-                        else ""
+                        " · 默认" if arguments.get("notification_defaulted") else ""
                     )
                     lines.append(
                         f"**通知 {index}：** {relation} {notification.time_of_day:%H:%M}"

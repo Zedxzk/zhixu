@@ -1292,3 +1292,56 @@ def test_egress_policy_rejects_sensitive_external_prompts_before_call(
             reason=LLMCallReason.GENERAL_QUESTION,
         )
     assert client.calls == 0
+
+
+def test_a_preset_time_collapses_the_defaults_to_one_same_day_notification(
+    assistant_parts: tuple[ZhixuServices, FrozenClock, Database, CommandContext],
+) -> None:
+    """The advance entry must not lend its day_offset to a chosen time.
+
+    A recurring plan now defaults to two notifications, the first of which is
+    the evening before. Picking a preset used to copy that entry's offset, so
+    "09:00" silently meant nine in the morning the day before the event.
+    """
+
+    services, clock, database, context = assistant_parts
+    client = FakeLLM(
+        [
+            json.dumps(
+                {
+                    "action": "create_agenda",
+                    "confidence": 0.99,
+                    "title": "Synthetic payday",
+                    "start_at": "2026-06-29T00:00:00+08:00",
+                    "end_at": "2026-06-30T00:00:00+08:00",
+                    "recurrence_rule": "FREQ=MONTHLY;BYMONTHDAY=29",
+                    "notification_defaulted": True,
+                    "notifications": [
+                        {
+                            "time_of_day": "20:00:00",
+                            "day_offset": -1,
+                            "text": "Synthetic payday is tomorrow",
+                        },
+                        {
+                            "time_of_day": "09:00:00",
+                            "day_offset": 0,
+                            "text": "Synthetic payday",
+                        },
+                    ],
+                }
+            )
+        ]
+    )
+    engine = engine_with(services, clock, database, client)
+
+    preview = engine.handle("Create the synthetic payday", context, target_ref="qqc_x")
+    assert preview.code == "plan_preview"
+    assert "· 默认" in preview.text
+    plan_id = preview.buttons[0].action.rsplit(" ", 1)[-1]
+
+    revised = engine.handle(f"/计划通知 {plan_id} 09:00", context, target_ref="qqc_x")
+    assert revised.code == "plan_preview"
+    assert "当天 09:00" in revised.text
+    assert "事件前 1 天" not in revised.text
+    # The default marker is gone once the time was chosen deliberately.
+    assert "· 默认" not in revised.text
