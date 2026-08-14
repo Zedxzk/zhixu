@@ -185,16 +185,16 @@ def _notification_buttons(
 ) -> tuple[MessageButton, ...]:
     if action is IntentAction.CREATE_REMINDER:
         if arguments.get("no_leads"):
-            return (MessageButton("加提前通知", f"/计划提前 {plan_id}"),)
+            return (MessageButton("加提前", f"/计划提前 {plan_id}"),)
         return (
-            MessageButton("改提前通知", f"/计划提前 {plan_id}"),
-            MessageButton("不提前通知", f"/计划免提前 {plan_id}"),
+            MessageButton("改提前", f"/计划提前 {plan_id}"),
+            MessageButton("不提前", f"/计划免提前 {plan_id}"),
         )
     if action is not IntentAction.CREATE_AGENDA:
         return ()
     if arguments.get("notifications"):
         return (
-            MessageButton("改通知时间", f"/计划通知 {plan_id}"),
+            MessageButton("改通知", f"/计划通知 {plan_id}"),
             MessageButton("不提醒", f"/计划免通知 {plan_id}"),
         )
     return (MessageButton("加通知", f"/计划通知 {plan_id}"),)
@@ -523,15 +523,15 @@ def _important_day_preview_lines(arguments: dict) -> list[str]:
     if is_lunar:
         leap = "闰" if arguments.get("lunar_leap") else ""
         lines.append(
-            f"**农历日期：** `{leap}{arguments.get('lunar_month')}月"
-            f"{arguments.get('lunar_day')}日`"
+            f"**农历日期：** {leap}{arguments.get('lunar_month')}月"
+            f"{arguments.get('lunar_day')}日"
         )
         if isinstance(anchor, date) and anchor.year > UNKNOWN_YEAR:
-            lines.append(f"**出生年：** `{anchor.year}`")
+            lines.append(f"**出生年：** {anchor.year}")
     elif isinstance(anchor, date) and anchor.year <= UNKNOWN_YEAR:
-        lines.append(f"**日期：** `{anchor:%m-%d}`（年份未知）")
+        lines.append(f"**日期：** {anchor:%m-%d}（年份未知）")
     else:
-        lines.append(f"**{'出生日期' if is_birthday else '起始日期'}：** `{anchor}`")
+        lines.append(f"**{'出生日期' if is_birthday else '起始日期'}：** {anchor}")
     advance = arguments.get("advance_days")
     if isinstance(advance, (list, tuple)) and advance:
         lines.append(
@@ -2001,7 +2001,7 @@ class AssistantEngine:
                     MessageButton(preset, f"/计划提前 {stored.id} {preset}")
                     for preset in REMINDER_LEAD_PRESETS
                 )
-                + (MessageButton("不提前通知", f"/计划免提前 {stored.id}"),),
+                + (MessageButton("不提前", f"/计划免提前 {stored.id}"),),
             )
 
         fire_at = plan_arguments.get("fire_at")
@@ -2199,12 +2199,20 @@ class AssistantEngine:
                             next_month,
                             business_rule.position,
                         )
-                    lines.append(f"**首次执行：** `{first_date:%Y-%m-%d}`")
+                    lines.append(f"**首次执行：** {first_date:%Y-%m-%d}")
                 except ValidationError:
                     pass
             else:
-                lines.append(f"**开始：** `{arguments.get('start_at')}`")
-            lines.append(f"**重复：** `{_escape_markdown_text(recurrence_text)}`")
+                start_value = arguments.get("start_at")
+                lines.append(
+                    "**开始：** "
+                    + (
+                        local_moment(start_value, self.router.timezone)
+                        if hasattr(start_value, "tzinfo")
+                        else str(start_value)
+                    )
+                )
+            lines.append(f"**重复：** {_escape_markdown_text(recurrence_text)}")
             notifications = arguments.get("notifications") or []
             links = arguments.get("links") or []
             if arguments.get("include_in_daily_briefing"):
@@ -2239,18 +2247,23 @@ class AssistantEngine:
         elif intent.action is IntentAction.CREATE_ANNIVERSARY:
             lines.extend(_important_day_preview_lines(arguments))
         elif intent.action is IntentAction.CREATE_DAILY_BRIEFING:
-            lines.append(f"**每日简报时间：** `{arguments.get('briefing_time')}`")
+            lines.append(f"**每日简报时间：** {arguments.get('briefing_time')}")
         elif intent.action is IntentAction.DELETE_ANNIVERSARY:
-            lines.append(f"**删除重要日子：** `{arguments.get('anniversary_id')}`")
+            lines.append(f"**删除重要日子：** {arguments.get('anniversary_id')}")
         elif intent.action is IntentAction.DELETE_DAILY_BRIEFING:
-            lines.append(f"**删除每日简报：** `{arguments.get('briefing_id')}`")
+            lines.append(f"**删除每日简报：** {arguments.get('briefing_id')}")
         elif intent.action is IntentAction.DELETE_AGENDA_NOTIFICATION:
-            lines.append(f"**删除日程通知：** `{arguments.get('rule_id')}`")
+            lines.append(f"**删除日程通知：** {arguments.get('rule_id')}")
         elif intent.action is IntentAction.CREATE_REMINDER:
             lines.extend(
                 [
                     f"**提醒：** {_escape_markdown_text(str(arguments.get('title') or ''))}",
-                    f"**时间：** `{arguments.get('fire_at')}`",
+                    "**时间：** "
+                    + (
+                        local_moment(fire_value, self.router.timezone)
+                        if hasattr(fire_value := arguments.get("fire_at"), "tzinfo")
+                        else str(fire_value)
+                    ),
                 ]
             )
             fire_at = arguments.get("fire_at")
@@ -2334,7 +2347,15 @@ class AssistantEngine:
                 f"**待办：** {_escape_markdown_text(str(arguments.get('title') or ''))}"
             )
             if arguments.get("due_at") is not None:
-                lines.append(f"**截止：** `{arguments.get('due_at')}`")
+                due_value = arguments.get("due_at")
+                lines.append(
+                    "**截止：** "
+                    + (
+                        local_moment(due_value, self.router.timezone)
+                        if hasattr(due_value, "tzinfo")
+                        else str(due_value)
+                    )
+                )
         elif intent.action is IntentAction.CANCEL_AGENDA:
             agenda_id = str(arguments.get("agenda_id") or "")
             item = next(
@@ -2351,7 +2372,7 @@ class AssistantEngine:
                 [
                     "**操作：** 取消该日程的所有未来安排",
                     f"**日程：** {_escape_markdown_text(item.title) if item else agenda_id}",
-                    f"**资源 ID：** `{agenda_id}`",
+                    f"**资源 ID：** {agenda_id}",
                 ]
             )
         elif intent.action is IntentAction.CANCEL_REMINDER:
@@ -2373,11 +2394,11 @@ class AssistantEngine:
                 [
                     "**操作：** 取消未来提醒",
                     f"**提醒：** {reminder_title}",
-                    f"**资源 ID：** `{reminder_id}`",
+                    f"**资源 ID：** {reminder_id}",
                 ]
             )
         else:
-            lines.append(f"**操作：** `{intent.action.value}`")
+            lines.append(f"**操作：** {intent.action.value}")
         if intent.action is not IntentAction.CREATE_AGENDA:
             for index, link in enumerate(arguments.get("links") or [], start=1):
                 if isinstance(link, ActionLink):
@@ -2403,7 +2424,7 @@ class AssistantEngine:
             + (
                 MessageButton("接受", f"/确认计划 {plan.id}"),
                 MessageButton("修改", f"/拒绝计划 {plan.id}"),
-                MessageButton("取消创建", f"/取消计划 {plan.id}"),
+                MessageButton("取消", f"/取消计划 {plan.id}"),
             )
             # Appended last so the primary actions keep their positions.
             + _notification_buttons(action, arguments, plan.id),

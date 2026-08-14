@@ -130,3 +130,38 @@ def test_a_moment_is_shown_the_way_a_person_reads_it() -> None:
     assert shown == "2026-08-31 09:00 周一"
     assert "T" not in shown
     assert "+08:00" not in shown
+
+
+def test_no_preview_field_switches_to_a_monospace_value() -> None:
+    """A backticked value renders in another typeface inside the same card."""
+
+    import re
+    from pathlib import Path
+
+    source = Path("src/zhixu/application/assistant.py").read_text(encoding="utf-8")
+    offenders = re.findall(r"\*\*[^*\n]+：\*\* *`", source)
+    assert offenders == []
+
+
+def test_button_labels_fit_the_narrow_qq_keyboard() -> None:
+    """QQ clipped 取消创建 to 取消… and 改提前通知 to 改提…"""
+
+    import ast
+    from pathlib import Path
+
+    source = Path("src/zhixu/application/assistant.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    labels: list[str] = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "MessageButton"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
+            labels.append(node.args[0].value)
+
+    too_long = [value for value in labels if len(value) > 4]
+    assert too_long == [], too_long

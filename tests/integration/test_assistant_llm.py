@@ -388,7 +388,7 @@ def test_natural_compound_schedule_is_previewed_revised_and_materialized(
     )
     assert preview.code == "plan_preview"
     assert "每月倒数第二个香港工作日" in preview.text
-    assert "首次执行：** `2026-06-29`" in preview.text
+    assert "首次执行：** 2026-06-29" in preview.text
     assert "通知形式：** 提醒卡片" in preview.text
     assert "08:00" in preview.text
     assert services.agenda.list_for_owner("user_test") == []
@@ -552,7 +552,7 @@ def test_daily_briefing_inclusion_is_not_misparsed_as_a_notification(
     assert [button.label for button in preview.buttons] == [
         "接受",
         "修改",
-        "取消创建",
+        "取消",
         "加通知",
     ]
     accepted = engine.handle(preview.buttons[0].action, context, target_ref=target)
@@ -700,7 +700,7 @@ def test_revision_cannot_downgrade_recurring_agenda_to_one_off_reminder(
     assert guarded.code == "plan_preview"
     assert "已拒绝该变更并保留原循环计划" in guarded.text
     assert "每月倒数第二个香港工作日" in guarded.text
-    assert "首次执行：** `2026-08-28`" in guarded.text
+    assert "首次执行：** 2026-08-28" in guarded.text
     assert "提醒卡片" in guarded.text
     assert "2026-06-30T08:00" not in guarded.text
     assert services.agenda.list_for_owner("user_test") == []
@@ -1489,8 +1489,8 @@ def test_a_reminder_announces_itself_ahead_of_time_and_the_lead_is_editable(
     assert "**提前通知：**" in preview.text
     assert "无（只在上述时刻提醒一次）" not in preview.text
     labels = [button.label for button in preview.buttons]
-    assert "改提前通知" in labels
-    assert "不提前通知" in labels
+    assert "改提前" in labels
+    assert "不提前" in labels
 
     plan_id = preview.buttons[0].action.rsplit(" ", 1)[-1]
     single = engine.handle(f"/计划提前 {plan_id} 1小时", context, target_ref="qqc_x")
