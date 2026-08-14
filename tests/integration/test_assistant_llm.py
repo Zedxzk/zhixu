@@ -1388,3 +1388,76 @@ def test_a_model_proposed_note_category_reaches_the_preview_and_the_note(
     notes = {note.title: note.category_path for note in services.notes.list_for_owner("user_test")}
     assert notes["Synthetic router login"] == ("账号", "网络")
     assert notes["Synthetic loose thought"] == ("未分类",)
+
+
+def test_a_credential_value_never_reaches_the_model_but_is_stored_intact(
+    assistant_parts: tuple[ZhixuServices, FrozenClock, Database, CommandContext],
+) -> None:
+    """The model sees a placeholder; the note keeps the real value at L1."""
+
+    services, clock, database, context = assistant_parts
+    client = FakeLLM(
+        [
+            json.dumps(
+                {
+                    "action": "create_note",
+                    "confidence": 0.99,
+                    "title": "Synthetic router login",
+                    "body": "密码 <SECRET_1>",
+                    "category_path": ["账号"],
+                }
+            )
+        ]
+    )
+    engine = engine_with(services, clock, database, client)
+
+    # Phrased so the deterministic note patterns do not claim it; those write
+    # without a model at all, and so need no redaction.
+    preview = engine.handle(
+        "路由器密码是 synthetic-router-0，帮我留个底",
+        context,
+        target_ref="qqc_x",
+    )
+    engine.handle(preview.buttons[0].action, context, target_ref="qqc_x")
+
+    prompt = client.requests[0].user_prompt
+    assert "synthetic-router-0" not in prompt
+    assert "<SECRET_1>" in prompt
+    # The label stays outside the placeholder so titling still works.
+    assert "路由器密码是" in prompt
+
+    notes = services.notes.list_for_owner("user_test")
+    assert len(notes) == 1
+    assert "synthetic-router-0" in notes[0].body
+    # L1 is load-bearing: raising it to CONFIDENTIAL would block group output.
+    assert notes[0].classification is DataClassification.PERSONAL
+
+
+def test_revising_a_staged_plan_does_not_replay_the_value_to_the_model(
+    assistant_parts: tuple[ZhixuServices, FrozenClock, Database, CommandContext],
+) -> None:
+    """A staged plan holds the restored value, so the replay must re-redact."""
+
+    services, clock, database, context = assistant_parts
+    staged = json.dumps(
+        {
+            "action": "create_note",
+            "confidence": 0.99,
+            "title": "Synthetic wifi",
+            "body": "密码 <SECRET_1>",
+        }
+    )
+    client = FakeLLM([staged, staged])
+    engine = engine_with(services, clock, database, client)
+
+    preview = engine.handle(
+        "家里WiFi密码是 synthetic-wifi-9，帮我留个底",
+        context,
+        target_ref="qqc_x",
+    )
+    engine.handle(preview.buttons[1].action, context, target_ref="qqc_x")
+    engine.handle("标题改成家里WiFi", context, target_ref="qqc_x")
+
+    assert len(client.requests) == 2
+    for request in client.requests:
+        assert "synthetic-wifi-9" not in request.user_prompt

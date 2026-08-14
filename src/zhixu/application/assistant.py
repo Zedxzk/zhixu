@@ -33,7 +33,12 @@ from zhixu.domain.errors import (
     ValidationError,
 )
 from zhixu.ports import LLMCallReason, LLMRequest, PendingPlanStorePort
-from zhixu.security import web_query_is_safe
+from zhixu.security import (
+    FINANCIAL_REFUSAL_CODE,
+    contains_financial_credential,
+    hide_credential_values,
+    web_query_is_safe,
+)
 
 from .commands import (
     AcknowledgeReminder,
@@ -126,6 +131,18 @@ _NOTE_LOOKUP_SUFFIX = re.compile(
 
 def _escape_markdown_text(value: str) -> str:
     return re.sub(r"([\\`*_{}\[\]()#+\-.!>|])", r"\\\1", value)
+
+
+# Named for the tile the operator actually sees in the admin page. The vault
+# needs a Passkey step-up that a chat channel cannot produce, so there is no
+# command that would let this be stored from here.
+_FINANCIAL_REFUSAL_TEXT = """银行卡密码、支付密码、CVV 等金融凭据属于禁止存储等级。
+
+我没有保存这条消息，也没有发送给模型。普通备忘数据库会进入全文索引和消息队列，不适合放它们。
+
+请在管理页的「敏感数据仓」中登记：它使用独立进程、独立密钥和增强认证，聊天通道无法写入。
+
+网站账号、WiFi 密码这类一般凭据可以照常记录，直接告诉我即可。"""
 
 
 def _creator_suffix(name: str | None) -> str:
@@ -273,6 +290,13 @@ def _decode_plan_value(value):
 
 
 def _model_context_value(value):
+    """Strip a staged plan down to what the model may see when revising it.
+
+    Scrubbing happens per field, before the plan is serialised: once it is a
+    JSON blob a credential value runs straight into the next key with no
+    separator, and no pattern can find its end.
+    """
+
     if isinstance(value, (datetime, date, time)):
         return value.isoformat()
     if isinstance(value, ModelNotificationProposal):
@@ -283,6 +307,8 @@ def _model_context_value(value):
         return {str(key): _model_context_value(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_model_context_value(item) for item in value]
+    if isinstance(value, str):
+        return hide_credential_values(value, "<PRESERVED_USER_SECRET>")
     return value
 
 
@@ -567,6 +593,15 @@ class AssistantEngine:
         *,
         target_ref: str = "",
     ) -> AssistantReply:
+        # Before the router, because the deterministic note commands write
+        # without ever consulting a model, and before any classifier call.
+        if contains_financial_credential(text):
+            return AssistantReply(
+                _FINANCIAL_REFUSAL_TEXT,
+                FINANCIAL_REFUSAL_CODE,
+                "deterministic",
+                rich_text=True,
+            )
         intent = self.router.route(text)
         if intent is None and self.pending_plans is not None and target_ref:
             revising = self.pending_plans.current(

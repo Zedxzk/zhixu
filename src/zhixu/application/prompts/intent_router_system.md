@@ -102,6 +102,11 @@ before the event starts, where `0` means the moment it starts.
 
 # Links
 
+Credential values are replaced by `<SECRET_N>` placeholders and are never available to
+you. Copy a placeholder verbatim into the field the value belongs in, normally `body`.
+Never invent, guess, expand, describe, or split one, and never put one in `notifications`
+or `title`.
+
 URLs in the request are replaced by `<LINK_N>` placeholders and are never available to you.
 For every link that belongs to the created resource, return its `source_index` N and a
 short action label in `links`. Never invent, repeat, or reconstruct a URL.

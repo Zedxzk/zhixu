@@ -6,19 +6,19 @@ import ipaddress
 import re
 from urllib.parse import urlsplit
 
+from .patterns import ASSIGNMENT, CREDENTIAL_LABELS, TOKEN_PATTERN
+
+# The first four and the last are personal identifiers and entropy heuristics
+# that only make sense before an internet search; they stay private to this
+# module. The credential shapes come from the shared vocabulary.
 _SENSITIVE_PATTERNS = (
     re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"),
     re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)"),
     re.compile(r"(?<!\d)(?:\d[ -]?){12,19}(?!\d)"),
     re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),
+    TOKEN_PATTERN,
     re.compile(
-        r"\b(?:sk-[A-Za-z0-9_-]{8,}|github_pat_[A-Za-z0-9_]{8,}|"
-        r"gh[pousr]_[A-Za-z0-9]{8,}|AKID[A-Za-z0-9]{8,})\b",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"(?:密码|口令|password|passcode|api[_ -]?key|access[_ -]?token|secret)"
-        r"\s*(?:是|为|=|:|：)\s*\S{6,}",
+        rf"(?:{CREDENTIAL_LABELS}){ASSIGNMENT}" + r"\S{6,}",
         re.IGNORECASE,
     ),
     re.compile(

@@ -20,6 +20,7 @@ from zhixu.domain import (
 from zhixu.domain.agenda import BUSINESS_CALENDARS
 from zhixu.domain.errors import InvalidModelOutput, LLMUnavailable, ValidationError
 from zhixu.ports import Clock, LLMCallReason, LLMRequest
+from zhixu.security import SecretRedactor
 
 from .intents import IntentAction, ModelIntentProposal, ParsedIntent
 from .llm import LLMGateway
@@ -839,6 +840,10 @@ class ModelIntentClassifier:
         required_action: IntentAction | None = None,
     ) -> ParsedIntent:
         redacted_text, source_urls = _redact_action_links(text)
+        # Links first: an invalid URL carrying userinfo is already discarded by
+        # then, so its credential never reaches the secret detector.
+        redactor = SecretRedactor()
+        redacted_text = redactor.redact(redacted_text)
         briefing_inclusion = bool(_BRIEFING_INCLUSION_PATTERN.search(redacted_text))
         notification_requested = bool(
             _EXPLICIT_NOTIFICATION_PATTERN.search(
@@ -849,7 +854,10 @@ class ModelIntentClassifier:
         if reference_time is not None:
             user_sections.append(temporal_context_prompt(reference_time))
         if revision_context:
-            user_sections.append(f"Existing plan: {revision_context}")
+            # A staged plan holds restored values, so it must go through the
+            # same redactor: shared numbering keeps restoration correct
+            # whichever section the model copied from.
+            user_sections.append(f"Existing plan: {redactor.redact(revision_context)}")
         if required_action is not None:
             user_sections.append(
                 f"Required action: {required_action.value} (changing it is forbidden)"
@@ -882,16 +890,25 @@ class ModelIntentClassifier:
             ActionLink(link_labels.get(index, _fallback_link_label(url)), url)
             for index, url in enumerate(source_urls, start=1)
         ]
-        notifications = proposal.notifications
+        # Notification text is delivered later by the scheduler, so a
+        # placeholder there is blanked rather than restored: restoring it would
+        # broadcast the value on a timer.
+        notifications = [
+            item.model_copy(update={"text": redactor.blank(item.text)})
+            for item in proposal.notifications
+        ]
         if briefing_inclusion and not notification_requested:
             notifications = []
         arguments = {
             key: value
             for key, value in {
+                # query is deliberately not restored: it flows on to note
+                # search and to web search, where a leftover placeholder is
+                # inert but a restored value would be a fresh egress hole.
                 "query": proposal.query,
-                "title": proposal.title,
-                "body": proposal.body,
-                "answer": proposal.answer,
+                "title": redactor.restore(proposal.title),
+                "body": redactor.restore(proposal.body),
+                "answer": redactor.restore(proposal.answer),
                 "fire_at": proposal.fire_at,
                 "due_at": proposal.due_at,
                 "start_at": proposal.start_at,
