@@ -164,11 +164,32 @@ class _PlanRef:
 NOTIFICATION_PRESETS = ("08:00", "09:00", "12:00", "18:00", "20:00")
 
 
+# A reminder names one moment, so its advance notices are offsets from it
+# rather than the wall-clock times a repeating event is announced at.
+REMINDER_LEAD_PRESETS = ("5分钟", "30分钟", "1小时", "1天", "默认")
+
+_LEAD_UNITS = {"分钟": 1, "小时": 60, "天": 1440}
+
+
+def _lead_delta(value: str) -> timedelta | None:
+    match = re.fullmatch(r"(\d{1,4})(分钟|小时|天)", value)
+    if match is None:
+        return None
+    return timedelta(minutes=int(match.group(1)) * _LEAD_UNITS[match.group(2)])
+
+
 def _notification_buttons(
     action: IntentAction,
     arguments: dict,
     plan_id: str,
 ) -> tuple[MessageButton, ...]:
+    if action is IntentAction.CREATE_REMINDER:
+        if arguments.get("no_leads"):
+            return (MessageButton("加提前通知", f"/计划提前 {plan_id}"),)
+        return (
+            MessageButton("改提前通知", f"/计划提前 {plan_id}"),
+            MessageButton("不提前通知", f"/计划免提前 {plan_id}"),
+        )
     if action is not IntentAction.CREATE_AGENDA:
         return ()
     if arguments.get("notifications"):
@@ -333,6 +354,7 @@ _HELP_TEXT = """# 知序 · 帮助
 - `每个月倒数第二个香港工作日发工资` — 创建香港工作日工资事件
 - `每周四创建活动并入每日早报中` — 纳入早报，不额外生成提醒
 
+> 提醒默认按你的 `/提前提醒` 设置提前通知（两小时内的提醒不提前）；确认卡片可改提前量。
 > 计划预览固定提供“接受 / 修改 / 取消创建”。群聊修改受 QQ 入站限制，
 > 后续自然语言仍需再次 @机器人；私聊不需要重复 @。
 
@@ -803,6 +825,7 @@ class AssistantEngine:
             IntentAction.REJECT_PLAN,
             IntentAction.CANCEL_PLAN,
             IntentAction.ADJUST_PLAN_NOTIFICATION,
+            IntentAction.ADJUST_PLAN_LEAD,
         }:
             plan_id = str(intent.arguments.get("plan_id") or "")
             if self.pending_plans is None or not target_ref:
@@ -823,6 +846,14 @@ class AssistantEngine:
                     "该计划不存在、已过期，或不属于你和当前会话。",
                     "plan_not_found",
                     "deterministic",
+                )
+            if intent.action is IntentAction.ADJUST_PLAN_LEAD:
+                return self._adjust_plan_lead(
+                    stored,
+                    intent.arguments,
+                    context,
+                    target_ref=target_ref,
+                    now=now,
                 )
             if intent.action is IntentAction.ADJUST_PLAN_NOTIFICATION:
                 return self._adjust_plan_notification(
@@ -1583,13 +1614,31 @@ class AssistantEngine:
                 ),
                 context,
             )
+            leads = self._reminder_leads(arguments, fire_at, context)
+            for moment in leads:
+                self.services.command_bus().execute(
+                    CreateReminder(
+                        title=title,
+                        fire_at=moment,
+                        target_ref=target_ref,
+                        action_links=tuple(links),
+                        private=bool(arguments.get("private")),
+                        # Lets the card say when the thing itself happens
+                        # rather than only when this announcement fired.
+                        related_kind="reminder",
+                        related_id=reminder.id,
+                        related_start_at=reminder.fire_at,
+                    ),
+                    context,
+                )
             return AssistantReply(
                 (
                     "私人提醒已设置："
                     if reminder.owner_user_id == context.actor_user_id
                     else "群共享提醒已设置："
                 )
-                + f"{reminder.fire_at.isoformat()} {reminder.title}",
+                + f"{reminder.fire_at.isoformat()} {reminder.title}"
+                + (f"，另有 {len(leads)} 次提前通知" if leads else ""),
                 "created",
                 intent.source,
             )
@@ -1873,6 +1922,94 @@ class AssistantEngine:
             notice=notice,
         )
 
+    def _adjust_plan_lead(
+        self,
+        stored,
+        arguments: dict,
+        context: CommandContext,
+        *,
+        target_ref: str,
+        now: datetime,
+    ) -> AssistantReply:
+        """Change how far ahead a pending reminder announces itself."""
+
+        assert self.pending_plans is not None
+        try:
+            action = IntentAction(stored.action)
+            plan_arguments = _decode_plan_value(json.loads(stored.payload_json))
+        except (ValueError, TypeError, json.JSONDecodeError):
+            return AssistantReply(
+                "计划内容已损坏，请重新描述。",
+                "plan_corrupted",
+                "deterministic",
+            )
+        if action is not IntentAction.CREATE_REMINDER:
+            return AssistantReply(
+                "只有提醒的提前通知可以在这里调整。",
+                "plan_lead_unsupported",
+                "deterministic",
+            )
+
+        chosen = str(arguments.get("lead") or "")
+        if not arguments.get("disable") and not chosen:
+            return AssistantReply(
+                "选择提前多久通知：",
+                "plan_lead_choice",
+                "deterministic",
+                buttons=tuple(
+                    MessageButton(preset, f"/计划提前 {stored.id} {preset}")
+                    for preset in REMINDER_LEAD_PRESETS
+                )
+                + (MessageButton("不提前通知", f"/计划免提前 {stored.id}"),),
+            )
+
+        fire_at = plan_arguments.get("fire_at")
+        if arguments.get("disable"):
+            plan_arguments["no_leads"] = True
+            plan_arguments.pop("lead_at", None)
+            outcome = "已取消提前通知，只在提醒时刻通知一次。"
+        elif chosen == "默认":
+            plan_arguments.pop("no_leads", None)
+            plan_arguments.pop("lead_at", None)
+            outcome = "提前通知恢复为你的默认设置。"
+        else:
+            delta = _lead_delta(chosen)
+            if delta is None or not hasattr(fire_at, "tzinfo"):
+                return AssistantReply(
+                    "看不懂这个提前量。",
+                    "invalid_intent",
+                    "deterministic",
+                )
+            plan_arguments.pop("no_leads", None)
+            plan_arguments["lead_at"] = [fire_at - delta]
+            outcome = f"已改为提前 {chosen} 通知一次。"
+
+        updated = self.pending_plans.update_payload(
+            stored.id,
+            actor_user_id=context.actor_user_id,
+            target_ref=target_ref,
+            payload_json=json.dumps(
+                _encode_plan_value(plan_arguments),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+            now=now,
+        )
+        if updated is None:
+            return AssistantReply(
+                "该计划已经处理，请不要重复提交。",
+                "plan_already_handled",
+                "deterministic",
+            )
+        return self._render_plan_preview(
+            action,
+            plan_arguments,
+            plan_id=stored.id,
+            context=context,
+            source="deterministic",
+            notice=outcome,
+        )
+
     def _adjust_plan_notification(
         self,
         stored,
@@ -2074,6 +2211,23 @@ class AssistantEngine:
                     f"**时间：** `{arguments.get('fire_at')}`",
                 ]
             )
+            fire_at = arguments.get("fire_at")
+            leads = (
+                self._reminder_leads(arguments, fire_at, context)
+                if hasattr(fire_at, "tzinfo")
+                else ()
+            )
+            if leads:
+                local = [
+                    moment.astimezone(self.router.timezone).strftime("%m-%d %H:%M")
+                    for moment in leads
+                ]
+                lines.append(
+                    f"**提前通知：** {len(leads)} 次 · "
+                    + _escape_markdown_text("、".join(local))
+                )
+            else:
+                lines.append("**提前通知：** 无（只在上述时刻提醒一次）")
         elif intent.action is IntentAction.CREATE_NOTE:
             note_title = str(arguments.get("title") or "").strip()
             note_body = str(arguments.get("body") or note_title).strip()
@@ -2390,6 +2544,26 @@ class AssistantEngine:
             "web",
             rich_text=True,
         )
+
+    def _reminder_leads(
+        self,
+        arguments: dict,
+        fire_at: datetime,
+        context: CommandContext,
+    ) -> tuple[datetime, ...]:
+        """Advance announcements for a one-shot reminder.
+
+        A plan that was edited carries its own choice; otherwise the owner's
+        standing lead configuration applies, the same one timed calendar
+        events use.
+        """
+
+        chosen = arguments.get("lead_at")
+        if chosen is not None:
+            return tuple(value for value in chosen if value > self.services.clock.now())
+        if arguments.get("no_leads"):
+            return ()
+        return self.services.reminder_lead_times(fire_at, context)
 
     def _set_display_name(
         self,

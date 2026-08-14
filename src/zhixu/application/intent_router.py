@@ -399,6 +399,18 @@ class RuleIntentRouter:
             r"(?:\s+([01]?\d|2[0-3]):([0-5]\d))?",
             value,
         )
+        plan_lead = re.fullmatch(
+            r"/计划(免)?提前\s+(plan_[A-Za-z0-9_-]{8,80})"
+            r"(?:\s+(默认|\d{1,4}(?:分钟|小时|天)))?",
+            value,
+        )
+        if plan_lead:
+            lead_arguments: dict[str, object] = {"plan_id": plan_lead.group(2)}
+            if plan_lead.group(1):
+                lead_arguments["disable"] = True
+            elif plan_lead.group(3) is not None:
+                lead_arguments["lead"] = plan_lead.group(3)
+            return ParsedIntent(IntentAction.ADJUST_PLAN_LEAD, lead_arguments)
         if plan_notification:
             arguments: dict[str, object] = {"plan_id": plan_notification.group(2)}
             if plan_notification.group(1):

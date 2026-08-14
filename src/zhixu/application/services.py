@@ -6,10 +6,12 @@ import unicodedata
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import replace
+from datetime import datetime, timedelta
 
 from zhixu.domain import (
     DEFAULT_ANNIVERSARY_ADVANCE_DAYS,
     DEFAULT_BIRTHDAY_ADVANCE_DAYS,
+    DEFAULT_NOTIFICATION_LEAD_MINUTES,
     Action,
     AgendaItem,
     AgendaNotificationRule,
@@ -98,6 +100,9 @@ _PLACEHOLDER_DISPLAY_NAMES = frozenset(
     {"QQ group member", "Shared group workspace"}
 )
 
+# Below this a reminder is its own announcement, so no advance notice is made.
+REMINDER_LEAD_THRESHOLD = timedelta(hours=2)
+
 IdFactory = Callable[[str], str]
 
 
@@ -174,6 +179,37 @@ class ZhixuServices:
             ResourceRef("user", scoped.actor_user_id, scoped.actor_user_id),
         )
         return self.users.rename(scoped.actor_user_id, display_name, authorization)
+
+    def reminder_lead_times(
+        self,
+        fire_at: datetime,
+        context: CommandContext,
+    ) -> tuple[datetime, ...]:
+        """When to announce a reminder ahead of the moment it names.
+
+        Reuses whatever the owner configured with /提前提醒, so a reminder and
+        a timed calendar event are announced on the same schedule. Offsets
+        that already passed, and the zero offset that is the reminder itself,
+        are dropped.
+        """
+
+        if self.notification_leads is None:
+            return ()
+        scoped = self._context(context)
+        # Something the user asked for minutes from now needs no warning that
+        # it is coming; they just said so.
+        if fire_at - scoped.now <= REMINDER_LEAD_THRESHOLD:
+            return ()
+        owner = self._create_owner(scoped, private=False)
+        leads = self.notification_leads.default_for(owner)
+        if leads is None:
+            leads = DEFAULT_NOTIFICATION_LEAD_MINUTES
+        return tuple(
+            moment
+            for minutes in leads
+            if minutes > 0
+            and (moment := fire_at - timedelta(minutes=minutes)) > scoped.now
+        )
 
     def creator_names(self, user_ids: Sequence[str]) -> dict[str, str]:
         """Display names for entry creators, skipping the unnamed placeholder."""
@@ -1013,6 +1049,7 @@ class ZhixuServices:
             classification=command.classification,
             related_kind=command.related_kind,
             related_id=command.related_id,
+            related_start_at=command.related_start_at,
         )
         authorization = self.policy.require(
             current,

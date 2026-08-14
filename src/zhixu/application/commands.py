@@ -259,6 +259,9 @@ class CreateReminder:
     classification: DataClassification = DataClassification.PERSONAL
     related_kind: str | None = None
     related_id: str | None = None
+    # When the thing being announced actually happens, so an advance
+    # notice can say so instead of only naming its own fire time.
+    related_start_at: datetime | None = None
     private: bool = False
 
 

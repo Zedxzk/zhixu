@@ -31,6 +31,7 @@ class IntentAction(StrEnum):
     REJECT_PLAN = "reject_plan"
     CANCEL_PLAN = "cancel_plan"
     ADJUST_PLAN_NOTIFICATION = "adjust_plan_notification"
+    ADJUST_PLAN_LEAD = "adjust_plan_lead"
     SET_DISPLAY_NAME = "set_display_name"
     LIST_ANNIVERSARIES = "list_anniversaries"
     LIST_DAILY_BRIEFINGS = "list_daily_briefings"

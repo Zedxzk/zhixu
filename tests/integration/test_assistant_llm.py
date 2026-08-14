@@ -14,6 +14,7 @@ from zhixu.adapters.storage.sqlite import (
     DailyBriefingRepository,
     Database,
     NoteRepository,
+    NotificationLeadRepository,
     PendingPlanStore,
     ReminderRepository,
     SQLiteLLMUsage,
@@ -114,6 +115,7 @@ def assistant_parts(
         anniversaries=AnniversaryRepository(database),
         daily_briefings=DailyBriefingRepository(database),
         agenda_notifications=AgendaNotificationRepository(database),
+        notification_leads=NotificationLeadRepository(database),
         policy=policy,
         clock=clock,
         id_factory=SequentialIds(),
@@ -1461,3 +1463,89 @@ def test_revising_a_staged_plan_does_not_replay_the_value_to_the_model(
     assert len(client.requests) == 2
     for request in client.requests:
         assert "synthetic-wifi-9" not in request.user_prompt
+
+
+def test_a_reminder_announces_itself_ahead_of_time_and_the_lead_is_editable(
+    assistant_parts: tuple[ZhixuServices, FrozenClock, Database, CommandContext],
+) -> None:
+    """A one-shot reminder carries advance notices, shown before it is accepted."""
+
+    services, clock, database, context = assistant_parts
+    fire_at = (NOW + timedelta(days=1)).isoformat()
+    plan = json.dumps(
+        {
+            "action": "create_reminder",
+            "confidence": 0.99,
+            "title": "Synthetic order check",
+            "fire_at": fire_at,
+        }
+    )
+    client = FakeLLM([plan])
+    engine = engine_with(services, clock, database, client)
+
+    preview = engine.handle("提醒我明天这个时候检查秩序", context, target_ref="qqc_x")
+    assert preview.code == "plan_preview"
+    # The card states exactly what will be created, before anything is written.
+    assert "**提前通知：**" in preview.text
+    assert "无（只在上述时刻提醒一次）" not in preview.text
+    labels = [button.label for button in preview.buttons]
+    assert "改提前通知" in labels
+    assert "不提前通知" in labels
+
+    plan_id = preview.buttons[0].action.rsplit(" ", 1)[-1]
+    single = engine.handle(f"/计划提前 {plan_id} 1小时", context, target_ref="qqc_x")
+    assert "已改为提前 1小时 通知一次" in single.text
+
+    engine.handle(single.buttons[0].action, context, target_ref="qqc_x")
+    reminders = services.reminders.list_for_owner("user_test")
+    assert len(reminders) == 2
+    lead = next(item for item in reminders if item.related_id is not None)
+    main = next(item for item in reminders if item.related_id is None)
+    assert lead.fire_at == main.fire_at - timedelta(hours=1)
+    assert lead.related_start_at == main.fire_at
+
+
+def test_declining_the_advance_notice_leaves_a_single_reminder(
+    assistant_parts: tuple[ZhixuServices, FrozenClock, Database, CommandContext],
+) -> None:
+    services, clock, database, context = assistant_parts
+    plan = json.dumps(
+        {
+            "action": "create_reminder",
+            "confidence": 0.99,
+            "title": "Synthetic order check",
+            "fire_at": (NOW + timedelta(days=1)).isoformat(),
+        }
+    )
+    engine = engine_with(services, clock, database, FakeLLM([plan]))
+
+    preview = engine.handle("提醒我明天这个时候检查秩序", context, target_ref="qqc_x")
+    plan_id = preview.buttons[0].action.rsplit(" ", 1)[-1]
+    declined = engine.handle(f"/计划免提前 {plan_id}", context, target_ref="qqc_x")
+
+    assert "无（只在上述时刻提醒一次）" in declined.text
+    engine.handle(declined.buttons[0].action, context, target_ref="qqc_x")
+    assert len(services.reminders.list_for_owner("user_test")) == 1
+
+
+def test_a_reminder_a_few_minutes_out_gets_no_advance_notice(
+    assistant_parts: tuple[ZhixuServices, FrozenClock, Database, CommandContext],
+) -> None:
+    """Warning someone about what they just asked for adds only noise."""
+
+    services, clock, database, context = assistant_parts
+    plan = json.dumps(
+        {
+            "action": "create_reminder",
+            "confidence": 0.99,
+            "title": "Synthetic oven",
+            "fire_at": (NOW + timedelta(minutes=15)).isoformat(),
+        }
+    )
+    engine = engine_with(services, clock, database, FakeLLM([plan]))
+
+    preview = engine.handle("十五分钟后提醒我关烤箱", context, target_ref="qqc_x")
+    assert "无（只在上述时刻提醒一次）" in preview.text
+
+    engine.handle(preview.buttons[0].action, context, target_ref="qqc_x")
+    assert len(services.reminders.list_for_owner("user_test")) == 1
