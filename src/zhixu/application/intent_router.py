@@ -915,6 +915,9 @@ class ModelIntentClassifier:
                 # Only meaningful alongside notifications, and False is the
                 # same as absent, so let the None filter drop it otherwise.
                 "notification_defaulted": proposal.notification_defaulted or None,
+                "category_path": (
+                    tuple(proposal.category_path) if proposal.category_path else None
+                ),
                 # An empty list means the model said nothing about these, not
                 # that the user asked for none; passing it on would override the
                 # defaults with silence.

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -95,9 +95,14 @@ class ModelIntentProposal(BaseModel):
     # The month a calendar view should show. Both unset means the current month.
     view_year: int | None = Field(default=None, ge=1970, le=2100)
     view_month: int | None = Field(default=None, ge=1, le=12)
-    # True when the single notification came from the standing 09:00 default
-    # rather than from something the user asked for.
+    # True when the notifications came from the standing defaults rather than
+    # from something the user asked for.
     notification_defaulted: bool = False
+    # Where a note should be filed. Shallower than the domain's eight-level
+    # limit on purpose: a model-proposed tree that deep is unusable.
+    category_path: list[Annotated[str, Field(min_length=1, max_length=40)]] | None = (
+        Field(default=None, max_length=3)
+    )
     advance_days: list[int] = Field(default_factory=list, max_length=8)
     lead_minutes: list[int] = Field(default_factory=list, max_length=12)
     notifications: list[ModelNotificationProposal] = Field(

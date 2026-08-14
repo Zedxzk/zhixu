@@ -14,7 +14,10 @@ from those fields without guessing.
 
 - `create_note` — the user asks to record, save, register, or remember information and
   does not request a future action. Put the complete information in `body` and a concise
-  label in `title`.
+  label in `title`. Set `category_path` to where the note belongs, one or two broad
+  levels such as `["账号"]` or `["工作", "会议"]`. Reuse a category name the user has
+  used before rather than coining a new one for every note, and leave `category_path`
+  unset when nothing obvious fits — an unfiled note is better than a wrong shelf.
 - `create_task` — work that should be completed. Set `due_at` only when a due time is
   stated.
 - `create_reminder` — the user explicitly asks to be alerted at a single usable future

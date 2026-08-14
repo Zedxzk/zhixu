@@ -1345,3 +1345,46 @@ def test_a_preset_time_collapses_the_defaults_to_one_same_day_notification(
     assert "事件前 1 天" not in revised.text
     # The default marker is gone once the time was chosen deliberately.
     assert "· 默认" not in revised.text
+
+
+def test_a_model_proposed_note_category_reaches_the_preview_and_the_note(
+    assistant_parts: tuple[ZhixuServices, FrozenClock, Database, CommandContext],
+) -> None:
+    """The model can file a note; an absent path still means 未分类."""
+
+    services, clock, database, context = assistant_parts
+    client = FakeLLM(
+        [
+            json.dumps(
+                {
+                    "action": "create_note",
+                    "confidence": 0.99,
+                    "title": "Synthetic router login",
+                    "body": "Synthetic router login details",
+                    "category_path": ["账号", "网络"],
+                }
+            ),
+            json.dumps(
+                {
+                    "action": "create_note",
+                    "confidence": 0.99,
+                    "title": "Synthetic loose thought",
+                    "body": "Synthetic loose thought body",
+                }
+            ),
+        ]
+    )
+    engine = engine_with(services, clock, database, client)
+
+    filed = engine.handle("Record the synthetic router login", context, target_ref="qqc_x")
+    assert filed.code == "plan_preview"
+    assert "**保存位置：** 账号 / 网络" in filed.text
+    engine.handle(filed.buttons[0].action, context, target_ref="qqc_x")
+
+    unfiled = engine.handle("Record a synthetic loose thought", context, target_ref="qqc_x")
+    assert "**保存位置：** 未分类" in unfiled.text
+    engine.handle(unfiled.buttons[0].action, context, target_ref="qqc_x")
+
+    notes = {note.title: note.category_path for note in services.notes.list_for_owner("user_test")}
+    assert notes["Synthetic router login"] == ("账号", "网络")
+    assert notes["Synthetic loose thought"] == ("未分类",)
