@@ -40,7 +40,10 @@ CapabilityBoundingSet=
 AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 ReadWritePaths=/var/lib/zhixu/qq
-InaccessiblePaths=/var/lib/zhixu/zhixu.sqlite3 /var/lib/zhixu/zhixu.sqlite3-wal /var/lib/zhixu/zhixu.sqlite3-shm /var/lib/zhixu-vault
+# The two sidecars exist only while some process holds the database open, and
+# a deployment restart closes it, so they are marked optional. The database
+# itself is unconditional and unreadable without them.
+InaccessiblePaths=/var/lib/zhixu/zhixu.sqlite3 -/var/lib/zhixu/zhixu.sqlite3-wal -/var/lib/zhixu/zhixu.sqlite3-shm /var/lib/zhixu-vault
 SystemCallArchitectures=native
 LogNamespace=zhixu
 LogRateLimitIntervalSec=30s

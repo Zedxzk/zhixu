@@ -223,3 +223,26 @@ def test_backup_unit_covers_every_persistent_database_boundary() -> None:
     assert "ReadWritePaths=/var/lib/zhixu " in backup
     assert "ReadOnlyPaths=/var/lib/zhixu" not in backup
     assert "/var/lib/zhixu-vault" in backup
+
+
+def test_database_sidecars_are_optional_but_the_database_is_not() -> None:
+    """A restart deletes the sidecars, and a required missing path kills the unit.
+
+    systemd refuses to build the namespace when an InaccessiblePaths entry is
+    absent, and -wal/-shm exist only while some process holds the database
+    open. Marking them optional is what stops every deployment from crashing
+    the unit once before systemd retries it.
+    """
+
+    for name in ("zhixu-qq.service", "zhixu-outbound@.service"):
+        unit = _unit(name)
+        line = next(
+            value
+            for value in unit.splitlines()
+            if value.startswith("InaccessiblePaths=")
+        )
+        assert "-/var/lib/zhixu/zhixu.sqlite3-wal" in line, name
+        assert "-/var/lib/zhixu/zhixu.sqlite3-shm" in line, name
+        # The database itself always exists, so it stays unconditional.
+        assert "=/var/lib/zhixu/zhixu.sqlite3 " in line, name
+        assert "-/var/lib/zhixu/zhixu.sqlite3 " not in line, name
